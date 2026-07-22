@@ -1,0 +1,12 @@
+stages:
+  - validate
+
+backend-validate:
+  stage: validate
+  image: python:3.13-bookworm
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - ./scripts/validate.sh
