@@ -1,0 +1,1 @@
+"""Places catalog domain module."""

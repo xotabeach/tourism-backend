@@ -1,0 +1,1 @@
+"""Route generation domain module."""
