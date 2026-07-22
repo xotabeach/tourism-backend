@@ -4,6 +4,7 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 from tourism_backend.config import get_settings
+from tourism_backend.db.base import Base
 
 config = context.config
 
@@ -13,7 +14,7 @@ if config.config_file_name is not None:
 settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url_sync)
 
-target_metadata = None
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:

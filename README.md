@@ -37,6 +37,7 @@ uv run tourism-backend
 | --- | --- |
 | `GET /health/live` | Liveness probe (`/health` — alias) |
 | `GET /health/ready` | Readiness: PostgreSQL + Redis (`/ready` — alias) |
+| `GET /api/v1` | Versioned API root (business routes grow under `/api/v1`) |
 
 OpenAPI: `http://localhost:8000/docs`
 
@@ -44,15 +45,20 @@ OpenAPI: `http://localhost:8000/docs`
 
 ```text
 src/tourism_backend/
-├── api/              # HTTP layer
-├── db/               # Database and Redis utilities
-├── modules/          # Domain modules (modular monolith boundaries)
+├── api/                 # HTTP layer, errors, /api/v1
+├── db/                  # Base, session, Redis
+├── modules/             # Domain boundaries (no cross-ORM imports)
 ├── config.py
+├── logging_config.py    # JSON logs
 └── main.py
-alembic/              # Database migrations
-Dockerfile            # Image build (CI without registry push by default)
+alembic/                 # Database migrations
+Dockerfile
 ```
 
+Module packages: `identity`, `users`, `geography`, `places`, `routes`,
+`route_builder`, `route_execution`, `favorites`, `subscriptions`, `media`.
+Layers inside a module (`domain` / `application` / `infrastructure` /
+`presentation`) появляются по мере реализации, без пустых деревьев заранее.
 ## Связанные репозитории
 
 - [`tourism-platform`](../tourism-platform) — архитектура и local Compose.

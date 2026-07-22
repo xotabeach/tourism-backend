@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from tourism_backend.api.errors import register_exception_handlers
 from tourism_backend.api.router import api_router
 from tourism_backend.config import Settings, get_settings
 from tourism_backend.db.redis import create_redis_client
@@ -33,6 +34,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = resolved_settings
+    register_exception_handlers(app)
     app.include_router(api_router)
     return app
 
