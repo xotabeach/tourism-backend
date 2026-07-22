@@ -10,20 +10,22 @@ def app():
 
 
 @pytest.mark.asyncio
-async def test_health_returns_ok(app) -> None:
+@pytest.mark.parametrize("path", ["/health/live", "/health"])
+async def test_health_live_returns_ok(app, path: str) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/health")
+        response = await client.get(path)
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
 @pytest.mark.asyncio
-async def test_ready_reports_not_ready_without_database(app) -> None:
+@pytest.mark.parametrize("path", ["/health/ready", "/ready"])
+async def test_ready_reports_not_ready_without_lifespan(app, path: str) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/ready")
+        response = await client.get(path)
 
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"

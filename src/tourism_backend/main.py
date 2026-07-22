@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from tourism_backend.api.router import api_router
 from tourism_backend.config import Settings, get_settings
+from tourism_backend.db.redis import create_redis_client
 from tourism_backend.db.session import create_engine, create_session_factory
 from tourism_backend.logging_config import configure_logging
 
@@ -15,7 +16,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = create_engine(settings)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
+    redis_client = create_redis_client(settings)
+    app.state.redis = redis_client
     yield
+    await redis_client.aclose()
     await engine.dispose()
 
 

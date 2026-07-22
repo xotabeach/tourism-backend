@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     database_url_sync: str = (
         "postgresql+psycopg://tourism:local-tourism-password@localhost:5432/tourism"
     )
+    redis_url: str = "redis://localhost:6379/0"
 
 
 @lru_cache

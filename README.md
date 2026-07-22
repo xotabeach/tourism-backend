@@ -7,7 +7,7 @@ Python 3.13 и FastAPI.
 
 - HTTP API для мобильного клиента и будущих интеграций.
 - Domain modules: `identity`, `users`, `geography`, `places`, `routes`,
-  `route_builder`, `media`.
+  `route_builder`, `route_execution`, `favorites`, `subscriptions`, `media`.
 - Прикладные миграции PostgreSQL и PostGIS через Alembic.
 
 ## Требования
@@ -35,8 +35,8 @@ uv run tourism-backend
 
 | Endpoint | Назначение |
 | --- | --- |
-| `GET /health` | Liveness probe |
-| `GET /ready` | Readiness probe с проверкой PostgreSQL |
+| `GET /health/live` | Liveness probe (`/health` — alias) |
+| `GET /health/ready` | Readiness: PostgreSQL + Redis (`/ready` — alias) |
 
 OpenAPI: `http://localhost:8000/docs`
 
@@ -45,11 +45,12 @@ OpenAPI: `http://localhost:8000/docs`
 ```text
 src/tourism_backend/
 ├── api/              # HTTP layer
-├── db/               # Database session utilities
+├── db/               # Database and Redis utilities
 ├── modules/          # Domain modules (modular monolith boundaries)
 ├── config.py
 └── main.py
 alembic/              # Database migrations
+Dockerfile            # Image build (CI without registry push by default)
 ```
 
 ## Связанные репозитории
