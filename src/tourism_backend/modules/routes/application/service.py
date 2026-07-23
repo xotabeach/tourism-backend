@@ -1,0 +1,140 @@
+from uuid import UUID
+
+from geoalchemy2 import Geometry
+from geoalchemy2.functions import ST_X, ST_Y
+from sqlalchemy import Select, cast, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from tourism_backend.api.errors import AppError
+from tourism_backend.modules.geography.infrastructure.models import Region
+from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.routes.application.schemas import (
+    RouteDetailOut,
+    RouteListItemOut,
+    RouteListOut,
+    RouteStopOut,
+)
+from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
+
+_PUBLIC_EDITORIAL = (
+    Route.source == "editorial",
+    Route.visibility == "public",
+    Route.lifecycle_status == "active",
+)
+
+
+async def _stops_count_map(
+    session: AsyncSession,
+    route_ids: list[UUID],
+) -> dict[UUID, int]:
+    if not route_ids:
+        return {}
+    stmt = (
+        select(RouteStop.route_id, func.count())
+        .where(RouteStop.route_id.in_(route_ids))
+        .group_by(RouteStop.route_id)
+    )
+    return {route_id: int(count) for route_id, count in (await session.execute(stmt)).all()}
+
+
+def _to_list_item(route: Route, stops_count: int) -> RouteListItemOut:
+    return RouteListItemOut(
+        id=route.id,
+        region_id=route.region_id,
+        name=route.name,
+        slug=route.slug,
+        short_description=route.short_description,
+        source=route.source,
+        visibility=route.visibility,
+        lifecycle_status=route.lifecycle_status,
+        estimated_duration_minutes=route.estimated_duration_minutes,
+        distance_meters=route.distance_meters,
+        difficulty=route.difficulty,
+        transport_mode=route.transport_mode,
+        is_round_trip=route.is_round_trip,
+        suitable_for_children=route.suitable_for_children,
+        pets_allowed=route.pets_allowed,
+        seasonality=route.seasonality,
+        stops_count=stops_count,
+        author_label=route.author_label,
+    )
+
+
+async def list_routes(
+    session: AsyncSession,
+    *,
+    region_slug: str | None,
+    transport_mode: str | None,
+    difficulty: str | None,
+    q: str | None,
+    limit: int,
+    offset: int,
+) -> RouteListOut:
+    stmt: Select[tuple[Route]] = select(Route).where(*_PUBLIC_EDITORIAL)
+    if region_slug:
+        stmt = stmt.join(Region, Region.id == Route.region_id).where(Region.slug == region_slug)
+    if transport_mode:
+        stmt = stmt.where(Route.transport_mode == transport_mode)
+    if difficulty:
+        stmt = stmt.where(Route.difficulty == difficulty)
+    if q:
+        pattern = f"%{q.strip()}%"
+        stmt = stmt.where(Route.name.ilike(pattern))
+
+    count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
+    total = int((await session.execute(count_stmt)).scalar_one())
+
+    routes = (await session.scalars(stmt.order_by(Route.name).limit(limit).offset(offset))).all()
+    counts = await _stops_count_map(session, [route.id for route in routes])
+    items = [_to_list_item(route, counts.get(route.id, 0)) for route in routes]
+    return RouteListOut(items=items, total=total, limit=limit, offset=offset)
+
+
+async def get_route(session: AsyncSession, route_id: UUID) -> RouteDetailOut:
+    route = await session.get(Route, route_id)
+    if route is None or not (
+        route.source == "editorial"
+        and route.visibility == "public"
+        and route.lifecycle_status == "active"
+    ):
+        raise AppError(code="route_not_found", message="Route not found", status_code=404)
+
+    stops_rows = (
+        await session.execute(
+            select(
+                RouteStop,
+                Place,
+                ST_X(cast(Place.location, Geometry)),
+                ST_Y(cast(Place.location, Geometry)),
+            )
+            .join(Place, Place.id == RouteStop.place_id)
+            .where(RouteStop.route_id == route.id)
+            .order_by(RouteStop.position)
+        )
+    ).all()
+
+    stops: list[RouteStopOut] = [
+        RouteStopOut(
+            id=stop.id,
+            position=stop.position,
+            place_id=place.id,
+            place_name=place.name,
+            place_slug=place.slug,
+            visit_duration_minutes=stop.visit_duration_minutes,
+            note=stop.note,
+            is_optional=stop.is_optional,
+            lng=float(lng),
+            lat=float(lat),
+        )
+        for stop, place, lng, lat in stops_rows
+    ]
+
+    item = _to_list_item(route, len(stops))
+    return RouteDetailOut(
+        **item.model_dump(),
+        description=route.description,
+        budget_notes=route.budget_notes,
+        accessibility=route.accessibility,
+        freshness_status=route.freshness_status,
+        stops=stops,
+    )

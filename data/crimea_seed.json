@@ -261,5 +261,66 @@
       "difficulty": "easy",
       "is_suitable_for_children": true
     }
+  ],
+  "routes": [
+    {
+      "slug": "south-coast-classics",
+      "name": "Классика Южного берега",
+      "short_description": "Дворцы и символ Крыма за один день у Ялты.",
+      "description": "Редакционный маршрут: Воронцовский дворец, Ливадия и Ласточкино гнездо.",
+      "estimated_duration_minutes": 360,
+      "distance_meters": 28000,
+      "difficulty": "easy",
+      "transport_mode": "car",
+      "is_round_trip": true,
+      "suitable_for_children": true,
+      "pets_allowed": false,
+      "seasonality": ["spring", "summer", "autumn"],
+      "author_label": "КрымТрип редакция",
+      "stops": [
+        {"place_slug": "vorontsov-palace", "visit_duration_minutes": 90, "note": "Дворец и парк"},
+        {"place_slug": "livadia-palace", "visit_duration_minutes": 75},
+        {"place_slug": "swallow-nest", "visit_duration_minutes": 60, "note": "Смотровая и фото"}
+      ]
+    },
+    {
+      "slug": "bakhchisaray-heritage",
+      "name": "Наследие Бахчисарая",
+      "short_description": "Ханский дворец и пещерный город Чуфут-Кале.",
+      "description": "Исторический день в Бахчисарае: дворец крымских ханов и прогулка к Чуфут-Кале.",
+      "estimated_duration_minutes": 300,
+      "distance_meters": 12000,
+      "difficulty": "moderate",
+      "transport_mode": "car",
+      "is_round_trip": true,
+      "suitable_for_children": true,
+      "pets_allowed": false,
+      "seasonality": ["spring", "summer", "autumn"],
+      "author_label": "КрымТрип редакция",
+      "stops": [
+        {"place_slug": "khan-palace", "visit_duration_minutes": 90},
+        {"place_slug": "chufut-kale", "visit_duration_minutes": 120, "note": "Удобная обувь"}
+      ]
+    },
+    {
+      "slug": "east-coast-fortresses",
+      "name": "Крепости восточного берега",
+      "short_description": "Судак, Новый Свет и Кара-Даг.",
+      "description": "Генуэзская крепость, тропа Голицына и вулканический массив Кара-Даг.",
+      "estimated_duration_minutes": 480,
+      "distance_meters": 45000,
+      "difficulty": "moderate",
+      "transport_mode": "car",
+      "is_round_trip": false,
+      "suitable_for_children": false,
+      "pets_allowed": false,
+      "seasonality": ["spring", "summer", "autumn"],
+      "author_label": "КрымТрип редакция",
+      "stops": [
+        {"place_slug": "sudak-fortress", "visit_duration_minutes": 90},
+        {"place_slug": "novy-svet", "visit_duration_minutes": 120},
+        {"place_slug": "kara-dag", "visit_duration_minutes": 150, "is_optional": true}
+      ]
+    }
   ]
 }

@@ -2,10 +2,12 @@ from fastapi import APIRouter
 
 from tourism_backend.modules.geography.presentation.router import router as geography_router
 from tourism_backend.modules.places.presentation.router import router as places_router
+from tourism_backend.modules.routes.presentation.router import router as routes_router
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(geography_router)
 router.include_router(places_router)
+router.include_router(routes_router)
 
 
 @router.get("")

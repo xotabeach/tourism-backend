@@ -28,6 +28,7 @@ from tourism_backend.modules.places.infrastructure.models import (
     PlaceCategory,
     PlaceEntrance,
 )
+from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SEED = ROOT / "data" / "crimea_seed.json"
@@ -211,12 +212,111 @@ def upsert_places(
     return count
 
 
+def _linestring(points: list[tuple[float, float]]) -> WKTElement | None:
+    if len(points) < 2:
+        return None
+    coords = ", ".join(f"{lng} {lat}" for lng, lat in points)
+    return WKTElement(f"LINESTRING({coords})", srid=4326)
+
+
+def upsert_routes(
+    session: Session,
+    region: Region,
+    places_by_slug: dict[str, Place],
+    routes: list[dict[str, Any]],
+) -> int:
+    count = 0
+    for payload in routes:
+        route = session.scalar(
+            select(Route).where(Route.region_id == region.id, Route.slug == payload["slug"])
+        )
+        if route is None:
+            route = Route(
+                id=uuid4(),
+                region_id=region.id,
+                created_at=_now(),
+                updated_at=_now(),
+            )
+            session.add(route)
+
+        route.name = payload["name"]
+        route.slug = payload["slug"]
+        route.short_description = payload.get("short_description")
+        route.description = payload.get("description")
+        route.source = "editorial"
+        route.visibility = "public"
+        route.lifecycle_status = "active"
+        route.estimated_duration_minutes = payload.get("estimated_duration_minutes")
+        route.distance_meters = payload.get("distance_meters")
+        route.difficulty = payload.get("difficulty")
+        route.budget_notes = payload.get("budget_notes")
+        route.seasonality = payload.get("seasonality")
+        route.transport_mode = payload.get("transport_mode")
+        route.is_round_trip = bool(payload.get("is_round_trip", False))
+        route.suitable_for_children = payload.get("suitable_for_children")
+        route.pets_allowed = payload.get("pets_allowed")
+        route.accessibility = payload.get("accessibility")
+        route.author_label = payload.get("author_label", "КрымТрип редакция")
+        route.source_name = "seed"
+        route.freshness_status = "fresh"
+        route.owner_user_id = None
+        route.updated_at = _now()
+        session.flush()
+
+        existing_stops = list(
+            session.scalars(select(RouteStop).where(RouteStop.route_id == route.id)).all()
+        )
+        for stop in existing_stops:
+            session.delete(stop)
+        session.flush()
+
+        line_points: list[tuple[float, float]] = []
+        for index, stop_payload in enumerate(payload.get("stops", []), start=1):
+            place = places_by_slug.get(stop_payload["place_slug"])
+            if place is None:
+                raise SystemExit(f"Unknown place_slug in route seed: {stop_payload['place_slug']}")
+            session.add(
+                RouteStop(
+                    id=uuid4(),
+                    route_id=route.id,
+                    place_id=place.id,
+                    position=index,
+                    visit_duration_minutes=stop_payload.get("visit_duration_minutes"),
+                    note=stop_payload.get("note"),
+                    is_optional=bool(stop_payload.get("is_optional", False)),
+                    created_at=_now(),
+                    updated_at=_now(),
+                )
+            )
+        session.flush()
+
+        from sqlalchemy import text as sql_text
+
+        coords_rows = session.execute(
+            sql_text(
+                """
+                SELECT ST_X(p.location::geometry) AS lng, ST_Y(p.location::geometry) AS lat
+                FROM route_stops rs
+                JOIN places p ON p.id = rs.place_id
+                WHERE rs.route_id = :route_id
+                ORDER BY rs.position
+                """
+            ),
+            {"route_id": route.id},
+        ).all()
+        line_points = [(float(row.lng), float(row.lat)) for row in coords_rows]
+        route.geometry = _linestring(line_points)
+        route.updated_at = _now()
+        count += 1
+    return count
+
+
 def load_payload(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed Crimea geography and places")
+    parser = argparse.ArgumentParser(description="Seed Crimea geography, places, and routes")
     parser.add_argument("--file", type=Path, default=DEFAULT_SEED)
     parser.add_argument(
         "--places-only",
@@ -252,9 +352,25 @@ def main() -> None:
         places_payload = payload.get("places", payload if isinstance(payload, list) else [])
         if isinstance(payload, list):
             places_payload = payload
-        count = upsert_places(session, region, localities, categories, places_payload)
+        places_count = upsert_places(session, region, localities, categories, places_payload)
+        places_by_slug = {
+            row.slug: row
+            for row in session.scalars(select(Place).where(Place.region_id == region.id)).all()
+        }
+        routes_count = 0
+        if not args.places_only:
+            routes_count = upsert_routes(
+                session,
+                region,
+                places_by_slug,
+                payload.get("routes", []),
+            )
         session.commit()
-        print(f"Seed OK: country={country.code} region={region.slug} places_upserted={count}")
+        print(
+            "Seed OK: "
+            f"country={country.code} region={region.slug} "
+            f"places_upserted={places_count} routes_upserted={routes_count}"
+        )
 
 
 if __name__ == "__main__":

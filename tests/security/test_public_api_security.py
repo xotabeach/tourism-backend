@@ -31,6 +31,13 @@ SQLI_PAYLOADS = [
     "'; SELECT pg_sleep(5) --",
 ]
 
+XSS_LIKE_PAYLOADS = [
+    "<script>alert(1)</script>",
+    '"><img src=x onerror=alert(1)>',
+    "javascript:alert(1)",
+    "<svg/onload=alert(1)>",
+]
+
 
 async def _deps_available() -> bool:
     try:
@@ -141,3 +148,52 @@ async def test_malicious_sort_like_strings_in_q_do_not_500(live_app: object) -> 
             params={"q": "name; DROP TABLE places--", "limit": 1},
         )
         assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", SQLI_PAYLOADS)
+async def test_routes_search_treats_sqli_as_literal(live_app: object, payload: str) -> None:
+    transport = ASGITransport(app=live_app)  # type: ignore[arg-type]
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v1/routes", params={"q": payload, "limit": 5})
+        assert response.status_code == 200
+        body = response.json()
+        assert "items" in body
+        assert isinstance(body["items"], list)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", XSS_LIKE_PAYLOADS)
+async def test_routes_and_places_accept_xss_like_search_as_data(
+    live_app: object,
+    payload: str,
+) -> None:
+    """XSS payloads are ordinary query strings; API must not 500 or execute anything."""
+    transport = ASGITransport(app=live_app)  # type: ignore[arg-type]
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        places = await client.get("/api/v1/places", params={"q": payload, "limit": 5})
+        routes = await client.get("/api/v1/routes", params={"q": payload, "limit": 5})
+        assert places.status_code == 200
+        assert routes.status_code == 200
+        assert isinstance(places.json()["items"], list)
+        assert isinstance(routes.json()["items"], list)
+
+
+@pytest.mark.asyncio
+async def test_routes_rejects_oversized_query_and_limit(live_app: object) -> None:
+    transport = ASGITransport(app=live_app)  # type: ignore[arg-type]
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        assert (
+            await client.get("/api/v1/routes", params={"q": "x" * 201})
+        ).status_code == 422
+        assert (await client.get("/api/v1/routes", params={"limit": 101})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_missing_route_is_not_found(live_app: object) -> None:
+    transport = ASGITransport(app=live_app)  # type: ignore[arg-type]
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/v1/routes/{uuid4()}")
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "route_not_found"
+        assert "traceback" not in str(response.json()).lower()
