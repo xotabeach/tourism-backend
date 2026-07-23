@@ -28,6 +28,9 @@ uv run -- ruff format --check .
 printf 'Running MyPy...\n'
 uv run mypy src/tourism_backend
 
+printf 'Running pip-audit...\n'
+uv run pip-audit
+
 printf 'Running Pytest...\n'
 uv run pytest
 

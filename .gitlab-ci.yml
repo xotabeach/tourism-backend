@@ -35,6 +35,35 @@ backend-validate:
     - uv run alembic history
     - test -f Dockerfile
 
+# Open-source dependency audit (does not require paid GitLab Dependency Scanning).
+backend-pip-audit:
+  stage: validate
+  image: python:3.13-bookworm
+  before_script:
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - uv sync --all-extras --dev
+    - uv run pip-audit
+  # Fail the pipeline on known vulnerable deps; document exceptions in
+  # tourism-platform/docs/security/exceptions/ if a temporary waiver is needed.
+  allow_failure: false
+
+# Optional: enable GitLab Secret Detection / SAST templates when the group tier
+# provides them. Until confirmed, do not assume paid scanners are available.
+# include:
+#   - template: Security/Secret-Detection.gitlab-ci.yml
+#   - template: Jobs/SAST.gitlab-ci.yml
+
+# Suggested OSS container scan (enable when Trivy is available on runners):
+# backend-trivy:
+#   stage: build
+#   image: aquasec/trivy:latest
+#   script:
+#     - trivy image --exit-code 1 --severity HIGH,CRITICAL tourism-backend:ci
+#   needs: ["backend-image"]
+#   allow_failure: false
+
 backend-image:
   stage: build
   image: docker:27-cli

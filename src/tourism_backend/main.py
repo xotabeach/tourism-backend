@@ -26,6 +26,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or get_settings()
+    if settings is not None:
+        from tourism_backend.config import validate_settings
+
+        validate_settings(resolved_settings)
     configure_logging(resolved_settings)
 
     app = FastAPI(

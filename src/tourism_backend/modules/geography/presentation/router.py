@@ -19,7 +19,7 @@ async def get_countries(session: DbSession) -> list[CountryOut]:
 @router.get("/regions", response_model=list[RegionOut])
 async def get_regions(
     session: DbSession,
-    country_code: str | None = Query(default=None),
+    country_code: str | None = Query(default=None, max_length=8),
 ) -> list[RegionOut]:
     return await geography_service.list_regions(session, country_code=country_code)
 
@@ -27,6 +27,6 @@ async def get_regions(
 @router.get("/localities", response_model=list[LocalityOut])
 async def get_localities(
     session: DbSession,
-    region_slug: str = Query(...),
+    region_slug: str = Query(..., max_length=128),
 ) -> list[LocalityOut]:
     return await geography_service.list_localities(session, region_slug=region_slug)

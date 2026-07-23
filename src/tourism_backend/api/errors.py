@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Sequence
 from typing import Any
 
@@ -73,7 +74,26 @@ async def validation_exception_handler(
     )
 
 
+async def unhandled_exception_handler(
+    _request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    # Do not leak stack traces, paths, or SQL to clients.
+    logging.getLogger("tourism_backend.errors").exception(
+        "unhandled_exception",
+        exc_info=exc,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content=_error_body(
+            code="internal_error",
+            message="Internal server error",
+        ),
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(Exception, unhandled_exception_handler)

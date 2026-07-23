@@ -21,12 +21,12 @@ async def get_categories(session: DbSession) -> list[CategoryOut]:
 @router.get("/places", response_model=PlaceListOut)
 async def get_places(
     session: DbSession,
-    region_slug: str | None = Query(default=None),
-    locality_slug: str | None = Query(default=None),
-    category: str | None = Query(default=None),
-    q: str | None = Query(default=None),
+    region_slug: str | None = Query(default=None, max_length=128),
+    locality_slug: str | None = Query(default=None, max_length=128),
+    category: str | None = Query(default=None, max_length=128),
+    q: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=10_000),
 ) -> PlaceListOut:
     return await places_service.list_places(
         session,
