@@ -183,9 +183,7 @@ async def test_routes_and_places_accept_xss_like_search_as_data(
 async def test_routes_rejects_oversized_query_and_limit(live_app: object) -> None:
     transport = ASGITransport(app=live_app)  # type: ignore[arg-type]
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        assert (
-            await client.get("/api/v1/routes", params={"q": "x" * 201})
-        ).status_code == 422
+        assert (await client.get("/api/v1/routes", params={"q": "x" * 201})).status_code == 422
         assert (await client.get("/api/v1/routes", params={"limit": 101})).status_code == 422
 
 
