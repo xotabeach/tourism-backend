@@ -19,16 +19,29 @@ Python 3.13 и FastAPI.
 ## Быстрый старт
 
 ```bash
+# в tourism-platform
+make init && make up
+
+# в tourism-backend
 cp .env.example .env
 uv sync --all-extras --dev
 uv run alembic upgrade head
+uv run python scripts/seed_crimea.py
 uv run tourism-backend
 ```
+
+По умолчанию local ports: Postgres `5433`, Redis `6380` (см. `.env.example`).
 
 Проверки:
 
 ```bash
 ./scripts/validate.sh
+```
+
+Bulk import позже:
+
+```bash
+uv run python scripts/seed_crimea.py --file data/extra_places.json --places-only
 ```
 
 ## Endpoints
@@ -37,7 +50,13 @@ uv run tourism-backend
 | --- | --- |
 | `GET /health/live` | Liveness probe (`/health` — alias) |
 | `GET /health/ready` | Readiness: PostgreSQL + Redis (`/ready` — alias) |
-| `GET /api/v1` | Versioned API root (business routes grow under `/api/v1`) |
+| `GET /api/v1` | Versioned API root |
+| `GET /api/v1/geography/countries` | Страны |
+| `GET /api/v1/geography/regions` | Регионы (`country_code`) |
+| `GET /api/v1/geography/localities` | Localities (`region_slug`) |
+| `GET /api/v1/categories` | Категории мест |
+| `GET /api/v1/places` | Каталог мест (фильтры region/locality/category/q) |
+| `GET /api/v1/places/{id}` | Карточка места |
 
 OpenAPI: `http://localhost:8000/docs`
 
@@ -52,20 +71,15 @@ src/tourism_backend/
 ├── logging_config.py    # JSON logs
 └── main.py
 alembic/                 # Database migrations
+data/crimea_seed.json    # Representative Crimea seed
+scripts/seed_crimea.py   # Idempotent seed / bulk import
 Dockerfile
 ```
 
-Module packages: `identity`, `users`, `geography`, `places`, `routes`,
-`route_builder`, `route_execution`, `favorites`, `subscriptions`, `media`.
-Layers inside a module (`domain` / `application` / `infrastructure` /
-`presentation`) появляются по мере реализации, без пустых деревьев заранее.
 ## Связанные репозитории
 
 - [`tourism-platform`](../tourism-platform) — архитектура и local Compose.
 - [`tourism-mobile`](../tourism-mobile) — Flutter client.
-
-Migrations живут в этом repository. Отдельный `tourism-database` repository не
-используется.
 
 ## Лицензия
 

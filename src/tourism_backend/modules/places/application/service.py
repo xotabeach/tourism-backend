@@ -1,0 +1,178 @@
+from uuid import UUID
+
+from geoalchemy2 import Geometry
+from geoalchemy2.functions import ST_X, ST_Y
+from sqlalchemy import Select, cast, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from tourism_backend.api.errors import AppError
+from tourism_backend.modules.geography.infrastructure.models import Locality, Region
+from tourism_backend.modules.places.application.schemas import (
+    CategoryOut,
+    PlaceDetailOut,
+    PlaceEntranceOut,
+    PlaceListItemOut,
+    PlaceListOut,
+)
+from tourism_backend.modules.places.infrastructure.models import (
+    Category,
+    Place,
+    PlaceCategory,
+    PlaceEntrance,
+)
+
+
+async def list_categories(session: AsyncSession) -> list[CategoryOut]:
+    rows = await session.scalars(
+        select(Category)
+        .where(Category.status == "active")
+        .order_by(Category.sort_order, Category.name)
+    )
+    return [CategoryOut.model_validate(row) for row in rows.all()]
+
+
+async def _categories_for_places(
+    session: AsyncSession,
+    place_ids: list[UUID],
+) -> dict[UUID, list[CategoryOut]]:
+    if not place_ids:
+        return {}
+    stmt = (
+        select(PlaceCategory.place_id, Category)
+        .join(Category, Category.id == PlaceCategory.category_id)
+        .where(PlaceCategory.place_id.in_(place_ids), Category.status == "active")
+        .order_by(Category.sort_order, Category.name)
+    )
+    mapping: dict[UUID, list[CategoryOut]] = {place_id: [] for place_id in place_ids}
+    for place_id, category in (await session.execute(stmt)).all():
+        mapping[place_id].append(CategoryOut.model_validate(category))
+    return mapping
+
+
+async def _coords_for_place(session: AsyncSession, place_id: UUID) -> tuple[float, float]:
+    geom = cast(Place.location, Geometry)
+    row = (await session.execute(select(ST_X(geom), ST_Y(geom)).where(Place.id == place_id))).one()
+    return float(row[0]), float(row[1])
+
+
+async def list_places(
+    session: AsyncSession,
+    *,
+    region_slug: str | None,
+    locality_slug: str | None,
+    category: str | None,
+    q: str | None,
+    limit: int,
+    offset: int,
+) -> PlaceListOut:
+    stmt: Select[tuple[Place]] = select(Place).where(Place.publication_status == "published")
+    if region_slug:
+        stmt = stmt.join(Region, Region.id == Place.region_id).where(Region.slug == region_slug)
+    if locality_slug:
+        stmt = stmt.join(Locality, Locality.id == Place.locality_id).where(
+            Locality.slug == locality_slug
+        )
+    if category:
+        stmt = (
+            stmt.join(PlaceCategory, PlaceCategory.place_id == Place.id)
+            .join(Category, Category.id == PlaceCategory.category_id)
+            .where((Category.slug == category) | (Category.code == category))
+        )
+    if q:
+        pattern = f"%{q.strip()}%"
+        stmt = stmt.where(Place.name.ilike(pattern))
+
+    count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
+    total = int((await session.execute(count_stmt)).scalar_one())
+
+    places = (
+        await session.scalars(stmt.order_by(Place.name).distinct().limit(limit).offset(offset))
+    ).all()
+    categories = await _categories_for_places(session, [place.id for place in places])
+
+    items: list[PlaceListItemOut] = []
+    for place in places:
+        lng, lat = await _coords_for_place(session, place.id)
+        items.append(
+            PlaceListItemOut(
+                id=place.id,
+                region_id=place.region_id,
+                locality_id=place.locality_id,
+                name=place.name,
+                slug=place.slug,
+                short_description=place.short_description,
+                lng=lng,
+                lat=lat,
+                difficulty=place.difficulty,
+                is_paid=place.is_paid,
+                is_suitable_for_children=place.is_suitable_for_children,
+                publication_status=place.publication_status,
+                categories=categories.get(place.id, []),
+            )
+        )
+    return PlaceListOut(items=items, total=total, limit=limit, offset=offset)
+
+
+async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
+    place = await session.get(Place, place_id)
+    if place is None or place.publication_status != "published":
+        raise AppError(code="place_not_found", message="Place not found", status_code=404)
+
+    lng, lat = await _coords_for_place(session, place.id)
+    categories = (await _categories_for_places(session, [place.id])).get(place.id, [])
+
+    entrance_row = await session.scalar(
+        select(PlaceEntrance).where(
+            PlaceEntrance.place_id == place.id,
+            PlaceEntrance.is_primary.is_(True),
+            PlaceEntrance.status == "active",
+        )
+    )
+    primary_entrance: PlaceEntranceOut | None = None
+    if entrance_row is not None:
+        e_coords = (
+            await session.execute(
+                select(
+                    ST_X(cast(PlaceEntrance.location, Geometry)),
+                    ST_Y(cast(PlaceEntrance.location, Geometry)),
+                ).where(PlaceEntrance.id == entrance_row.id)
+            )
+        ).one()
+        primary_entrance = PlaceEntranceOut(
+            id=entrance_row.id,
+            name=entrance_row.name,
+            entrance_type=entrance_row.entrance_type,
+            is_primary=entrance_row.is_primary,
+            lng=float(e_coords[0]),
+            lat=float(e_coords[1]),
+            address_hint=entrance_row.address_hint,
+        )
+
+    return PlaceDetailOut(
+        id=place.id,
+        region_id=place.region_id,
+        locality_id=place.locality_id,
+        name=place.name,
+        slug=place.slug,
+        short_description=place.short_description,
+        lng=lng,
+        lat=lat,
+        difficulty=place.difficulty,
+        is_paid=place.is_paid,
+        is_suitable_for_children=place.is_suitable_for_children,
+        publication_status=place.publication_status,
+        categories=categories,
+        description=place.description,
+        address=place.address,
+        contact_phone=place.contact_phone,
+        website_url=place.website_url,
+        accessibility=place.accessibility,
+        recommended_equipment=place.recommended_equipment,
+        seasonality=place.seasonality,
+        price_notes=place.price_notes,
+        safety_warnings=place.safety_warnings,
+        temporary_closure_status=place.temporary_closure_status,
+        temporary_closure_reason=place.temporary_closure_reason,
+        freshness_status=place.freshness_status,
+        primary_entrance=primary_entrance,
+    )

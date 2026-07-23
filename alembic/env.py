@@ -5,6 +5,8 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 from tourism_backend.config import get_settings
 from tourism_backend.db.base import Base
+from tourism_backend.modules.geography.infrastructure import models as geography_models
+from tourism_backend.modules.places.infrastructure import models as places_models
 
 config = context.config
 
@@ -14,6 +16,8 @@ if config.config_file_name is not None:
 settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url_sync)
 
+# Ensure model modules are imported for metadata discovery.
+_ = (geography_models, places_models)
 target_metadata = Base.metadata
 
 

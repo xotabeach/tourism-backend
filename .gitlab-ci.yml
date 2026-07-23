@@ -2,14 +2,35 @@ stages:
   - validate
   - build
 
+variables:
+  POSTGRES_DB: tourism
+  POSTGRES_USER: tourism
+  POSTGRES_PASSWORD: local-tourism-password
+  DATABASE_URL: postgresql+asyncpg://tourism:local-tourism-password@postgres:5432/tourism
+  DATABASE_URL_SYNC: postgresql+psycopg://tourism:local-tourism-password@postgres:5432/tourism
+  REDIS_URL: redis://redis:6379/0
+
 backend-validate:
   stage: validate
   image: python:3.13-bookworm
+  services:
+    - name: postgis/postgis:16-3.4
+      alias: postgres
+    - name: redis:7-alpine
+      alias: redis
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
     - curl -LsSf https://astral.sh/uv/install.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
+    - |
+      for i in $(seq 1 30); do
+        uv run python -c "import psycopg; psycopg.connect('postgresql://tourism:local-tourism-password@postgres:5432/tourism').close()" && break
+        sleep 2
+      done
   script:
+    - uv sync --all-extras --dev
+    - uv run alembic upgrade head
+    - uv run python scripts/seed_crimea.py
     - ./scripts/validate.sh
     - uv run alembic history
     - test -f Dockerfile

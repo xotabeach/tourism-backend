@@ -1,0 +1,265 @@
+{
+  "country": {
+    "code": "RU",
+    "slug": "russia",
+    "name": "Россия",
+    "default_locale": "ru",
+    "timezone": "Europe/Moscow"
+  },
+  "region": {
+    "slug": "crimea",
+    "name": "Республика Крым",
+    "administrative_code": "91",
+    "timezone": "Europe/Simferopol",
+    "center": {"lng": 34.1, "lat": 45.0}
+  },
+  "localities": [
+    {"slug": "simferopol", "name": "Симферополь", "type": "city", "center": {"lng": 34.1, "lat": 44.95}},
+    {"slug": "yalta", "name": "Ялта", "type": "city", "center": {"lng": 34.17, "lat": 44.5}},
+    {"slug": "sevastopol", "name": "Севастополь", "type": "city", "center": {"lng": 33.52, "lat": 44.62}},
+    {"slug": "evpatoria", "name": "Евпатория", "type": "city", "center": {"lng": 33.37, "lat": 45.19}},
+    {"slug": "feodosia", "name": "Феодосия", "type": "city", "center": {"lng": 35.38, "lat": 45.03}},
+    {"slug": "bakhchisaray", "name": "Бахчисарай", "type": "town", "center": {"lng": 33.86, "lat": 44.76}},
+    {"slug": "sudak", "name": "Судак", "type": "town", "center": {"lng": 34.97, "lat": 44.85}},
+    {"slug": "alushta", "name": "Алушта", "type": "town", "center": {"lng": 34.41, "lat": 44.67}}
+  ],
+  "categories": [
+    {"code": "nature", "slug": "nature", "name": "Природа", "sort_order": 10, "icon_key": "nature"},
+    {"code": "museum", "slug": "museum", "name": "Музеи", "sort_order": 20, "icon_key": "museum"},
+    {"code": "fortress", "slug": "fortress", "name": "Крепости", "sort_order": 30, "icon_key": "castle"},
+    {"code": "palace", "slug": "palace", "name": "Дворцы", "sort_order": 40, "icon_key": "palace"},
+    {"code": "viewpoint", "slug": "viewpoint", "name": "Смотровые", "sort_order": 50, "icon_key": "viewpoint"},
+    {"code": "beach", "slug": "beach", "name": "Пляжи", "sort_order": 60, "icon_key": "beach"},
+    {"code": "park", "slug": "park", "name": "Парки", "sort_order": 70, "icon_key": "park"}
+  ],
+  "places": [
+    {
+      "slug": "swallow-nest",
+      "name": "Ласточкино гнездо",
+      "locality_slug": "yalta",
+      "categories": ["viewpoint", "palace"],
+      "short_description": "Символ Южного берега Крыма на Аврориной скале.",
+      "description": "Декоративный замок начала XX века над морем у посёлка Гаспра.",
+      "lng": 34.1235,
+      "lat": 44.4307,
+      "difficulty": "easy",
+      "is_paid": true,
+      "is_suitable_for_children": true,
+      "seasonality": ["spring", "summer", "autumn"]
+    },
+    {
+      "slug": "vorontsov-palace",
+      "name": "Воронцовский дворец",
+      "locality_slug": "yalta",
+      "categories": ["palace", "park"],
+      "short_description": "Дворец и парк в Алупке у подножия Ай-Петри.",
+      "description": "Архитектурный ансамбль XIX века с парком и видом на море.",
+      "lng": 34.0556,
+      "lat": 44.4197,
+      "difficulty": "easy",
+      "is_paid": true,
+      "is_suitable_for_children": true
+    },
+    {
+      "slug": "livadia-palace",
+      "name": "Ливадийский дворец",
+      "locality_slug": "yalta",
+      "categories": ["palace", "museum"],
+      "short_description": "Белая резиденция Романовых и место Ялтинской конференции.",
+      "lng": 34.1436,
+      "lat": 44.4678,
+      "difficulty": "easy",
+      "is_paid": true
+    },
+    {
+      "slug": "massandra-palace",
+      "name": "Массандровский дворец",
+      "locality_slug": "yalta",
+      "categories": ["palace"],
+      "short_description": "Дворец Александра III в Массандре.",
+      "lng": 34.1839,
+      "lat": 44.5164,
+      "difficulty": "easy",
+      "is_paid": true
+    },
+    {
+      "slug": "ai-petri",
+      "name": "Ай-Петри",
+      "locality_slug": "yalta",
+      "categories": ["nature", "viewpoint"],
+      "short_description": "Горный пик с панорамой ЮБК.",
+      "description": "Популярная вершина Крымских гор; учитывайте погоду и канатную дорогу.",
+      "lng": 34.055,
+      "lat": 44.451,
+      "difficulty": "moderate",
+      "is_paid": false,
+      "recommended_equipment": ["warm_clothes", "water"],
+      "safety_warnings": ["strong_wind", "steep_edges"]
+    },
+    {
+      "slug": "khan-palace",
+      "name": "Ханский дворец",
+      "locality_slug": "bakhchisaray",
+      "categories": ["palace", "museum"],
+      "short_description": "Резиденция крымских ханов в Бахчисарае.",
+      "lng": 33.871,
+      "lat": 44.748,
+      "difficulty": "easy",
+      "is_paid": true
+    },
+    {
+      "slug": "chufut-kale",
+      "name": "Чуфут-Кале",
+      "locality_slug": "bakhchisaray",
+      "categories": ["fortress", "nature"],
+      "short_description": "Пещерный город над Бахчисараем.",
+      "lng": 33.923,
+      "lat": 44.741,
+      "difficulty": "moderate",
+      "recommended_equipment": ["comfortable_shoes", "water"]
+    },
+    {
+      "slug": "sudak-fortress",
+      "name": "Генуэзская крепость",
+      "locality_slug": "sudak",
+      "categories": ["fortress"],
+      "short_description": "Средневековая крепость на горе над Судаком.",
+      "lng": 34.986,
+      "lat": 44.842,
+      "difficulty": "moderate",
+      "is_paid": true
+    },
+    {
+      "slug": "novy-svet",
+      "name": "Новый Свет и тропа Голицына",
+      "locality_slug": "sudak",
+      "categories": ["nature", "viewpoint"],
+      "short_description": "Бухты и скальная тропа у Нового Света.",
+      "lng": 34.911,
+      "lat": 44.826,
+      "difficulty": "moderate",
+      "recommended_equipment": ["comfortable_shoes", "water"]
+    },
+    {
+      "slug": "kara-dag",
+      "name": "Кара-Даг",
+      "locality_slug": "feodosia",
+      "categories": ["nature"],
+      "short_description": "Вулканический массив и заповедник у Коктебеля.",
+      "lng": 35.2,
+      "lat": 44.93,
+      "difficulty": "hard",
+      "safety_warnings": ["restricted_zones", "heat"],
+      "recommended_equipment": ["guide", "water", "hat"]
+    },
+    {
+      "slug": "feodosia-gallery",
+      "name": "Галерея Айвазовского",
+      "locality_slug": "feodosia",
+      "categories": ["museum"],
+      "short_description": "Национальная картинная галерея в Феодосии.",
+      "lng": 35.379,
+      "lat": 45.032,
+      "difficulty": "easy",
+      "is_paid": true
+    },
+    {
+      "slug": "tarkhankut",
+      "name": "Мыс Тарханкут",
+      "locality_slug": "evpatoria",
+      "categories": ["nature", "beach", "viewpoint"],
+      "short_description": "Скалы, бухты и прозрачная вода западного Крыма.",
+      "lng": 32.53,
+      "lat": 45.35,
+      "difficulty": "moderate",
+      "recommended_equipment": ["water", "sun_protection"]
+    },
+    {
+      "slug": "evpatoria-embankment",
+      "name": "Набережная Евпатории",
+      "locality_slug": "evpatoria",
+      "categories": ["beach", "park"],
+      "short_description": "Променад и пляжная линия курорта.",
+      "lng": 33.36,
+      "lat": 45.2,
+      "difficulty": "easy",
+      "is_suitable_for_children": true
+    },
+    {
+      "slug": "khersones",
+      "name": "Херсонес Таврический",
+      "locality_slug": "sevastopol",
+      "categories": ["museum", "fortress"],
+      "short_description": "Античный город-музей на берегу Севастополя.",
+      "lng": 33.49,
+      "lat": 44.61,
+      "difficulty": "easy",
+      "is_paid": true
+    },
+    {
+      "slug": "sapun-mountain",
+      "name": "Сапун-гора",
+      "locality_slug": "sevastopol",
+      "categories": ["museum", "viewpoint"],
+      "short_description": "Мемориальный комплекс обороны Севастополя.",
+      "lng": 33.59,
+      "lat": 44.55,
+      "difficulty": "easy"
+    },
+    {
+      "slug": "balaklava-bay",
+      "name": "Балаклавская бухта",
+      "locality_slug": "sevastopol",
+      "categories": ["viewpoint", "nature"],
+      "short_description": "Узкая бухта и набережная Балаклавы.",
+      "lng": 33.595,
+      "lat": 44.5,
+      "difficulty": "easy"
+    },
+    {
+      "slug": "simferopol-scythian-naples",
+      "name": "Неаполь Скифский",
+      "locality_slug": "simferopol",
+      "categories": ["museum", "fortress"],
+      "short_description": "Городище и музей под открытым небом в Симферополе.",
+      "lng": 34.14,
+      "lat": 44.94,
+      "difficulty": "easy",
+      "is_paid": true
+    },
+    {
+      "slug": "marble-cave",
+      "name": "Мраморная пещера",
+      "locality_slug": "simferopol",
+      "categories": ["nature"],
+      "short_description": "Карстовая пещера на нижнем плато Чатыр-Дага.",
+      "lng": 34.41,
+      "lat": 44.8,
+      "difficulty": "easy",
+      "is_paid": true,
+      "recommended_equipment": ["warm_clothes"]
+    },
+    {
+      "slug": "demerdzhi",
+      "name": "Долина привидений",
+      "locality_slug": "alushta",
+      "categories": ["nature", "viewpoint"],
+      "short_description": "Скальные фигуры на склоне Демерджи.",
+      "lng": 34.41,
+      "lat": 44.75,
+      "difficulty": "moderate",
+      "recommended_equipment": ["comfortable_shoes", "water"]
+    },
+    {
+      "slug": "alushta-promenade",
+      "name": "Променад Алушты",
+      "locality_slug": "alushta",
+      "categories": ["beach", "park"],
+      "short_description": "Набережная и пляжная зона Алушты.",
+      "lng": 34.41,
+      "lat": 44.68,
+      "difficulty": "easy",
+      "is_suitable_for_children": true
+    }
+  ]
+}
