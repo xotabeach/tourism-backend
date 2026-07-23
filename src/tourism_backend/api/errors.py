@@ -50,11 +50,9 @@ async def http_exception_handler(
 ) -> JSONResponse:
     detail = exc.detail
     message = detail if isinstance(detail, str) else "HTTP error"
-    details: dict[str, Any] | list[Any] | None
-    if isinstance(detail, (dict, list)):
-        details = detail
-    else:
-        details = None
+    details: dict[str, Any] | list[Any] | None = (
+        detail if isinstance(detail, (dict, list)) else None
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content=_error_body(code="http_error", message=message, details=details),

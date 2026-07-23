@@ -38,6 +38,9 @@ uv run tourism-backend
 ./scripts/validate.sh
 ```
 
+Стиль и DX: см. `tourism-platform/docs/development-environment.md`,
+`python-code-style.md`, `python-testing-guide.md`.
+
 Bulk import позже:
 
 ```bash

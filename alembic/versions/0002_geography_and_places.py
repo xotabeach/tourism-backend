@@ -3,10 +3,9 @@
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from alembic import op
 from geoalchemy2 import Geography
 from sqlalchemy.dialects import postgresql
-
-from alembic import op
 
 revision: str = "0002_geography_and_places"
 down_revision: str | Sequence[str] | None = "0001_enable_postgis"

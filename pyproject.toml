@@ -25,6 +25,7 @@ dev = [
     "mypy>=1.14",
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
+    "pytest-cov>=6.0",
     "ruff>=0.9",
 ]
 
@@ -41,9 +42,35 @@ package = true
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+    "B",      # bugbear
+    "A",      # flake8-builtins
+    "C4",     # comprehensions
+    "SIM",    # simplify
+    "ASYNC",  # asyncio
+    "PT",     # pytest style
+    "RET",    # return
+    "RSE",    # raise
+    "T20",    # no print
+]
+ignore = [
+    "A003",   # class attribute shadowing builtins (id, type, ...) common in models
+]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/**" = ["E501", "T20"]
+"tests/**" = ["S101", "T20"]
+"scripts/**" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tourism_backend"]
 
 [tool.mypy]
 python_version = "3.13"
@@ -54,6 +81,15 @@ packages = ["tourism_backend"]
 module = ["alembic.*"]
 ignore_missing_imports = true
 
+[tool.pyright]
+include = ["src"]
+exclude = [".venv", "alembic/versions"]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "--cov=tourism_backend --cov-report=term-missing:skip-covered --cov-fail-under=0"

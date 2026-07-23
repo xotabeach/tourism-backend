@@ -1,8 +1,8 @@
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from alembic import context
 from tourism_backend.config import get_settings
 from tourism_backend.db.base import Base
 from tourism_backend.modules.geography.infrastructure import models as geography_models
