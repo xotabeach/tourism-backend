@@ -31,6 +31,7 @@ class PlaceListItemOut(BaseModel):
     is_suitable_for_children: bool | None
     publication_status: str
     categories: list[CategoryOut] = Field(default_factory=list)
+    cover_image_url: str | None = None
 
 
 class PlaceEntranceOut(BaseModel):

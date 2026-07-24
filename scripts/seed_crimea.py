@@ -27,11 +27,13 @@ from tourism_backend.modules.places.infrastructure.models import (
     Place,
     PlaceCategory,
     PlaceEntrance,
+    PlaceImage,
 )
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SEED = ROOT / "data" / "crimea_seed.json"
+MEDIA_MANIFEST = ROOT / "data" / "media" / "manifest.json"
 
 
 def _now() -> datetime:
@@ -212,6 +214,61 @@ def upsert_places(
     return count
 
 
+def upsert_place_images(
+    session: Session,
+    places_by_slug: dict[str, Place],
+    assets: list[dict[str, Any]],
+) -> int:
+    """Upsert cover photos from data/media/manifest.json into place_images."""
+    count = 0
+    for asset in assets:
+        place_slug = asset.get("place_slug")
+        if not place_slug:
+            continue
+        place = places_by_slug.get(place_slug)
+        if place is None:
+            raise SystemExit(f"Unknown place_slug in media manifest: {place_slug}")
+
+        source_url = f"/media/{asset['file']}"
+        image = session.scalar(
+            select(PlaceImage).where(
+                PlaceImage.place_id == place.id,
+                PlaceImage.source_url == source_url,
+            )
+        )
+        if image is None:
+            image = PlaceImage(
+                id=uuid4(),
+                place_id=place.id,
+                created_at=_now(),
+                updated_at=_now(),
+            )
+            session.add(image)
+
+        if bool(asset.get("is_cover", False)):
+            for existing in session.scalars(
+                select(PlaceImage).where(
+                    PlaceImage.place_id == place.id,
+                    PlaceImage.is_cover.is_(True),
+                    PlaceImage.id != image.id,
+                )
+            ).all():
+                existing.is_cover = False
+                existing.updated_at = _now()
+
+        image.kind = "photo"
+        image.alt_text = asset.get("alt_text")
+        image.author = asset.get("author")
+        image.license = asset.get("license", "design-asset")
+        image.source_url = source_url
+        image.sort_order = int(asset.get("sort_order", 0))
+        image.is_cover = bool(asset.get("is_cover", False))
+        image.status = "active"
+        image.updated_at = _now()
+        count += 1
+    return count
+
+
 def _linestring(points: list[tuple[float, float]]) -> WKTElement | None:
     if len(points) < 2:
         return None
@@ -357,6 +414,10 @@ def main() -> None:
             row.slug: row
             for row in session.scalars(select(Place).where(Place.region_id == region.id)).all()
         }
+        media_assets: list[dict[str, Any]] = []
+        if MEDIA_MANIFEST.exists():
+            media_assets = load_payload(MEDIA_MANIFEST).get("assets", [])
+        images_count = upsert_place_images(session, places_by_slug, media_assets)
         routes_count = 0
         if not args.places_only:
             routes_count = upsert_routes(
@@ -369,7 +430,8 @@ def main() -> None:
         print(
             "Seed OK: "
             f"country={country.code} region={region.slug} "
-            f"places_upserted={places_count} routes_upserted={routes_count}"
+            f"places_upserted={places_count} images_upserted={images_count} "
+            f"routes_upserted={routes_count}"
         )
 
 

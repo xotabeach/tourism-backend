@@ -1,0 +1,45 @@
+{
+  "assets": [
+    {
+      "file": "welcome-sunset.jpg",
+      "key": "welcome-sunset",
+      "alt_text": "Закат над морем с каменистого берега Крыма",
+      "place_slug": "ai-petri",
+      "is_cover": true,
+      "author": null
+    },
+    {
+      "file": "coast-pine-twilight.jpg",
+      "key": "coast-pine-twilight",
+      "alt_text": "Сосна на скале над морем в сумерках",
+      "place_slug": "swallow-nest",
+      "is_cover": true,
+      "author": "Denis Belitsky"
+    },
+    {
+      "file": "cape-fiolent-fog.jpg",
+      "key": "cape-fiolent-fog",
+      "alt_text": "Цветущий куст и туман над морем у скал",
+      "place_slug": "novy-svet",
+      "is_cover": true,
+      "author": "Alexander Zelinskiy"
+    },
+    {
+      "file": "coastal-bay-hills.jpg",
+      "key": "coastal-bay-hills",
+      "alt_text": "Зелёные холмы и бухта с горами на горизонте",
+      "place_slug": "chufut-kale",
+      "is_cover": true,
+      "author": null
+    },
+    {
+      "file": "traveler-portrait-bw.jpg",
+      "key": "traveler-portrait-bw",
+      "alt_text": "Портрет путешественника у моря",
+      "place_slug": null,
+      "is_cover": false,
+      "author": null,
+      "app_role": "traveler_avatar"
+    }
+  ]
+}

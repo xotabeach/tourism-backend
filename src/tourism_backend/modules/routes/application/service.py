@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.geography.infrastructure.models import Region
-from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.places.infrastructure.models import Place, PlaceImage
 from tourism_backend.modules.routes.application.schemas import (
     RouteDetailOut,
     RouteListItemOut,
@@ -37,7 +37,46 @@ async def _stops_count_map(
     return {route_id: int(count) for route_id, count in (await session.execute(stmt)).all()}
 
 
-def _to_list_item(route: Route, stops_count: int) -> RouteListItemOut:
+async def _cover_urls_for_routes(
+    session: AsyncSession,
+    route_ids: list[UUID],
+) -> dict[UUID, str]:
+    """Prefer cover of the earliest stop that has an active cover photo."""
+    if not route_ids:
+        return {}
+    ranked = (
+        select(
+            RouteStop.route_id.label("route_id"),
+            PlaceImage.source_url.label("source_url"),
+            func.row_number()
+            .over(
+                partition_by=RouteStop.route_id,
+                order_by=RouteStop.position,
+            )
+            .label("rn"),
+        )
+        .join(PlaceImage, PlaceImage.place_id == RouteStop.place_id)
+        .where(
+            RouteStop.route_id.in_(route_ids),
+            PlaceImage.status == "active",
+            PlaceImage.is_cover.is_(True),
+            PlaceImage.source_url.is_not(None),
+        )
+        .subquery()
+    )
+    stmt = select(ranked.c.route_id, ranked.c.source_url).where(ranked.c.rn == 1)
+    return {
+        route_id: source_url
+        for route_id, source_url in (await session.execute(stmt)).all()
+        if source_url
+    }
+
+
+def _to_list_item(
+    route: Route,
+    stops_count: int,
+    cover_image_url: str | None = None,
+) -> RouteListItemOut:
     return RouteListItemOut(
         id=route.id,
         region_id=route.region_id,
@@ -57,6 +96,7 @@ def _to_list_item(route: Route, stops_count: int) -> RouteListItemOut:
         seasonality=route.seasonality,
         stops_count=stops_count,
         author_label=route.author_label,
+        cover_image_url=cover_image_url,
     )
 
 
@@ -85,8 +125,12 @@ async def list_routes(
     total = int((await session.execute(count_stmt)).scalar_one())
 
     routes = (await session.scalars(stmt.order_by(Route.name).limit(limit).offset(offset))).all()
-    counts = await _stops_count_map(session, [route.id for route in routes])
-    items = [_to_list_item(route, counts.get(route.id, 0)) for route in routes]
+    route_ids = [route.id for route in routes]
+    counts = await _stops_count_map(session, route_ids)
+    covers = await _cover_urls_for_routes(session, route_ids)
+    items = [
+        _to_list_item(route, counts.get(route.id, 0), covers.get(route.id)) for route in routes
+    ]
     return RouteListOut(items=items, total=total, limit=limit, offset=offset)
 
 
@@ -123,15 +167,15 @@ async def get_route(session: AsyncSession, route_id: UUID) -> RouteDetailOut:
             visit_duration_minutes=stop.visit_duration_minutes,
             note=stop.note,
             is_optional=stop.is_optional,
-            lng=float(lng),
-            lat=float(lat),
+            lng=float(lng) if lng is not None else None,
+            lat=float(lat) if lat is not None else None,
         )
         for stop, place, lng, lat in stops_rows
     ]
-
-    item = _to_list_item(route, len(stops))
+    covers = await _cover_urls_for_routes(session, [route.id])
+    base = _to_list_item(route, len(stops), covers.get(route.id))
     return RouteDetailOut(
-        **item.model_dump(),
+        **base.model_dump(),
         description=route.description,
         budget_notes=route.budget_notes,
         accessibility=route.accessibility,

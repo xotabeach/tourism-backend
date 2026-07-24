@@ -19,6 +19,7 @@ from tourism_backend.modules.places.infrastructure.models import (
     Place,
     PlaceCategory,
     PlaceEntrance,
+    PlaceImage,
 )
 
 
@@ -29,6 +30,25 @@ async def list_categories(session: AsyncSession) -> list[CategoryOut]:
         .order_by(Category.sort_order, Category.name)
     )
     return [CategoryOut.model_validate(row) for row in rows.all()]
+
+
+async def _cover_urls_for_places(
+    session: AsyncSession,
+    place_ids: list[UUID],
+) -> dict[UUID, str]:
+    if not place_ids:
+        return {}
+    stmt = select(PlaceImage.place_id, PlaceImage.source_url).where(
+        PlaceImage.place_id.in_(place_ids),
+        PlaceImage.status == "active",
+        PlaceImage.is_cover.is_(True),
+        PlaceImage.source_url.is_not(None),
+    )
+    return {
+        place_id: source_url
+        for place_id, source_url in (await session.execute(stmt)).all()
+        if source_url
+    }
 
 
 async def _categories_for_places(
@@ -88,7 +108,9 @@ async def list_places(
     places = (
         await session.scalars(stmt.order_by(Place.name).distinct().limit(limit).offset(offset))
     ).all()
-    categories = await _categories_for_places(session, [place.id for place in places])
+    place_ids = [place.id for place in places]
+    categories = await _categories_for_places(session, place_ids)
+    covers = await _cover_urls_for_places(session, place_ids)
 
     items: list[PlaceListItemOut] = []
     for place in places:
@@ -108,6 +130,7 @@ async def list_places(
                 is_suitable_for_children=place.is_suitable_for_children,
                 publication_status=place.publication_status,
                 categories=categories.get(place.id, []),
+                cover_image_url=covers.get(place.id),
             )
         )
     return PlaceListOut(items=items, total=total, limit=limit, offset=offset)
@@ -120,6 +143,7 @@ async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
 
     lng, lat = await _coords_for_place(session, place.id)
     categories = (await _categories_for_places(session, [place.id])).get(place.id, [])
+    covers = await _cover_urls_for_places(session, [place.id])
 
     entrance_row = await session.scalar(
         select(PlaceEntrance).where(
@@ -162,6 +186,7 @@ async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
         is_suitable_for_children=place.is_suitable_for_children,
         publication_status=place.publication_status,
         categories=categories,
+        cover_image_url=covers.get(place.id),
         description=place.description,
         address=place.address,
         contact_phone=place.contact_phone,

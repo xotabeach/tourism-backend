@@ -37,6 +37,7 @@ class RouteListItemOut(BaseModel):
     seasonality: list[str] | None
     stops_count: int
     author_label: str | None
+    cover_image_url: str | None = None
 
 
 class RouteDetailOut(RouteListItemOut):
