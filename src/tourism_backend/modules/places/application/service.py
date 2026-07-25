@@ -75,6 +75,25 @@ async def _coords_for_place(session: AsyncSession, place_id: UUID) -> tuple[floa
     return float(row[0]), float(row[1])
 
 
+async def _coords_for_places(
+    session: AsyncSession,
+    place_ids: list[UUID],
+) -> dict[UUID, tuple[float, float]]:
+    if not place_ids:
+        return {}
+    geom = cast(Place.location, Geometry)
+    rows = (
+        await session.execute(
+            select(Place.id, ST_X(geom), ST_Y(geom)).where(Place.id.in_(place_ids))
+        )
+    ).all()
+    return {
+        place_id: (float(lng), float(lat))
+        for place_id, lng, lat in rows
+        if lng is not None and lat is not None
+    }
+
+
 async def list_places(
     session: AsyncSession,
     *,
@@ -111,12 +130,13 @@ async def list_places(
         )
     ).all()
     place_ids = [place.id for place in places]
+    coords = await _coords_for_places(session, place_ids)
     categories = await _categories_for_places(session, place_ids)
     covers = await _cover_urls_for_places(session, place_ids)
 
     items: list[PlaceListItemOut] = []
     for place in places:
-        lng, lat = await _coords_for_place(session, place.id)
+        lng, lat = coords[place.id]
         items.append(
             PlaceListItemOut(
                 id=place.id,
