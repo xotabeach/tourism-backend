@@ -3,12 +3,17 @@ from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
+from geoalchemy2.elements import WKTElement
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tourism_backend.config import Settings
 from tourism_backend.db.redis import create_redis_client
 from tourism_backend.main import create_app
+from tourism_backend.modules.geography.infrastructure.models import Region
+from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -103,3 +108,61 @@ async def test_routes_filters_and_unpublished_not_found(live_app: object) -> Non
 
         oversized = await client.get("/api/v1/routes", params={"q": "x" * 201})
         assert oversized.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_public_route_with_unpublished_stop_is_not_exposed(live_app: object) -> None:
+    session_factory = live_app.state.session_factory  # type: ignore[attr-defined]
+    route_id = uuid4()
+    place_id = uuid4()
+    async with session_factory() as session:
+        region_id = await session.scalar(select(Region.id).where(Region.slug == "crimea"))
+        assert region_id is not None
+        place = Place(
+            id=place_id,
+            region_id=region_id,
+            name="Private review place",
+            slug=f"private-review-{place_id}",
+            location=WKTElement("POINT(34.0 44.0)", srid=4326),
+            publication_status="draft",
+            freshness_status="fresh",
+        )
+        route = Route(
+            id=route_id,
+            region_id=region_id,
+            name="Route with private stop",
+            slug=f"private-stop-route-{route_id}",
+            source="editorial",
+            visibility="public",
+            lifecycle_status="active",
+            freshness_status="fresh",
+        )
+        session.add_all([place, route])
+        await session.flush()
+        session.add(
+            RouteStop(
+                route_id=route_id,
+                place_id=place_id,
+                position=1,
+            )
+        )
+        await session.commit()
+
+    try:
+        transport = ASGITransport(app=live_app)  # type: ignore[arg-type]
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            detail = await client.get(f"/api/v1/routes/{route_id}")
+            listed = await client.get("/api/v1/routes", params={"limit": 100})
+
+        assert detail.status_code == 404
+        assert all(item["id"] != str(route_id) for item in listed.json()["items"])
+        assert "Private review place" not in str(listed.json())
+    finally:
+        async with session_factory() as session:
+            stored_route = await session.get(Route, route_id)
+            stored_place = await session.get(Place, place_id)
+            if stored_route is not None:
+                await session.delete(stored_route)
+            if stored_place is not None:
+                await session.delete(stored_place)
+            await session.commit()

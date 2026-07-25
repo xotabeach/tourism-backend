@@ -38,6 +38,18 @@ def _error_body(
     return body
 
 
+def _safe_validation_details(exc: RequestValidationError) -> list[dict[str, Any]]:
+    """Keep the validation contract useful without reflecting submitted values."""
+    return [
+        {
+            "type": error.get("type", "validation_error"),
+            "loc": list(error.get("loc", ())),
+            "msg": error.get("msg", "Invalid value"),
+        }
+        for error in exc.errors()
+    ]
+
+
 async def app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
@@ -65,11 +77,11 @@ async def validation_exception_handler(
     exc: RequestValidationError,
 ) -> JSONResponse:
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content=_error_body(
             code="validation_error",
             message="Request validation failed",
-            details=exc.errors(),
+            details=_safe_validation_details(exc),
         ),
     )
 

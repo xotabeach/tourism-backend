@@ -106,7 +106,9 @@ async def list_places(
     total = int((await session.execute(count_stmt)).scalar_one())
 
     places = (
-        await session.scalars(stmt.order_by(Place.name).distinct().limit(limit).offset(offset))
+        await session.scalars(
+            stmt.order_by(Place.name, Place.id).distinct().limit(limit).offset(offset)
+        )
     ).all()
     place_ids = [place.id for place in places]
     categories = await _categories_for_places(session, place_ids)

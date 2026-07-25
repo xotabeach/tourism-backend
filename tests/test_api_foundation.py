@@ -1,6 +1,7 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from tourism_backend.api.deps import get_db_session
 from tourism_backend.api.errors import AppError
 from tourism_backend.main import create_app
 
@@ -47,3 +48,23 @@ async def test_http_exception_uses_error_envelope(app) -> None:
     body = response.json()
     assert body["error"]["code"] == "http_error"
     assert "message" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_validation_error_does_not_reflect_submitted_input(app) -> None:
+    async def fake_db_session():
+        yield object()
+
+    app.dependency_overrides[get_db_session] = fake_db_session
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/routes",
+            params={"limit": "do-not-reflect-this-secret"},
+        )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "validation_error"
+    assert "do-not-reflect-this-secret" not in str(body)
+    assert "input" not in body["error"]["details"][0]

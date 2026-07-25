@@ -24,9 +24,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_factory = create_session_factory(engine)
     redis_client = create_redis_client(settings)
     app.state.redis = redis_client
-    yield
-    await redis_client.aclose()
-    await engine.dispose()
+    try:
+        yield
+    finally:
+        await redis_client.aclose()
+        await engine.dispose()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
