@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tourism_backend.config import Settings, validate_settings
@@ -63,7 +64,7 @@ async def live_app() -> AsyncIterator[object]:
         pytest.skip("Postgres/Redis for integration tests are unavailable")
 
     settings = Settings(
-        environment="test",
+        app_env="test",
         database_url=DATABASE_URL,
         database_url_sync=DATABASE_URL.replace("+asyncpg", "+psycopg"),
         redis_url=REDIS_URL,
@@ -86,7 +87,7 @@ async def live_app() -> AsyncIterator[object]:
 
 def test_validate_settings_rejects_local_password_in_production() -> None:
     settings = Settings(
-        environment="production",
+        app_env="production",
         database_url=("postgresql+asyncpg://tourism:local-tourism-password@db:5432/tourism"),
         database_url_sync=("postgresql+psycopg://tourism:local-tourism-password@db:5432/tourism"),
         redis_url="redis://redis:6379/0",
@@ -95,9 +96,14 @@ def test_validate_settings_rejects_local_password_in_production() -> None:
         validate_settings(settings)
 
 
-def test_validate_settings_allows_local_password_in_development() -> None:
-    settings = Settings(environment="development")
+def test_validate_settings_allows_local_password_in_local() -> None:
+    settings = Settings(app_env="local")
     validate_settings(settings)
+
+
+def test_settings_reject_unknown_environment() -> None:
+    with pytest.raises(ValidationError):
+        Settings(app_env="gamma")
 
 
 @pytest.mark.asyncio

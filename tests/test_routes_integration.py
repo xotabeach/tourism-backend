@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from geoalchemy2.elements import WKTElement
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tourism_backend.config import Settings
@@ -46,7 +46,7 @@ async def live_app() -> AsyncIterator[object]:
         pytest.skip("Postgres/Redis for integration tests are unavailable")
 
     settings = Settings(
-        environment="test",
+        app_env="test",
         database_url=DATABASE_URL,
         database_url_sync=DATABASE_URL.replace("+asyncpg", "+psycopg"),
         redis_url=REDIS_URL,
@@ -161,6 +161,7 @@ async def test_public_route_with_unpublished_stop_is_not_exposed(live_app: objec
         assert "Private review place" not in str(listed.json())
     finally:
         async with session_factory() as session:
+            await session.execute(delete(RouteStop).where(RouteStop.route_id == route_id))
             stored_route = await session.get(Route, route_id)
             stored_place = await session.get(Place, place_id)
             if stored_route is not None:

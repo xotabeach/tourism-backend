@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from tourism_backend.api.errors import register_exception_handlers
 from tourism_backend.api.router import api_router
-from tourism_backend.config import Settings, get_settings
+from tourism_backend.config import AppEnvironment, Settings, get_settings
 from tourism_backend.db.redis import create_redis_client
 from tourism_backend.db.session import create_engine, create_session_factory
 from tourism_backend.logging_config import configure_logging
@@ -63,7 +63,7 @@ def main() -> None:
         "tourism_backend.main:app",
         host=settings.host,
         port=settings.port,
-        reload=settings.environment == "development",
+        reload=settings.app_env is AppEnvironment.LOCAL,
     )
 
 
