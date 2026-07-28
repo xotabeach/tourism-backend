@@ -1,0 +1,1 @@
+"""Favorites persistence models."""
