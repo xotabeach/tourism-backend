@@ -3,6 +3,7 @@ stages:
   - run-tests
   - build
   - publish
+  - mirror
 
 variables:
   APP_ENV: test
@@ -110,3 +111,19 @@ backend-publish:
     - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
   rules:
     - if: '$CI_COMMIT_BRANCH == "gamma"'
+
+# Public GitHub showcase mirror. GitLab remains source of truth.
+github-mirror:
+  stage: mirror
+  image: alpine:3.21
+  before_script:
+    - apk add --no-cache bash git
+  script:
+    - bash scripts/ci-mirror-to-github.sh
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "gamma" && $GITHUB_MIRROR_TOKEN'
+    - if: '$CI_COMMIT_BRANCH == "main" && $GITHUB_MIRROR_TOKEN'
+  needs:
+    - backend-code-style
+    - backend-run-tests
+    - backend-pip-audit
