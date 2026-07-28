@@ -32,6 +32,20 @@ uv run tourism-backend
 
 По умолчанию local ports: Postgres `5433`, Redis `6380` (см. `.env.example`).
 
+## Окружения
+
+`APP_ENV` принимает только `local`, `test`, `staging` или `production`.
+Local/test могут использовать локальные placeholder credentials;
+staging/production откажутся запускаться с ними.
+
+Контейнерный image содержит Alembic, seed и тестовые media, поэтому one-shot
+команды deployment выполняются тем же immutable image:
+
+```bash
+alembic upgrade head
+python scripts/seed_crimea.py
+```
+
 Проверки:
 
 ```bash

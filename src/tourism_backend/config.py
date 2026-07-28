@@ -1,3 +1,4 @@
+from enum import StrEnum
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -8,6 +9,13 @@ _LOCAL_PLACEHOLDER_MARKERS = (
 )
 
 
+class AppEnvironment(StrEnum):
+    LOCAL = "local"
+    TEST = "test"
+    STAGING = "staging"
+    PRODUCTION = "production"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -16,11 +24,11 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "tourism-backend"
-    environment: str = "development"
+    app_env: AppEnvironment = AppEnvironment.LOCAL
     log_level: str = "INFO"
     host: str = "0.0.0.0"
     port: int = 8000
-    # Local DX defaults only. Staging/production must override via env
+    # Local DX defaults only. Non-local deployments must override via env
     # (see validate_settings / refuse placeholder credentials).
     database_url: str = "postgresql+asyncpg://tourism:local-tourism-password@localhost:5432/tourism"
     database_url_sync: str = (
@@ -30,8 +38,8 @@ class Settings(BaseSettings):
 
 
 def validate_settings(settings: Settings) -> None:
-    """Refuse known local placeholder credentials outside development."""
-    if settings.environment.lower() in {"development", "test", "ci"}:
+    """Refuse known local placeholder credentials outside local/test."""
+    if settings.app_env in {AppEnvironment.LOCAL, AppEnvironment.TEST}:
         return
     blob = " ".join(
         (
@@ -44,7 +52,7 @@ def validate_settings(settings: Settings) -> None:
         if marker in blob:
             msg = (
                 f"Refusing to start: placeholder credential {marker!r} is not "
-                f"allowed when environment={settings.environment!r}"
+                f"allowed when app_env={settings.app_env.value!r}"
             )
             raise RuntimeError(msg)
 

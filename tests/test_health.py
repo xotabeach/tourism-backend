@@ -29,3 +29,65 @@ async def test_ready_reports_not_ready_without_lifespan(app, path: str) -> None:
 
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
+
+
+class _Session:
+    def __init__(self, error: Exception | None = None) -> None:
+        self._error = error
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def execute(self, _statement) -> None:
+        if self._error is not None:
+            raise self._error
+
+
+class _SessionFactory:
+    def __init__(self, error: Exception | None = None) -> None:
+        self._error = error
+
+    def __call__(self) -> _Session:
+        return _Session(self._error)
+
+
+class _Redis:
+    def __init__(self, error: Exception | None = None) -> None:
+        self._error = error
+
+    async def ping(self) -> bool:
+        if self._error is not None:
+            raise self._error
+        return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_error", "redis_error", "dependency"),
+    [
+        (RuntimeError("db-secret-host"), None, "database"),
+        (None, RuntimeError("redis-secret-host"), "redis"),
+    ],
+)
+async def test_ready_does_not_expose_dependency_exception(
+    app,
+    session_error: Exception | None,
+    redis_error: Exception | None,
+    dependency: str,
+) -> None:
+    app.state.session_factory = _SessionFactory(session_error)
+    app.state.redis = _Redis(redis_error)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not_ready",
+        "detail": f"{dependency} unavailable",
+    }
+    assert "secret-host" not in response.text

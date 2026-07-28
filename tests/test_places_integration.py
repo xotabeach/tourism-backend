@@ -33,6 +33,8 @@ async def _deps_available() -> bool:
 @pytest.fixture
 async def live_app() -> AsyncIterator[object]:
     if not await _deps_available():
+        if os.getenv("CI") or os.getenv("REQUIRE_INTEGRATION_DEPS") == "1":
+            pytest.fail("Postgres/Redis required for integration tests are unavailable")
         pytest.skip("Postgres/Redis for integration tests are unavailable")
 
     settings = Settings(

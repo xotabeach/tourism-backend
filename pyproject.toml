@@ -98,4 +98,4 @@ venv = ".venv"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--cov=tourism_backend --cov-report=term-missing:skip-covered --cov-fail-under=0"
+addopts = "--cov=tourism_backend --cov-report=term-missing:skip-covered --cov-fail-under=75"

@@ -33,6 +33,8 @@ COPY --from=builder /app/alembic /app/alembic
 COPY --from=builder /app/alembic.ini /app/alembic.ini
 COPY --from=builder /app/pyproject.toml /app/pyproject.toml
 COPY --from=builder /app/README.md /app/README.md
+COPY --chown=appuser:appuser scripts ./scripts
+COPY --chown=appuser:appuser data ./data
 
 USER appuser
 

@@ -2,8 +2,9 @@ from uuid import UUID
 
 from geoalchemy2 import Geometry
 from geoalchemy2.functions import ST_X, ST_Y
-from sqlalchemy import Select, cast, func, select
+from sqlalchemy import Select, cast, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.selectable import Exists
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.geography.infrastructure.models import Region
@@ -21,6 +22,14 @@ _PUBLIC_EDITORIAL = (
     Route.visibility == "public",
     Route.lifecycle_status == "active",
 )
+
+
+def _has_unpublished_stop() -> Exists:
+    return exists().where(
+        RouteStop.route_id == Route.id,
+        RouteStop.place_id == Place.id,
+        Place.publication_status != "published",
+    )
 
 
 async def _stops_count_map(
@@ -55,9 +64,11 @@ async def _cover_urls_for_routes(
             )
             .label("rn"),
         )
+        .join(Place, Place.id == RouteStop.place_id)
         .join(PlaceImage, PlaceImage.place_id == RouteStop.place_id)
         .where(
             RouteStop.route_id.in_(route_ids),
+            Place.publication_status == "published",
             PlaceImage.status == "active",
             PlaceImage.is_cover.is_(True),
             PlaceImage.source_url.is_not(None),
@@ -110,7 +121,10 @@ async def list_routes(
     limit: int,
     offset: int,
 ) -> RouteListOut:
-    stmt: Select[tuple[Route]] = select(Route).where(*_PUBLIC_EDITORIAL)
+    stmt: Select[tuple[Route]] = select(Route).where(
+        *_PUBLIC_EDITORIAL,
+        ~_has_unpublished_stop(),
+    )
     if region_slug:
         stmt = stmt.join(Region, Region.id == Route.region_id).where(Region.slug == region_slug)
     if transport_mode:
@@ -124,7 +138,9 @@ async def list_routes(
     count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
     total = int((await session.execute(count_stmt)).scalar_one())
 
-    routes = (await session.scalars(stmt.order_by(Route.name).limit(limit).offset(offset))).all()
+    routes = (
+        await session.scalars(stmt.order_by(Route.name, Route.id).limit(limit).offset(offset))
+    ).all()
     route_ids = [route.id for route in routes]
     counts = await _stops_count_map(session, route_ids)
     covers = await _cover_urls_for_routes(session, route_ids)
@@ -135,12 +151,14 @@ async def list_routes(
 
 
 async def get_route(session: AsyncSession, route_id: UUID) -> RouteDetailOut:
-    route = await session.get(Route, route_id)
-    if route is None or not (
-        route.source == "editorial"
-        and route.visibility == "public"
-        and route.lifecycle_status == "active"
-    ):
+    route = await session.scalar(
+        select(Route).where(
+            Route.id == route_id,
+            *_PUBLIC_EDITORIAL,
+            ~_has_unpublished_stop(),
+        )
+    )
+    if route is None:
         raise AppError(code="route_not_found", message="Route not found", status_code=404)
 
     stops_rows = (
@@ -152,7 +170,10 @@ async def get_route(session: AsyncSession, route_id: UUID) -> RouteDetailOut:
                 ST_Y(cast(Place.location, Geometry)),
             )
             .join(Place, Place.id == RouteStop.place_id)
-            .where(RouteStop.route_id == route.id)
+            .where(
+                RouteStop.route_id == route.id,
+                Place.publication_status == "published",
+            )
             .order_by(RouteStop.position)
         )
     ).all()
