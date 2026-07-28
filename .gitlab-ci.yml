@@ -1,5 +1,6 @@
 stages:
-  - validate
+  - code-style
+  - run-tests
   - build
   - publish
 
@@ -12,8 +13,22 @@ variables:
   DATABASE_URL_SYNC: postgresql+psycopg://tourism:local-tourism-password@postgres:5432/tourism
   REDIS_URL: redis://redis:6379/0
 
-backend-validate:
-  stage: validate
+backend-code-style:
+  stage: code-style
+  image: python:3.13-bookworm
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - uv sync --all-extras --dev
+    - uv run -- ruff check .
+    - uv run -- ruff format --check .
+    - uv run mypy src/tourism_backend
+    - test -f Dockerfile
+
+backend-run-tests:
+  stage: run-tests
   image: python:3.13-bookworm
   services:
     - name: postgis/postgis:16-3.4
@@ -33,13 +48,12 @@ backend-validate:
     - uv sync --all-extras --dev
     - uv run alembic upgrade head
     - uv run python scripts/seed_crimea.py
-    - ./scripts/validate.sh
+    - uv run pytest
     - uv run alembic history
-    - test -f Dockerfile
 
 # Open-source dependency audit (does not require paid GitLab Dependency Scanning).
 backend-pip-audit:
-  stage: validate
+  stage: run-tests
   image: python:3.13-bookworm
   before_script:
     - curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -86,7 +100,8 @@ backend-publish:
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
   needs:
-    - backend-validate
+    - backend-code-style
+    - backend-run-tests
     - backend-pip-audit
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
