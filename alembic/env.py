@@ -10,6 +10,7 @@ from tourism_backend.modules.geography.infrastructure import models as geography
 from tourism_backend.modules.identity.infrastructure import models as identity_models
 from tourism_backend.modules.places.infrastructure import models as places_models
 from tourism_backend.modules.routes.infrastructure import models as routes_models
+from tourism_backend.modules.support.infrastructure import models as support_models
 
 config = context.config
 
@@ -20,7 +21,14 @@ settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url_sync)
 
 # Ensure model modules are imported for metadata discovery.
-_ = (geography_models, places_models, routes_models, identity_models, favorites_models)
+_ = (
+    geography_models,
+    places_models,
+    routes_models,
+    identity_models,
+    favorites_models,
+    support_models,
+)
 target_metadata = Base.metadata
 
 

@@ -13,6 +13,8 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     phone_e164: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    cover_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     privacy_accepted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -21,6 +23,22 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         DateTime(timezone=True),
         nullable=True,
     )
+
+
+class AuthPhoneChangeChallenge(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "auth_phone_change_challenges"
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    phone_e164: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    code_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AuthOtpChallenge(Base, UUIDPrimaryKeyMixin):

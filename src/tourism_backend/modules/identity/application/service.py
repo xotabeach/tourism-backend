@@ -17,11 +17,14 @@ from tourism_backend.modules.identity.application.schemas import (
     MePatchIn,
     OtpRequestIn,
     OtpVerifyIn,
+    PhoneChangeRequestIn,
+    PhoneChangeVerifyIn,
     TokenPairOut,
 )
 from tourism_backend.modules.identity.application.tokens import create_access_token
 from tourism_backend.modules.identity.infrastructure.models import (
     AuthOtpChallenge,
+    AuthPhoneChangeChallenge,
     AuthRefreshSession,
     User,
 )
@@ -294,7 +297,7 @@ async def get_me(session: AsyncSession, user_id: UUID) -> MeOut:
     user = await session.get(User, user_id)
     if user is None:
         raise AppError(code="unauthorized", message="Authentication required", status_code=401)
-    return MeOut(id=str(user.id), display_name=user.display_name, phone=user.phone_e164)
+    return _me_out(user)
 
 
 async def patch_me(session: AsyncSession, user_id: UUID, payload: MePatchIn) -> MeOut:
@@ -303,4 +306,175 @@ async def patch_me(session: AsyncSession, user_id: UUID, payload: MePatchIn) -> 
         raise AppError(code="unauthorized", message="Authentication required", status_code=401)
     user.display_name = payload.display_name
     await session.commit()
-    return MeOut(id=str(user.id), display_name=user.display_name, phone=user.phone_e164)
+    return _me_out(user)
+
+
+def _me_out(user: User) -> MeOut:
+    return MeOut(
+        id=str(user.id),
+        display_name=user.display_name,
+        phone=user.phone_e164,
+        avatar_url=user.avatar_url,
+        cover_url=user.cover_url,
+    )
+
+
+async def request_phone_change(
+    session: AsyncSession,
+    redis: Redis,
+    user_id: UUID,
+    payload: PhoneChangeRequestIn,
+    *,
+    client_ip: str,
+) -> None:
+    await _rate_limit(
+        redis,
+        key=f"auth:phone_change:req:ip:{client_ip}",
+        limit=_RATE_REQUEST_LIMIT,
+    )
+    await _rate_limit(
+        redis,
+        key=f"auth:phone_change:req:user:{user_id}",
+        limit=_RATE_REQUEST_LIMIT,
+    )
+
+    user = await session.get(User, user_id)
+    if user is None:
+        raise AppError(code="unauthorized", message="Authentication required", status_code=401)
+
+    if payload.phone == user.phone_e164:
+        raise AppError(
+            code="phone_unchanged",
+            message="New phone must differ from the current number",
+            status_code=400,
+        )
+
+    existing = await session.execute(select(User).where(User.phone_e164 == payload.phone).limit(1))
+    if existing.scalar_one_or_none() is not None:
+        raise AppError(
+            code="phone_taken",
+            message="Phone number is already in use",
+            status_code=409,
+        )
+
+    # TODO: SMS provider — generate code, send via SMS gateway, store digest only.
+    code = new_otp_code()
+    challenge = AuthPhoneChangeChallenge(
+        id=uuid4(),
+        user_id=user_id,
+        phone_e164=payload.phone,
+        code_digest=digest_token(code),
+        expires_at=datetime.now(UTC) + _OTP_TTL,
+        attempts=0,
+        consumed_at=None,
+        created_at=datetime.now(UTC),
+    )
+    session.add(challenge)
+    await session.commit()
+
+
+async def verify_phone_change(
+    session: AsyncSession,
+    redis: Redis,
+    settings: Settings,
+    user_id: UUID,
+    payload: PhoneChangeVerifyIn,
+    *,
+    client_ip: str,
+) -> MeOut:
+    await _rate_limit(
+        redis,
+        key=f"auth:phone_change:verify:ip:{client_ip}",
+        limit=_RATE_VERIFY_LIMIT,
+    )
+    await _rate_limit(
+        redis,
+        key=f"auth:phone_change:verify:user:{user_id}",
+        limit=_RATE_VERIFY_LIMIT,
+    )
+
+    if not payload.privacy_accepted or not payload.personal_data_accepted:
+        raise AppError(
+            code="consents_required",
+            message="Privacy and personal data consents are required",
+            status_code=400,
+        )
+
+    user = await session.get(User, user_id)
+    if user is None:
+        raise AppError(code="unauthorized", message="Authentication required", status_code=401)
+
+    result = await session.execute(
+        select(AuthPhoneChangeChallenge)
+        .where(
+            AuthPhoneChangeChallenge.user_id == user_id,
+            AuthPhoneChangeChallenge.phone_e164 == payload.phone,
+            AuthPhoneChangeChallenge.consumed_at.is_(None),
+            AuthPhoneChangeChallenge.expires_at > datetime.now(UTC),
+        )
+        .order_by(AuthPhoneChangeChallenge.created_at.desc())
+        .limit(1)
+    )
+    challenge = result.scalar_one_or_none()
+    if challenge is None:
+        raise AppError(
+            code="otp_invalid",
+            message="Invalid or expired code",
+            status_code=400,
+        )
+
+    if challenge.attempts >= _MAX_OTP_ATTEMPTS:
+        raise AppError(
+            code="otp_invalid",
+            message="Invalid or expired code",
+            status_code=400,
+        )
+
+    accept_any = settings.otp_accept_any_enabled
+    code_ok = accept_any or digest_token(payload.code) == challenge.code_digest
+    challenge.attempts += 1
+    if not code_ok:
+        await session.commit()
+        raise AppError(
+            code="otp_invalid",
+            message="Invalid or expired code",
+            status_code=400,
+        )
+
+    taken = await session.execute(
+        select(User).where(User.phone_e164 == payload.phone, User.id != user_id).limit(1)
+    )
+    if taken.scalar_one_or_none() is not None:
+        raise AppError(
+            code="phone_taken",
+            message="Phone number is already in use",
+            status_code=409,
+        )
+
+    challenge.consumed_at = datetime.now(UTC)
+    now = datetime.now(UTC)
+    user.phone_e164 = payload.phone
+    user.privacy_accepted_at = now
+    user.personal_data_accepted_at = now
+    await session.commit()
+    return _me_out(user)
+
+
+async def set_user_media_url(
+    session: AsyncSession,
+    user_id: UUID,
+    *,
+    kind: str,
+    url: str,
+) -> MeOut:
+    user = await session.get(User, user_id)
+    if user is None:
+        raise AppError(code="unauthorized", message="Authentication required", status_code=401)
+    if kind == "avatar":
+        user.avatar_url = url
+    elif kind == "cover":
+        user.cover_url = url
+    else:
+        raise AppError(code="validation_error", message="Unknown media kind", status_code=400)
+    await session.commit()
+    return _me_out(user)

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# GitLab CI helper: SSH into the production host and run deploy-remote.sh.
+# Runs only from the production deploy job on branch main.
+#
+# Required protected CI variables:
+#   DEPLOY_SSH_HOST, DEPLOY_SSH_PORT, DEPLOY_SSH_USER, DEPLOY_SSH_PRIVATE_KEY
+# Optional:
+#   DEPLOY_SSH_KNOWN_HOSTS  — full known_hosts line(s); if unset, ssh-keyscan is used
+#   DEPLOY_HEALTH_URL       — forwarded to the remote script
+
+set -Eeuo pipefail
+
+IMAGE="${1:-${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}}"
+
+: "${DEPLOY_SSH_HOST:?DEPLOY_SSH_HOST is required}"
+: "${DEPLOY_SSH_PORT:?DEPLOY_SSH_PORT is required}"
+: "${DEPLOY_SSH_USER:?DEPLOY_SSH_USER is required}"
+: "${DEPLOY_SSH_PRIVATE_KEY:?DEPLOY_SSH_PRIVATE_KEY is required}"
+
+apk add --no-cache openssh-client bash curl >/dev/null
+
+install -d -m 700 ~/.ssh
+key_file="$(mktemp)"
+chmod 600 "${key_file}"
+printf '%s\n' "${DEPLOY_SSH_PRIVATE_KEY}" > "${key_file}"
+
+if [[ -n "${DEPLOY_SSH_KNOWN_HOSTS:-}" ]]; then
+  printf '%s\n' "${DEPLOY_SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+  chmod 644 ~/.ssh/known_hosts
+else
+  ssh-keyscan -p "${DEPLOY_SSH_PORT}" -H "${DEPLOY_SSH_HOST}" > ~/.ssh/known_hosts 2>/dev/null
+  chmod 644 ~/.ssh/known_hosts
+fi
+
+ssh_opts=(
+  -i "${key_file}"
+  -p "${DEPLOY_SSH_PORT}"
+  -o IdentitiesOnly=yes
+  -o BatchMode=yes
+  -o StrictHostKeyChecking=yes
+)
+
+remote_env=()
+if [[ -n "${DEPLOY_HEALTH_URL:-}" ]]; then
+  remote_env+=("DEPLOY_HEALTH_URL=$(printf '%q' "${DEPLOY_HEALTH_URL}")")
+fi
+
+printf 'Production deploy %s to %s@%s:%s\n' \
+  "${IMAGE}" "${DEPLOY_SSH_USER}" "${DEPLOY_SSH_HOST}" "${DEPLOY_SSH_PORT}"
+
+# shellcheck disable=SC2029
+ssh "${ssh_opts[@]}" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+  "${remote_env[*]} /opt/crimeatrip-test/deploy-remote.sh $(printf '%q' "${IMAGE}")"
+
+rm -f "${key_file}"
+printf 'Production deploy finished.\n'

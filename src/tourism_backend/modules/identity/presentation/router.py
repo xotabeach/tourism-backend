@@ -1,6 +1,9 @@
-from fastapi import APIRouter, Request, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, File, Request, Response, UploadFile, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
+from tourism_backend.modules.identity.application import media as identity_media
 from tourism_backend.modules.identity.application import service as identity_service
 from tourism_backend.modules.identity.application.schemas import (
     LogoutIn,
@@ -8,6 +11,8 @@ from tourism_backend.modules.identity.application.schemas import (
     MePatchIn,
     OtpRequestIn,
     OtpVerifyIn,
+    PhoneChangeRequestIn,
+    PhoneChangeVerifyIn,
     RefreshIn,
     TokenPairOut,
 )
@@ -86,3 +91,60 @@ async def patch_me(
     user_id: CurrentUserId,
 ) -> MeOut:
     return await identity_service.patch_me(session, user_id, payload)
+
+
+@router.post("/me/phone/otp/request", status_code=status.HTTP_204_NO_CONTENT)
+async def phone_change_request(
+    payload: PhoneChangeRequestIn,
+    request: Request,
+    session: DbSession,
+    redis: RedisClient,
+    user_id: CurrentUserId,
+) -> Response:
+    await identity_service.request_phone_change(
+        session,
+        redis,
+        user_id,
+        payload,
+        client_ip=_client_ip(request),
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/me/phone/otp/verify", response_model=MeOut)
+async def phone_change_verify(
+    payload: PhoneChangeVerifyIn,
+    request: Request,
+    session: DbSession,
+    redis: RedisClient,
+    settings: SettingsDep,
+    user_id: CurrentUserId,
+) -> MeOut:
+    return await identity_service.verify_phone_change(
+        session,
+        redis,
+        settings,
+        user_id,
+        payload,
+        client_ip=_client_ip(request),
+    )
+
+
+@router.post("/me/avatar", response_model=MeOut)
+async def upload_avatar(
+    session: DbSession,
+    user_id: CurrentUserId,
+    file: Annotated[UploadFile, File()],
+) -> MeOut:
+    url = await identity_media.save_profile_image(file, user_id=user_id, kind="avatar")
+    return await identity_service.set_user_media_url(session, user_id, kind="avatar", url=url)
+
+
+@router.post("/me/cover", response_model=MeOut)
+async def upload_cover(
+    session: DbSession,
+    user_id: CurrentUserId,
+    file: Annotated[UploadFile, File()],
+) -> MeOut:
+    url = await identity_media.save_profile_image(file, user_id=user_id, kind="cover")
+    return await identity_service.set_user_media_url(session, user_id, kind="cover", url=url)

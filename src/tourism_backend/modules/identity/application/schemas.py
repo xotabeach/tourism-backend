@@ -91,6 +91,8 @@ class MeOut(BaseModel):
     id: str
     display_name: str
     phone: str
+    avatar_url: str | None = None
+    cover_url: str | None = None
 
 
 class MePatchIn(BaseModel):
@@ -105,3 +107,41 @@ class MePatchIn(BaseModel):
         if not cleaned:
             raise ValueError("display_name must not be empty")
         return cleaned
+
+
+class PhoneChangeRequestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str = Field(min_length=10, max_length=32)
+
+    @field_validator("phone")
+    @classmethod
+    def _normalize_phone(cls, value: str) -> str:
+        phone = normalize_ru_phone(value)
+        if not _PHONE_RE.match(phone):
+            raise ValueError("phone must match +7XXXXXXXXXX")
+        return phone
+
+
+class PhoneChangeVerifyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str = Field(min_length=10, max_length=32)
+    code: str = Field(min_length=4, max_length=4)
+    privacy_accepted: bool
+    personal_data_accepted: bool
+
+    @field_validator("phone")
+    @classmethod
+    def _normalize_phone(cls, value: str) -> str:
+        phone = normalize_ru_phone(value)
+        if not _PHONE_RE.match(phone):
+            raise ValueError("phone must match +7XXXXXXXXXX")
+        return phone
+
+    @field_validator("code")
+    @classmethod
+    def _digits_only(cls, value: str) -> str:
+        if not value.isdigit():
+            raise ValueError("code must be 4 digits")
+        return value
