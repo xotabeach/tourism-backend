@@ -148,6 +148,8 @@ backend-deploy-production:
   resource_group: tourism-backend-production
   needs:
     - backend-publish
+  before_script:
+    - apk add --no-cache bash openssh-client curl
   script:
     - bash scripts/ci-deploy-production.sh "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
   environment:

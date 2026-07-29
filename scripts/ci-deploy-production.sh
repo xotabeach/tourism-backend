@@ -5,8 +5,10 @@
 # Required protected CI variables:
 #   DEPLOY_SSH_HOST, DEPLOY_SSH_PORT, DEPLOY_SSH_USER, DEPLOY_SSH_PRIVATE_KEY
 # Optional:
-#   DEPLOY_SSH_KNOWN_HOSTS  — full known_hosts line(s); if unset, ssh-keyscan is used
+#   DEPLOY_SSH_KNOWN_HOSTS  — full known_hosts line(s) or GitLab File var path
 #   DEPLOY_HEALTH_URL       — forwarded to the remote script
+#
+# GitLab File-type variables expand to a temp file path, not the raw content.
 
 set -Eeuo pipefail
 
@@ -17,15 +19,24 @@ IMAGE="${1:-${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}}"
 : "${DEPLOY_SSH_USER:?DEPLOY_SSH_USER is required}"
 : "${DEPLOY_SSH_PRIVATE_KEY:?DEPLOY_SSH_PRIVATE_KEY is required}"
 
-apk add --no-cache openssh-client bash curl >/dev/null
+materialize_secret() {
+  local value="$1"
+  local dest="$2"
+  if [[ -f "${value}" ]]; then
+    cp "${value}" "${dest}"
+  else
+    printf '%s\n' "${value}" > "${dest}"
+  fi
+  chmod 600 "${dest}"
+}
 
 install -d -m 700 ~/.ssh
 key_file="$(mktemp)"
 chmod 600 "${key_file}"
-printf '%s\n' "${DEPLOY_SSH_PRIVATE_KEY}" > "${key_file}"
+materialize_secret "${DEPLOY_SSH_PRIVATE_KEY}" "${key_file}"
 
 if [[ -n "${DEPLOY_SSH_KNOWN_HOSTS:-}" ]]; then
-  printf '%s\n' "${DEPLOY_SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+  materialize_secret "${DEPLOY_SSH_KNOWN_HOSTS}" ~/.ssh/known_hosts
   chmod 644 ~/.ssh/known_hosts
 else
   ssh-keyscan -p "${DEPLOY_SSH_PORT}" -H "${DEPLOY_SSH_HOST}" > ~/.ssh/known_hosts 2>/dev/null
