@@ -8,6 +8,7 @@ from tourism_backend.db.base import Base
 from tourism_backend.modules.favorites.infrastructure import models as favorites_models
 from tourism_backend.modules.geography.infrastructure import models as geography_models
 from tourism_backend.modules.identity.infrastructure import models as identity_models
+from tourism_backend.modules.media.infrastructure import models as media_models
 from tourism_backend.modules.places.infrastructure import models as places_models
 from tourism_backend.modules.routes.infrastructure import models as routes_models
 from tourism_backend.modules.support.infrastructure import models as support_models

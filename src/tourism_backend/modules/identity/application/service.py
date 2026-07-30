@@ -28,6 +28,7 @@ from tourism_backend.modules.identity.infrastructure.models import (
     AuthRefreshSession,
     User,
 )
+from tourism_backend.modules.media.application import service as media_service
 
 _OTP_TTL = timedelta(minutes=10)
 _MAX_OTP_ATTEMPTS = 8
@@ -36,7 +37,15 @@ _RATE_REQUEST_LIMIT = 8
 _RATE_VERIFY_LIMIT = 20
 
 
-async def _rate_limit(redis: Redis, *, key: str, limit: int) -> None:
+async def _rate_limit(
+    redis: Redis,
+    *,
+    key: str,
+    limit: int,
+    bypass: bool = False,
+) -> None:
+    if bypass:
+        return
     count = await redis.incr(key)
     if count == 1:
         await redis.expire(key, _RATE_WINDOW_SEC)
@@ -60,11 +69,13 @@ async def request_otp(
         redis,
         key=f"auth:otp:req:ip:{client_ip}",
         limit=_RATE_REQUEST_LIMIT,
+        bypass=bool(settings.auth_otp_accept_any),
     )
     await _rate_limit(
         redis,
         key=f"auth:otp:req:phone:{payload.phone}",
         limit=_RATE_REQUEST_LIMIT,
+        bypass=bool(settings.auth_otp_accept_any),
     )
 
     # TODO: SMS provider — generate code, send via SMS gateway, store digest only.
@@ -127,11 +138,13 @@ async def verify_otp(
         redis,
         key=f"auth:otp:verify:ip:{client_ip}",
         limit=_RATE_VERIFY_LIMIT,
+        bypass=bool(settings.auth_otp_accept_any),
     )
     await _rate_limit(
         redis,
         key=f"auth:otp:verify:phone:{payload.phone}",
         limit=_RATE_VERIFY_LIMIT,
+        bypass=bool(settings.auth_otp_accept_any),
     )
 
     if not payload.privacy_accepted or not payload.personal_data_accepted:
@@ -297,7 +310,7 @@ async def get_me(session: AsyncSession, user_id: UUID) -> MeOut:
     user = await session.get(User, user_id)
     if user is None:
         raise AppError(code="unauthorized", message="Authentication required", status_code=401)
-    return _me_out(user)
+    return await _me_out(session, user)
 
 
 async def patch_me(session: AsyncSession, user_id: UUID, payload: MePatchIn) -> MeOut:
@@ -306,22 +319,35 @@ async def patch_me(session: AsyncSession, user_id: UUID, payload: MePatchIn) -> 
         raise AppError(code="unauthorized", message="Authentication required", status_code=401)
     user.display_name = payload.display_name
     await session.commit()
-    return _me_out(user)
+    return await _me_out(session, user)
 
 
-def _me_out(user: User) -> MeOut:
+async def _me_out(session: AsyncSession, user: User) -> MeOut:
+    media = await media_service.resolve_urls(
+        session,
+        entity_type="user",
+        entity_ids=[user.id],
+        role="avatar",
+    )
+    covers = await media_service.resolve_urls(
+        session,
+        entity_type="user",
+        entity_ids=[user.id],
+        role="cover",
+    )
     return MeOut(
         id=str(user.id),
         display_name=user.display_name,
         phone=user.phone_e164,
-        avatar_url=user.avatar_url,
-        cover_url=user.cover_url,
+        avatar_url=media.get(user.id),
+        cover_url=covers.get(user.id),
     )
 
 
 async def request_phone_change(
     session: AsyncSession,
     redis: Redis,
+    settings: Settings,
     user_id: UUID,
     payload: PhoneChangeRequestIn,
     *,
@@ -331,11 +357,13 @@ async def request_phone_change(
         redis,
         key=f"auth:phone_change:req:ip:{client_ip}",
         limit=_RATE_REQUEST_LIMIT,
+        bypass=bool(settings.auth_otp_accept_any),
     )
     await _rate_limit(
         redis,
         key=f"auth:phone_change:req:user:{user_id}",
         limit=_RATE_REQUEST_LIMIT,
+        bypass=bool(settings.auth_otp_accept_any),
     )
 
     user = await session.get(User, user_id)
@@ -386,11 +414,13 @@ async def verify_phone_change(
         redis,
         key=f"auth:phone_change:verify:ip:{client_ip}",
         limit=_RATE_VERIFY_LIMIT,
+        bypass=bool(settings.auth_otp_accept_any),
     )
     await _rate_limit(
         redis,
         key=f"auth:phone_change:verify:user:{user_id}",
         limit=_RATE_VERIFY_LIMIT,
+        bypass=bool(settings.auth_otp_accept_any),
     )
 
     if not payload.privacy_accepted or not payload.personal_data_accepted:
@@ -457,24 +487,36 @@ async def verify_phone_change(
     user.privacy_accepted_at = now
     user.personal_data_accepted_at = now
     await session.commit()
-    return _me_out(user)
+    return await _me_out(session, user)
 
 
-async def set_user_media_url(
+async def set_user_media_attachment(
     session: AsyncSession,
     user_id: UUID,
     *,
     kind: str,
-    url: str,
+    storage_key: str,
+    content_type: str | None = None,
+    byte_size: int | None = None,
+    width: int | None = None,
+    height: int | None = None,
 ) -> MeOut:
     user = await session.get(User, user_id)
     if user is None:
         raise AppError(code="unauthorized", message="Authentication required", status_code=401)
-    if kind == "avatar":
-        user.avatar_url = url
-    elif kind == "cover":
-        user.cover_url = url
-    else:
+    if kind not in {"avatar", "cover"}:
         raise AppError(code="validation_error", message="Unknown media kind", status_code=400)
+    await media_service.replace_attachment(
+        session,
+        entity_type="user",
+        entity_id=user_id,
+        role=kind,
+        storage_key=storage_key,
+        content_type=content_type,
+        byte_size=byte_size,
+        width=width,
+        height=height,
+        uploaded_by_user_id=user_id,
+    )
     await session.commit()
-    return _me_out(user)
+    return await _me_out(session, user)

@@ -99,11 +99,13 @@ async def phone_change_request(
     request: Request,
     session: DbSession,
     redis: RedisClient,
+    settings: SettingsDep,
     user_id: CurrentUserId,
 ) -> Response:
     await identity_service.request_phone_change(
         session,
         redis,
+        settings,
         user_id,
         payload,
         client_ip=_client_ip(request),
@@ -136,8 +138,17 @@ async def upload_avatar(
     user_id: CurrentUserId,
     file: Annotated[UploadFile, File()],
 ) -> MeOut:
-    url = await identity_media.save_profile_image(file, user_id=user_id, kind="avatar")
-    return await identity_service.set_user_media_url(session, user_id, kind="avatar", url=url)
+    saved = await identity_media.save_profile_image(file, user_id=user_id, kind="avatar")
+    return await identity_service.set_user_media_attachment(
+        session,
+        user_id,
+        kind="avatar",
+        storage_key=saved.storage_key,
+        content_type=saved.content_type,
+        byte_size=saved.byte_size,
+        width=saved.width,
+        height=saved.height,
+    )
 
 
 @router.post("/me/cover", response_model=MeOut)
@@ -146,5 +157,14 @@ async def upload_cover(
     user_id: CurrentUserId,
     file: Annotated[UploadFile, File()],
 ) -> MeOut:
-    url = await identity_media.save_profile_image(file, user_id=user_id, kind="cover")
-    return await identity_service.set_user_media_url(session, user_id, kind="cover", url=url)
+    saved = await identity_media.save_profile_image(file, user_id=user_id, kind="cover")
+    return await identity_service.set_user_media_attachment(
+        session,
+        user_id,
+        kind="cover",
+        storage_key=saved.storage_key,
+        content_type=saved.content_type,
+        byte_size=saved.byte_size,
+        width=saved.width,
+        height=saved.height,
+    )

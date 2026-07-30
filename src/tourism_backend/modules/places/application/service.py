@@ -38,11 +38,22 @@ async def _cover_urls_for_places(
 ) -> dict[UUID, str]:
     if not place_ids:
         return {}
-    stmt = select(PlaceImage.place_id, PlaceImage.source_url).where(
-        PlaceImage.place_id.in_(place_ids),
-        PlaceImage.status == "active",
-        PlaceImage.is_cover.is_(True),
-        PlaceImage.source_url.is_not(None),
+    from tourism_backend.modules.media.infrastructure.models import MediaAttachment
+
+    attachment_url = func.coalesce(MediaAttachment.public_path, PlaceImage.source_url)
+    stmt = (
+        select(PlaceImage.place_id, attachment_url)
+        .outerjoin(
+            MediaAttachment,
+            (MediaAttachment.id == PlaceImage.media_asset_id)
+            & (MediaAttachment.status == "active"),
+        )
+        .where(
+            PlaceImage.place_id.in_(place_ids),
+            PlaceImage.status == "active",
+            PlaceImage.is_cover.is_(True),
+            attachment_url.is_not(None),
+        )
     )
     return {
         place_id: source_url

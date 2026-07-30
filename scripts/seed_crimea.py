@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 
 from tourism_backend.config import get_settings
 from tourism_backend.modules.geography.infrastructure.models import Country, Locality, Region
+from tourism_backend.modules.identity.infrastructure.models import User as _User  # noqa: F401
+from tourism_backend.modules.media.application.service import upsert_place_file_attachment
 from tourism_backend.modules.places.infrastructure.models import (
     Category,
     Place,
@@ -219,7 +221,7 @@ def upsert_place_images(
     places_by_slug: dict[str, Place],
     assets: list[dict[str, Any]],
 ) -> int:
-    """Upsert cover photos from data/media/manifest.json into place_images."""
+    """Upsert cover photos from data/media/manifest.json into place_images + attachments."""
     count = 0
     for asset in assets:
         place_slug = asset.get("place_slug")
@@ -230,6 +232,18 @@ def upsert_place_images(
             raise SystemExit(f"Unknown place_slug in media manifest: {place_slug}")
 
         source_url = f"/media/{asset['file']}"
+        is_cover = bool(asset.get("is_cover", False))
+        role = "cover" if is_cover else "gallery"
+        attachment = upsert_place_file_attachment(
+            session,
+            place_id=place.id,
+            role=role,
+            public_path=source_url,
+            sort_order=int(asset.get("sort_order", 0)),
+            alt_text=asset.get("alt_text"),
+            status="active",
+        )
+
         image = session.scalar(
             select(PlaceImage).where(
                 PlaceImage.place_id == place.id,
@@ -245,7 +259,7 @@ def upsert_place_images(
             )
             session.add(image)
 
-        if bool(asset.get("is_cover", False)):
+        if is_cover:
             for existing in session.scalars(
                 select(PlaceImage).where(
                     PlaceImage.place_id == place.id,
@@ -261,8 +275,9 @@ def upsert_place_images(
         image.author = asset.get("author")
         image.license = asset.get("license", "design-asset")
         image.source_url = source_url
+        image.media_asset_id = attachment.id
         image.sort_order = int(asset.get("sort_order", 0))
-        image.is_cover = bool(asset.get("is_cover", False))
+        image.is_cover = is_cover
         image.status = "active"
         image.updated_at = _now()
         count += 1

@@ -77,12 +77,31 @@ def compress_profile_image(image: Image.Image, *, kind: str) -> tuple[bytes, str
     return out.getvalue(), "webp"
 
 
+class SavedProfileImage:
+    def __init__(
+        self,
+        *,
+        storage_key: str,
+        public_path: str,
+        content_type: str,
+        byte_size: int,
+        width: int,
+        height: int,
+    ) -> None:
+        self.storage_key = storage_key
+        self.public_path = public_path
+        self.content_type = content_type
+        self.byte_size = byte_size
+        self.width = width
+        self.height = height
+
+
 async def save_profile_image(
     upload: UploadFile,
     *,
     user_id: UUID,
     kind: str,
-) -> str:
+) -> SavedProfileImage:
     if kind not in {"avatar", "cover"}:
         raise AppError(code="validation_error", message="Unknown media kind", status_code=400)
 
@@ -110,6 +129,9 @@ async def save_profile_image(
                     status_code=400,
                 )
             payload, ext = compress_profile_image(image, kind=kind)
+            # Dimensions after re-encode/downscale.
+            with Image.open(io.BytesIO(payload)) as encoded:
+                width, height = encoded.size
     except UnidentifiedImageError as exc:
         raise AppError(
             code="invalid_image",
@@ -131,4 +153,12 @@ async def save_profile_image(
     filename = f"{kind}-{uuid4().hex}.{ext}"
     abs_path = abs_dir / filename
     abs_path.write_bytes(payload)
-    return f"/media/{rel_dir.as_posix()}/{filename}"
+    storage_key = f"{rel_dir.as_posix()}/{filename}"
+    return SavedProfileImage(
+        storage_key=storage_key,
+        public_path=f"/media/{storage_key}",
+        content_type="image/webp",
+        byte_size=len(payload),
+        width=width,
+        height=height,
+    )

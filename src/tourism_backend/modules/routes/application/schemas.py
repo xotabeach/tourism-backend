@@ -38,6 +38,8 @@ class RouteListItemOut(BaseModel):
     stops_count: int
     author_label: str | None
     cover_image_url: str | None = None
+    owner_user_id: UUID | None = None
+    author_avatar_url: str | None = None
 
 
 class RouteDetailOut(RouteListItemOut):

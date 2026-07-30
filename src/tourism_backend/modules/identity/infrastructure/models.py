@@ -13,8 +13,6 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     phone_e164: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
-    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    cover_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     privacy_accepted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

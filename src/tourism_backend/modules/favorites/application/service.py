@@ -52,7 +52,7 @@ async def add_favorite_route(session: AsyncSession, user_id: UUID, route_id: UUI
     route = await session.get(Route, route_id)
     if (
         route is None
-        or route.source != "editorial"
+        or route.source not in {"editorial", "user_created"}
         or route.visibility != "public"
         or route.lifecycle_status != "active"
     ):
