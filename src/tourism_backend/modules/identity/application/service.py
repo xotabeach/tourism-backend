@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings
 from tourism_backend.modules.identity.application.crypto import (
+    digest_matches,
     digest_token,
     new_otp_code,
     new_refresh_token,
@@ -69,22 +70,24 @@ async def request_otp(
         redis,
         key=f"auth:otp:req:ip:{client_ip}",
         limit=_RATE_REQUEST_LIMIT,
-        bypass=bool(settings.auth_otp_accept_any),
+        bypass=settings.otp_accept_any_enabled,
     )
     await _rate_limit(
         redis,
         key=f"auth:otp:req:phone:{payload.phone}",
         limit=_RATE_REQUEST_LIMIT,
-        bypass=bool(settings.auth_otp_accept_any),
+        bypass=settings.otp_accept_any_enabled,
     )
 
-    # TODO: SMS provider — generate code, send via SMS gateway, store digest only.
+    # TODO: SMS provider — deliver `code` via the SMS gateway, then stop persisting
+    # debug_code (see AUTH_OTP_STORE_DEBUG_CODE) so only the digest remains.
     code = new_otp_code()
     challenge = AuthOtpChallenge(
         id=uuid4(),
         phone_e164=payload.phone,
         display_name=payload.display_name,
         code_digest=digest_token(code),
+        debug_code=code if settings.otp_store_debug_code_enabled else None,
         expires_at=datetime.now(UTC) + _OTP_TTL,
         attempts=0,
         consumed_at=None,
@@ -138,13 +141,13 @@ async def verify_otp(
         redis,
         key=f"auth:otp:verify:ip:{client_ip}",
         limit=_RATE_VERIFY_LIMIT,
-        bypass=bool(settings.auth_otp_accept_any),
+        bypass=settings.otp_accept_any_enabled,
     )
     await _rate_limit(
         redis,
         key=f"auth:otp:verify:phone:{payload.phone}",
         limit=_RATE_VERIFY_LIMIT,
-        bypass=bool(settings.auth_otp_accept_any),
+        bypass=settings.otp_accept_any_enabled,
     )
 
     if not payload.privacy_accepted or not payload.personal_data_accepted:
@@ -180,7 +183,7 @@ async def verify_otp(
         )
 
     accept_any = settings.otp_accept_any_enabled
-    code_ok = accept_any or digest_token(payload.code) == challenge.code_digest
+    code_ok = accept_any or digest_matches(payload.code, challenge.code_digest)
     challenge.attempts += 1
     if not code_ok:
         await session.commit()
@@ -357,13 +360,13 @@ async def request_phone_change(
         redis,
         key=f"auth:phone_change:req:ip:{client_ip}",
         limit=_RATE_REQUEST_LIMIT,
-        bypass=bool(settings.auth_otp_accept_any),
+        bypass=settings.otp_accept_any_enabled,
     )
     await _rate_limit(
         redis,
         key=f"auth:phone_change:req:user:{user_id}",
         limit=_RATE_REQUEST_LIMIT,
-        bypass=bool(settings.auth_otp_accept_any),
+        bypass=settings.otp_accept_any_enabled,
     )
 
     user = await session.get(User, user_id)
@@ -385,13 +388,15 @@ async def request_phone_change(
             status_code=409,
         )
 
-    # TODO: SMS provider — generate code, send via SMS gateway, store digest only.
+    # TODO: SMS provider — deliver `code` via the SMS gateway, then stop persisting
+    # debug_code (see AUTH_OTP_STORE_DEBUG_CODE) so only the digest remains.
     code = new_otp_code()
     challenge = AuthPhoneChangeChallenge(
         id=uuid4(),
         user_id=user_id,
         phone_e164=payload.phone,
         code_digest=digest_token(code),
+        debug_code=code if settings.otp_store_debug_code_enabled else None,
         expires_at=datetime.now(UTC) + _OTP_TTL,
         attempts=0,
         consumed_at=None,
@@ -414,13 +419,13 @@ async def verify_phone_change(
         redis,
         key=f"auth:phone_change:verify:ip:{client_ip}",
         limit=_RATE_VERIFY_LIMIT,
-        bypass=bool(settings.auth_otp_accept_any),
+        bypass=settings.otp_accept_any_enabled,
     )
     await _rate_limit(
         redis,
         key=f"auth:phone_change:verify:user:{user_id}",
         limit=_RATE_VERIFY_LIMIT,
-        bypass=bool(settings.auth_otp_accept_any),
+        bypass=settings.otp_accept_any_enabled,
     )
 
     if not payload.privacy_accepted or not payload.personal_data_accepted:
@@ -461,7 +466,7 @@ async def verify_phone_change(
         )
 
     accept_any = settings.otp_accept_any_enabled
-    code_ok = accept_any or digest_token(payload.code) == challenge.code_digest
+    code_ok = accept_any or digest_matches(payload.code, challenge.code_digest)
     challenge.attempts += 1
     if not code_ok:
         await session.commit()

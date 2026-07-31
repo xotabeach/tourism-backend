@@ -107,9 +107,7 @@ async def _author_fields_for_routes(
     owner_ids = [route.owner_user_id for route in routes if route.owner_user_id is not None]
     users: dict[UUID, User] = {}
     if owner_ids:
-        for user in (
-            await session.scalars(select(User).where(User.id.in_(owner_ids)))
-        ).all():
+        for user in (await session.scalars(select(User).where(User.id.in_(owner_ids)))).all():
             users[user.id] = user
     avatars = await media_service.resolve_urls(
         session,
@@ -178,9 +176,7 @@ async def _list_from_stmt(
 
     routes = list(
         (
-            await session.scalars(
-                stmt.order_by(Route.name, Route.id).limit(limit).offset(offset)
-            )
+            await session.scalars(stmt.order_by(Route.name, Route.id).limit(limit).offset(offset))
         ).all()
     )
     route_ids = [route.id for route in routes]

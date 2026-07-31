@@ -47,18 +47,42 @@ class Settings(BaseSettings):
     jwt_audience: str = "crimeatrip-mobile"
     jwt_access_ttl_minutes: int = Field(default=15, ge=1, le=1440)
     jwt_refresh_ttl_days: int = Field(default=30, ge=1, le=365)
-    # None = auto (True for local/test). Explicit True/False overrides.
+    # None = auto (True for local only). Explicit True/False overrides.
+    # Never allowed outside local/test — see validate_settings.
     auth_otp_accept_any: bool | None = None
+    # Keeps the generated OTP readable in the database while no SMS provider is
+    # connected. None = auto (True for local/test). Refused in staging/production.
+    auth_otp_store_debug_code: bool | None = None
 
     @property
     def otp_accept_any_enabled(self) -> bool:
         if self.auth_otp_accept_any is not None:
             return self.auth_otp_accept_any
+        return self.app_env is AppEnvironment.LOCAL
+
+    @property
+    def otp_store_debug_code_enabled(self) -> bool:
+        if self.auth_otp_store_debug_code is not None:
+            return self.auth_otp_store_debug_code
         return self.app_env in {AppEnvironment.LOCAL, AppEnvironment.TEST}
 
 
 def validate_settings(settings: Settings) -> None:
-    """Refuse known local placeholder credentials outside local/test."""
+    """Refuse local-only auth shortcuts and placeholder credentials."""
+    if settings.app_env in {AppEnvironment.STAGING, AppEnvironment.PRODUCTION}:
+        if settings.otp_accept_any_enabled:
+            msg = (
+                "Refusing to start: AUTH_OTP_ACCEPT_ANY accepts any OTP code and "
+                f"is not allowed when app_env={settings.app_env.value!r}"
+            )
+            raise RuntimeError(msg)
+        if settings.otp_store_debug_code_enabled:
+            msg = (
+                "Refusing to start: AUTH_OTP_STORE_DEBUG_CODE stores OTP codes in "
+                f"cleartext and is not allowed when app_env={settings.app_env.value!r}"
+            )
+            raise RuntimeError(msg)
+
     if settings.app_env in {AppEnvironment.LOCAL, AppEnvironment.TEST}:
         return
     blob = " ".join(

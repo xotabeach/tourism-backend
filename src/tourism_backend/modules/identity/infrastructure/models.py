@@ -33,6 +33,9 @@ class AuthPhoneChangeChallenge(Base, UUIDPrimaryKeyMixin):
     )
     phone_e164: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     code_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Cleartext copy of the code, populated only while no SMS provider exists and
+    # only in local/test (AUTH_OTP_STORE_DEBUG_CODE). Never set in staging/production.
+    debug_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -45,6 +48,8 @@ class AuthOtpChallenge(Base, UUIDPrimaryKeyMixin):
     phone_e164: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     code_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # See AuthPhoneChangeChallenge.debug_code.
+    debug_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

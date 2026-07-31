@@ -29,6 +29,7 @@ _ = (
     identity_models,
     favorites_models,
     support_models,
+    media_models,
 )
 target_metadata = Base.metadata
 
