@@ -1,6 +1,6 @@
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _PHONE_RE = re.compile(r"^\+7\d{10}$")
 
@@ -93,20 +93,39 @@ class MeOut(BaseModel):
     phone: str
     avatar_url: str | None = None
     cover_url: str | None = None
+    notify_push_enabled: bool = True
+    notify_sms_enabled: bool = False
+    notify_haptics_enabled: bool = True
 
 
 class MePatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    display_name: str = Field(min_length=1, max_length=120)
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    notify_push_enabled: bool | None = None
+    notify_sms_enabled: bool | None = None
+    notify_haptics_enabled: bool | None = None
 
     @field_validator("display_name")
     @classmethod
-    def _trim_name(cls, value: str) -> str:
+    def _trim_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         cleaned = value.strip()
         if not cleaned:
             raise ValueError("display_name must not be empty")
         return cleaned
+
+    @model_validator(mode="after")
+    def _require_at_least_one_field(self) -> "MePatchIn":
+        if (
+            self.display_name is None
+            and self.notify_push_enabled is None
+            and self.notify_sms_enabled is None
+            and self.notify_haptics_enabled is None
+        ):
+            raise ValueError("at least one field is required")
+        return self
 
 
 class PhoneChangeRequestIn(BaseModel):

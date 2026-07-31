@@ -320,7 +320,14 @@ async def patch_me(session: AsyncSession, user_id: UUID, payload: MePatchIn) -> 
     user = await session.get(User, user_id)
     if user is None:
         raise AppError(code="unauthorized", message="Authentication required", status_code=401)
-    user.display_name = payload.display_name
+    if payload.display_name is not None:
+        user.display_name = payload.display_name
+    if payload.notify_push_enabled is not None:
+        user.notify_push_enabled = payload.notify_push_enabled
+    if payload.notify_sms_enabled is not None:
+        user.notify_sms_enabled = payload.notify_sms_enabled
+    if payload.notify_haptics_enabled is not None:
+        user.notify_haptics_enabled = payload.notify_haptics_enabled
     await session.commit()
     return await _me_out(session, user)
 
@@ -344,6 +351,9 @@ async def _me_out(session: AsyncSession, user: User) -> MeOut:
         phone=user.phone_e164,
         avatar_url=media.get(user.id),
         cover_url=covers.get(user.id),
+        notify_push_enabled=user.notify_push_enabled,
+        notify_sms_enabled=user.notify_sms_enabled,
+        notify_haptics_enabled=user.notify_haptics_enabled,
     )
 
 
