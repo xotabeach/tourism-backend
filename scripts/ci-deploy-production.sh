@@ -9,6 +9,9 @@
 # Optional:
 #   DEPLOY_HEALTH_URL       — forwarded to the remote script
 #
+# Registry pull on the host uses CI_REGISTRY_* from the job (not a long-lived
+# server-side docker login).
+#
 # GitLab File-type variables expand to a temp file path, not the raw content.
 
 set -Eeuo pipefail
@@ -22,8 +25,45 @@ IMAGE="${1:-${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}}"
 # Without a pinned host key, ssh-keyscan would trust whatever answers and
 # StrictHostKeyChecking below would verify nothing.
 : "${DEPLOY_SSH_KNOWN_HOSTS:?DEPLOY_SSH_KNOWN_HOSTS is required (pin the host key)}"
+: "${CI_REGISTRY:?CI_REGISTRY is required}"
+: "${CI_REGISTRY_USER:?CI_REGISTRY_USER is required}"
+: "${CI_REGISTRY_PASSWORD:?CI_REGISTRY_PASSWORD is required}"
 
-materialize_secret() {
+# Write an OpenSSH private key that Alpine/OpenSSL will accept.
+# File variables are preferred; env values may arrive with literal \n sequences.
+materialize_openssh_key() {
+  local value="$1"
+  local dest="$2"
+  local content
+
+  if [[ -f "${value}" ]]; then
+    content="$(cat "${value}")"
+  else
+    content="${value}"
+  fi
+
+  # Strip CR; expand one-line keys that used literal \n.
+  content="${content//$'\r'/}"
+  if [[ "${content}" != *$'\n'* ]]; then
+    content="${content//\\n/$'\n'}"
+  fi
+
+  # Exact bytes — no extra printf escaping of the PEM body.
+  printf '%s' "${content}" > "${dest}"
+  if [[ -s "${dest}" ]] && [[ "$(tail -c1 "${dest}" | wc -l)" -eq 0 ]]; then
+    printf '\n' >> "${dest}"
+  fi
+  chmod 600 "${dest}"
+
+  # Fail closed with a clear message instead of ssh's opaque libcrypto error.
+  if ! ssh-keygen -y -f "${dest}" >/dev/null 2>&1; then
+    printf 'Error: DEPLOY_SSH_PRIVATE_KEY is not a usable OpenSSH private key.\n' >&2
+    printf 'Re-upload it as a GitLab File variable from a PEM/OpenSSH key file.\n' >&2
+    exit 1
+  fi
+}
+
+materialize_secret_file() {
   local value="$1"
   local dest="$2"
   if [[ -f "${value}" ]]; then
@@ -37,9 +77,9 @@ materialize_secret() {
 install -d -m 700 ~/.ssh
 key_file="$(mktemp)"
 chmod 600 "${key_file}"
-materialize_secret "${DEPLOY_SSH_PRIVATE_KEY}" "${key_file}"
+materialize_openssh_key "${DEPLOY_SSH_PRIVATE_KEY}" "${key_file}"
 
-materialize_secret "${DEPLOY_SSH_KNOWN_HOSTS}" ~/.ssh/known_hosts
+materialize_secret_file "${DEPLOY_SSH_KNOWN_HOSTS}" ~/.ssh/known_hosts
 chmod 644 ~/.ssh/known_hosts
 
 ssh_opts=(
@@ -58,9 +98,22 @@ fi
 printf 'Production deploy %s to %s@%s:%s\n' \
   "${IMAGE}" "${DEPLOY_SSH_USER}" "${DEPLOY_SSH_HOST}" "${DEPLOY_SSH_PORT}"
 
+# Login on the host with this job's registry credentials, then pull/migrate.
 # shellcheck disable=SC2029
 ssh "${ssh_opts[@]}" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
-  "${remote_env[*]} /opt/crimeatrip-test/deploy-remote.sh $(printf '%q' "${IMAGE}")"
+  "CI_REGISTRY=$(printf '%q' "${CI_REGISTRY}") \
+   CI_REGISTRY_USER=$(printf '%q' "${CI_REGISTRY_USER}") \
+   CI_REGISTRY_PASSWORD=$(printf '%q' "${CI_REGISTRY_PASSWORD}") \
+   IMAGE=$(printf '%q' "${IMAGE}") \
+   ${remote_env[*]} \
+   bash -s" <<'EOS'
+set -Eeuo pipefail
+printf '%s\n' "${CI_REGISTRY_PASSWORD}" | docker login \
+  -u "${CI_REGISTRY_USER}" \
+  --password-stdin \
+  "${CI_REGISTRY}"
+/opt/crimeatrip-test/deploy-remote.sh "${IMAGE}"
+EOS
 
 rm -f "${key_file}"
 printf 'Production deploy finished.\n'
