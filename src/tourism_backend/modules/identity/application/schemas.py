@@ -2,6 +2,12 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from tourism_backend.modules.identity.application.display_name import (
+    DISPLAY_NAME_MAX_LENGTH,
+    DISPLAY_NAME_MIN_LENGTH,
+    validate_display_name,
+)
+
 _PHONE_RE = re.compile(r"^\+7\d{10}$")
 
 
@@ -19,16 +25,16 @@ def normalize_ru_phone(value: str) -> str:
 class OtpRequestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    display_name: str = Field(min_length=1, max_length=120)
+    display_name: str = Field(
+        min_length=DISPLAY_NAME_MIN_LENGTH,
+        max_length=DISPLAY_NAME_MAX_LENGTH,
+    )
     phone: str = Field(min_length=10, max_length=32)
 
     @field_validator("display_name")
     @classmethod
     def _trim_name(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("display_name must not be empty")
-        return cleaned
+        return validate_display_name(value)
 
     @field_validator("phone")
     @classmethod
@@ -101,7 +107,11 @@ class MeOut(BaseModel):
 class MePatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    display_name: str | None = Field(
+        default=None,
+        min_length=DISPLAY_NAME_MIN_LENGTH,
+        max_length=DISPLAY_NAME_MAX_LENGTH,
+    )
     notify_push_enabled: bool | None = None
     notify_sms_enabled: bool | None = None
     notify_haptics_enabled: bool | None = None
@@ -111,10 +121,7 @@ class MePatchIn(BaseModel):
     def _trim_name(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("display_name must not be empty")
-        return cleaned
+        return validate_display_name(value)
 
     @model_validator(mode="after")
     def _require_at_least_one_field(self) -> "MePatchIn":

@@ -39,6 +39,11 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_user_cover,
     format_user_id_peek,
 )
+from tourism_backend.modules.identity.application.display_name import (
+    DISPLAY_NAME_MAX_LENGTH,
+    DISPLAY_NAME_MIN_LENGTH,
+    validate_display_name,
+)
 from tourism_backend.modules.identity.application.schemas import normalize_ru_phone
 from tourism_backend.modules.identity.infrastructure.models import (
     AuthOtpChallenge,
@@ -105,7 +110,10 @@ class UserAdmin(ModelView, model=User):
         User.notify_haptics_enabled,
     ]
     form_args = {
-        "display_name": {"label": "Имя", "validators": [Length(min=1, max=120)]},
+        "display_name": {
+            "label": "Имя",
+            "validators": [Length(min=DISPLAY_NAME_MIN_LENGTH, max=DISPLAY_NAME_MAX_LENGTH)],
+        },
         "phone_e164": {"label": "Телефон"},
         "travel_points": {"label": "Путевые точки"},
         "notify_push_enabled": {"label": "Push"},
@@ -160,13 +168,14 @@ class UserAdmin(ModelView, model=User):
 
     async def update_model(self, request: Request, pk: Any, data: dict[str, Any]) -> Any:
         actor_id = session_principal_id(request)
-        display_name = str(data.get("display_name") or "").strip()
-        if not display_name or len(display_name) > 120:
+        try:
+            display_name = validate_display_name(str(data.get("display_name") or ""))
+        except ValueError as exc:
             raise AppError(
                 code="validation_error",
-                message="display_name must be 1..120 characters",
+                message=str(exc),
                 status_code=400,
-            )
+            ) from exc
         try:
             phone = normalize_ru_phone(str(data.get("phone_e164") or ""))
         except ValueError as exc:
