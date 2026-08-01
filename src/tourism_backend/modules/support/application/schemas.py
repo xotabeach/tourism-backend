@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 TicketKind = Literal["chat", "route_error", "app_error"]
-MessageAuthor = Literal["user", "assistant", "system"]
+MessageAuthor = Literal["user", "assistant", "system", "operator"]
 
 
 class SupportTicketCreateIn(BaseModel):

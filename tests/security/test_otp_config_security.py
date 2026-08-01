@@ -22,6 +22,7 @@ _PROD_SETTINGS = {
     "database_url_sync": "postgresql+psycopg://app:strong@db:5432/tourism",
     "redis_url": "redis://:strong@redis:6379/0",
     "jwt_signing_key": "x" * 48,
+    "admin_session_secret": "y" * 48,
 }
 
 

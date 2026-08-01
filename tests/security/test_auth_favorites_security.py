@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from tourism_backend.config import Settings
 from tourism_backend.db.redis import create_redis_client
@@ -52,19 +52,11 @@ async def live_client() -> AsyncIterator[AsyncClient]:
         jwt_signing_key="test-jwt-signing-key-at-least-32-chars!!",
     )
     app = create_app(settings)
-    engine = create_async_engine(settings.database_url, pool_pre_ping=True)
-    app.state.engine = engine
-    app.state.session_factory = async_sessionmaker(
-        engine,
-        expire_on_commit=False,
-        class_=AsyncSession,
-    )
-    app.state.redis = create_redis_client(settings)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
     await app.state.redis.aclose()
-    await engine.dispose()
+    await app.state.engine.dispose()
 
 
 async def _login(client: AsyncClient, phone: str = "+79001234567", name: str = "Тестер") -> dict:

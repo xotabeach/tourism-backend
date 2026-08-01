@@ -12,6 +12,8 @@ from tourism_backend.config import AppEnvironment, Settings, get_settings
 from tourism_backend.db.redis import create_redis_client
 from tourism_backend.db.session import create_engine, create_session_factory
 from tourism_backend.logging_config import configure_logging
+from tourism_backend.modules.admin.application.bootstrap import ensure_bootstrap_admin
+from tourism_backend.modules.admin.presentation.setup import mount_admin
 
 # Prefer explicit MEDIA_ROOT (container: /app/data/media). Fallback walks from
 # source layout `src/tourism_backend/main.py` → repo root / data / media.
@@ -24,18 +26,21 @@ _MEDIA_DIR = Path(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    from sqlalchemy.exc import SQLAlchemyError
+
     settings: Settings = app.state.settings
-    engine = create_engine(settings)
-    app.state.engine = engine
-    app.state.session_factory = create_session_factory(engine)
-    redis_client = create_redis_client(settings)
-    app.state.redis = redis_client
+    try:
+        await ensure_bootstrap_admin(app.state.session_factory, settings)
+    except SQLAlchemyError:
+        # Unit tests may construct the app without a live database.
+        if settings.app_env not in {AppEnvironment.LOCAL, AppEnvironment.TEST}:
+            raise
     try:
         yield
     finally:
-        await redis_client.aclose()
-        await engine.dispose()
+        await app.state.redis.aclose()
+        await app.state.engine.dispose()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -46,16 +51,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         validate_settings(resolved_settings)
     configure_logging(resolved_settings)
 
+    engine = create_engine(resolved_settings)
+    session_factory = create_session_factory(engine)
+    redis_client = create_redis_client(resolved_settings)
+
     app = FastAPI(
         title=resolved_settings.app_name,
         version="0.1.0",
-        lifespan=lifespan,
+        lifespan=_lifespan,
     )
     app.state.settings = resolved_settings
+    app.state.engine = engine
+    app.state.session_factory = session_factory
+    app.state.redis = redis_client
     register_exception_handlers(app)
     app.include_router(api_router)
     _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=str(_MEDIA_DIR)), name="media")
+    mount_admin(app, session_factory=session_factory, settings=resolved_settings)
     return app
 
 

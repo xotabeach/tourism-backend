@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from tourism_backend.config import Settings
 from tourism_backend.db.redis import create_redis_client
@@ -43,19 +43,11 @@ async def live_app() -> AsyncIterator[object]:
         redis_url=REDIS_URL,
     )
     app = create_app(settings)
-    engine = create_async_engine(settings.database_url, pool_pre_ping=True)
-    app.state.engine = engine
-    app.state.session_factory = async_sessionmaker(
-        engine,
-        expire_on_commit=False,
-        class_=AsyncSession,
-    )
-    app.state.redis = create_redis_client(settings)
     try:
         yield app
     finally:
         await app.state.redis.aclose()
-        await engine.dispose()
+        await app.state.engine.dispose()
 
 
 @pytest.mark.asyncio

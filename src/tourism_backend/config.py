@@ -13,6 +13,11 @@ _JWT_PLACEHOLDER_MARKERS = (
     "change-me",
     "local-jwt-signing-key",
 )
+_ADMIN_SESSION_PLACEHOLDER_MARKERS = (
+    "replace-with",
+    "change-me",
+    "local-admin-session",
+)
 
 
 class AppEnvironment(StrEnum):
@@ -54,6 +59,12 @@ class Settings(BaseSettings):
     # connected. None = auto (True for local/test). Refused in staging/production.
     auth_otp_store_debug_code: bool | None = None
 
+    # Phase 6.5 ops admin (SQLAdmin). Session secret is separate from JWT.
+    admin_enabled: bool = True
+    admin_session_secret: str = "local-admin-session-secret-dev-only-not-for-prod"
+    admin_bootstrap_login: str | None = None
+    admin_bootstrap_password: str | None = None
+
     @property
     def otp_accept_any_enabled(self) -> bool:
         if self.auth_otp_accept_any is not None:
@@ -91,6 +102,7 @@ def validate_settings(settings: Settings) -> None:
             settings.database_url_sync,
             settings.redis_url,
             settings.jwt_signing_key,
+            settings.admin_session_secret,
         )
     )
     for marker in _LOCAL_PLACEHOLDER_MARKERS:
@@ -109,6 +121,21 @@ def validate_settings(settings: Settings) -> None:
             raise RuntimeError(msg)
     if len(settings.jwt_signing_key) < 32:
         raise RuntimeError("JWT signing key must be at least 32 characters outside local/test")
+    for marker in _ADMIN_SESSION_PLACEHOLDER_MARKERS:
+        if marker in settings.admin_session_secret.lower():
+            msg = (
+                "Refusing to start: placeholder admin session secret is not "
+                f"allowed when app_env={settings.app_env.value!r}"
+            )
+            raise RuntimeError(msg)
+    if len(settings.admin_session_secret) < 32:
+        raise RuntimeError(
+            "Admin session secret must be at least 32 characters outside local/test"
+        )
+    if settings.admin_bootstrap_password and len(settings.admin_bootstrap_password) < 12:
+        raise RuntimeError(
+            "ADMIN_BOOTSTRAP_PASSWORD must be at least 12 characters outside local/test"
+        )
 
 
 @lru_cache
