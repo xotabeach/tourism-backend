@@ -10,3 +10,5 @@ class PublicUserOut(BaseModel):
     display_name: str
     avatar_url: str | None = None
     cover_url: str | None = None
+    travel_points: int = 0
+    liked_by_me: bool = False

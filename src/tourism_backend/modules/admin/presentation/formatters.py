@@ -49,7 +49,6 @@ def _badge(value: object, mapping: dict[str, tuple[str, str]]) -> Markup:
     label, css = mapping.get(key, (key, "ct-badge-closed"))
     if css not in _ALLOWED_CSS:
         css = "ct-badge-closed"
-    # css is allowlisted; label is escaped.
     return Markup('<span class="ct-badge {}">{}</span>').format(css, escape(label))
 
 
@@ -74,3 +73,16 @@ def format_debug_code(model: object, attribute: object) -> Markup:
     if not code:
         return Markup('<span class="text-secondary">—</span>')
     return Markup('<span class="ct-chip-mono">{}</span>').format(escape(str(code)))
+
+
+def format_user_id_peek(model: object, attribute: object) -> Markup:
+    """UUID chip; hover/click loads name+phone via /admin/api/user-brief."""
+    raw = getattr(model, "user_id", None)
+    if raw is None:
+        return Markup('<span class="text-secondary">—</span>')
+    uid = str(raw)
+    short = uid[:8]
+    return Markup(
+        '<button type="button" class="ct-user-peek" data-user-id="{}" '
+        'title="Показать пользователя">{}…</button>'
+    ).format(escape(uid), escape(short))

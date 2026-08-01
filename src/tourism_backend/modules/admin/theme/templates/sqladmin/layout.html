@@ -85,4 +85,43 @@
     </div>
   </div>
 </div>
+<div id="ct-user-popover" class="ct-user-popover" hidden></div>
+<script>
+(function () {
+  var pop = document.getElementById("ct-user-popover");
+  if (!pop) return;
+  function hide() { pop.hidden = true; pop.textContent = ""; }
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest(".ct-user-peek");
+    if (!btn) { hide(); return; }
+    ev.preventDefault();
+    var id = btn.getAttribute("data-user-id");
+    if (!id) return;
+    pop.hidden = false;
+    pop.textContent = "Загрузка…";
+    var rect = btn.getBoundingClientRect();
+    pop.style.left = Math.min(rect.left, window.innerWidth - 240) + "px";
+    pop.style.top = (rect.bottom + 6 + window.scrollY) + "px";
+    fetch("/admin/api/user-brief/" + encodeURIComponent(id), {
+      credentials: "same-origin",
+      headers: { "Accept": "application/json" }
+    }).then(function (r) {
+      if (!r.ok) throw new Error("fail");
+      return r.json();
+    }).then(function (data) {
+      pop.textContent = "";
+      var name = document.createElement("div");
+      name.className = "ct-user-popover-name";
+      name.textContent = data.display_name || "—";
+      var phone = document.createElement("div");
+      phone.className = "ct-user-popover-phone";
+      phone.textContent = data.phone_e164 || "—";
+      pop.appendChild(name);
+      pop.appendChild(phone);
+    }).catch(function () {
+      pop.textContent = "Не удалось загрузить";
+    });
+  });
+})();
+</script>
 {% endblock %}

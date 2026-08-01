@@ -7,13 +7,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.identity.application.public_schemas import PublicUserOut
-from tourism_backend.modules.identity.infrastructure.models import User
+from tourism_backend.modules.identity.application.travel_points import grant_due_travel_points
+from tourism_backend.modules.identity.infrastructure.models import ProfileLike, User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.routes.application import service as routes_service
 from tourism_backend.modules.routes.application.schemas import RouteListOut
 
 
-async def get_public_user(session: AsyncSession, user_id: UUID) -> PublicUserOut:
+async def get_public_user(
+    session: AsyncSession,
+    user_id: UUID,
+    *,
+    viewer_id: UUID | None = None,
+) -> PublicUserOut:
+    await grant_due_travel_points(session)
     user = await session.get(User, user_id)
     if user is None:
         raise AppError(code="user_not_found", message="User not found", status_code=404)
@@ -30,11 +37,16 @@ async def get_public_user(session: AsyncSession, user_id: UUID) -> PublicUserOut
         entity_ids=[user.id],
         role="cover",
     )
+    liked_by_me = False
+    if viewer_id is not None and viewer_id != user_id:
+        liked_by_me = (await session.get(ProfileLike, (viewer_id, user_id))) is not None
     return PublicUserOut(
         id=str(user.id),
         display_name=user.display_name,
         avatar_url=avatars.get(user.id),
         cover_url=covers.get(user.id),
+        travel_points=user.travel_points,
+        liked_by_me=liked_by_me,
     )
 
 

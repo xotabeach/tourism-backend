@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqladmin import ModelView, action
 from sqladmin.filters import AllUniqueStringValuesFilter
+from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
+from wtforms import PasswordField  # type: ignore[import-untyped]
+from wtforms.validators import Length, Optional  # type: ignore[import-untyped]
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings
+from tourism_backend.modules.admin.application.audit import record_audit
+from tourism_backend.modules.admin.application.passwords import hash_password
 from tourism_backend.modules.admin.application.support_ops import operator_reply
 from tourism_backend.modules.admin.infrastructure.models import (
     AdminAuditEvent,
@@ -28,6 +34,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_message_author,
     format_ticket_kind,
     format_ticket_status,
+    format_user_id_peek,
 )
 from tourism_backend.modules.identity.infrastructure.models import (
     AuthOtpChallenge,
@@ -35,6 +42,13 @@ from tourism_backend.modules.identity.infrastructure.models import (
     User,
 )
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
+
+_AUTHOR_RU = {
+    "user": "Пользователь",
+    "operator": "Оператор",
+    "assistant": "Ассистент",
+    "system": "Система",
+}
 
 
 class UserAdmin(ModelView, model=User):
@@ -126,6 +140,7 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
     column_formatters = {
         SupportTicket.status: format_ticket_status,
         SupportTicket.kind: format_ticket_kind,
+        SupportTicket.user_id: format_user_id_peek,
     }
     column_searchable_list = [SupportTicket.subject]
     column_filters = [AllUniqueStringValuesFilter(SupportTicket.status)]
@@ -134,6 +149,29 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
     can_delete = False
     can_edit = True
     page_size = 50
+    details_template = "sqladmin/support_chat.html"
+
+    async def get_object_for_details(self, request: Request) -> Any:
+        model = await super().get_object_for_details(request)
+        messages: list[dict[str, str]] = []
+        if model is not None:
+            async with self.session_maker(expire_on_commit=False) as session:
+                result = await session.execute(
+                    select(SupportMessage)
+                    .where(SupportMessage.ticket_id == model.id)
+                    .order_by(SupportMessage.created_at.asc())
+                )
+                for msg in result.scalars().all():
+                    messages.append(
+                        {
+                            "author": _AUTHOR_RU.get(msg.author, msg.author),
+                            "author_key": msg.author,
+                            "body": msg.body,
+                            "created_at": msg.created_at.strftime("%d.%m.%Y %H:%M"),
+                        }
+                    )
+        request.state.support_chat_messages = messages
+        return model
 
     @action(
         name="reply_as_operator",
@@ -145,9 +183,12 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
     async def reply_as_operator(self, request: Request) -> Response:
         pks = request.query_params.get("pks", "")
         ticket_id = pks.split(",")[0].strip() if pks else ""
-        url = str(request.url_for("admin:create", identity="support-message"))
         if ticket_id:
-            return RedirectResponse(f"{url}?ticket_id={ticket_id}", status_code=302)
+            return RedirectResponse(
+                str(request.url_for("admin:details", identity="support-ticket", pk=ticket_id)),
+                status_code=302,
+            )
+        url = str(request.url_for("admin:create", identity="support-message"))
         return RedirectResponse(url, status_code=302)
 
 
@@ -205,13 +246,25 @@ class SupportMessageAdmin(ModelView, model=SupportMessage):
 
         client_ip = request.client.host if request.client else None
         async with self.session_maker(expire_on_commit=False) as session:
-            return await operator_reply(
+            message = await operator_reply(
                 session,
                 ticket_id=ticket_id,
                 body=body,
                 actor_id=actor_id,
                 ip=client_ip,
             )
+        # Return to ticket chat thread after reply.
+        request.state._sqladmin_after_change_response = RedirectResponse(
+            str(
+                request.url_for(
+                    "admin:details",
+                    identity="support-ticket",
+                    pk=str(ticket_id),
+                )
+            ),
+            status_code=302,
+        )
+        return message
 
 
 class AdminPrincipalAdmin(ModelView, model=AdminPrincipal):
@@ -238,8 +291,12 @@ class AdminPrincipalAdmin(ModelView, model=AdminPrincipal):
         AdminPrincipal.is_active: lambda m, _a: "Да" if m.is_active else "Нет",
     }
     column_details_exclude_list = [AdminPrincipal.password_hash]
-    form_columns = [AdminPrincipal.is_active]
-    can_create = False
+    form_columns = [AdminPrincipal.login, AdminPrincipal.is_active]
+    form_args = {
+        "login": {"label": "Логин"},
+        "is_active": {"label": "Активен"},
+    }
+    can_create = True
     can_edit = True
     can_delete = False
     page_size = 50
@@ -249,6 +306,96 @@ class AdminPrincipalAdmin(ModelView, model=AdminPrincipal):
 
     def is_visible(self, request: Request) -> bool:
         return require_admin_role(request)
+
+    async def scaffold_form(self, rules: Any = None) -> Any:
+        form_cls = await super().scaffold_form(rules)
+
+        class _Form(form_cls):  # type: ignore[misc,valid-type]
+            password = PasswordField(
+                "Пароль",
+                validators=[Optional(), Length(min=0, max=128)],
+                description="≥12 символов при создании; пусто при edit = без смены",
+            )
+
+        return _Form
+
+    async def insert_model(self, request: Request, data: dict[str, Any]) -> Any:
+        actor_id = session_principal_id(request)
+        login = str(data.get("login") or "").strip()
+        password = str(data.get("password") or "")
+        is_active = bool(data.get("is_active", True))
+        if not login or len(login) > 64:
+            raise AppError(code="validation_error", message="Invalid login", status_code=400)
+        if len(password) < 12:
+            raise AppError(
+                code="validation_error",
+                message="Password must be at least 12 characters",
+                status_code=400,
+            )
+        now = datetime.now(UTC)
+        principal = AdminPrincipal(
+            id=uuid4(),
+            login=login,
+            password_hash=hash_password(password),
+            is_active=is_active,
+            created_at=now,
+            updated_at=now,
+        )
+        async with self.session_maker(expire_on_commit=False) as session:
+            session.add(principal)
+            await session.flush()
+            session.add(
+                AdminRoleBinding(
+                    id=uuid4(),
+                    principal_id=principal.id,
+                    role="admin",
+                    created_at=now,
+                )
+            )
+            await record_audit(
+                session,
+                actor_id=actor_id,
+                action="admin.principal_create",
+                entity_type="admin_principal",
+                entity_id=str(principal.id),
+                ip=request.client.host if request.client else None,
+            )
+            await session.commit()
+            await session.refresh(principal)
+            return principal
+
+    async def update_model(self, request: Request, pk: Any, data: dict[str, Any]) -> Any:
+        actor_id = session_principal_id(request)
+        password = str(data.get("password") or "")
+        login = str(data.get("login") or "").strip()
+        async with self.session_maker(expire_on_commit=False) as session:
+            principal = await session.get(AdminPrincipal, UUID(str(pk)))
+            if principal is None:
+                raise AppError(code="not_found", message="Principal not found", status_code=404)
+            if login:
+                principal.login = login[:64]
+            if "is_active" in data:
+                principal.is_active = bool(data.get("is_active"))
+            if password:
+                if len(password) < 12:
+                    raise AppError(
+                        code="validation_error",
+                        message="Password must be at least 12 characters",
+                        status_code=400,
+                    )
+                principal.password_hash = hash_password(password)
+            principal.updated_at = datetime.now(UTC)
+            await record_audit(
+                session,
+                actor_id=actor_id,
+                action="admin.principal_update",
+                entity_type="admin_principal",
+                entity_id=str(principal.id),
+                ip=request.client.host if request.client else None,
+            )
+            await session.commit()
+            await session.refresh(principal)
+            return principal
 
 
 class AdminRoleBindingAdmin(ModelView, model=AdminRoleBinding):
@@ -371,6 +518,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         }
         column_formatters = {
             AuthPhoneChangeChallenge.debug_code: format_debug_code,
+            AuthPhoneChangeChallenge.user_id: format_user_id_peek,
         }
         column_details_exclude_list = [AuthPhoneChangeChallenge.code_digest]
         column_searchable_list = [AuthPhoneChangeChallenge.phone_e164]

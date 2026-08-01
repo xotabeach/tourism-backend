@@ -63,7 +63,21 @@ async def get_current_user_id(
         ) from None
 
 
+async def get_optional_current_user_id(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> UUID | None:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        return None
+    settings = get_settings_dep(request)
+    try:
+        return decode_access_token(credentials.credentials, settings=settings)
+    except (jwt.PyJWTError, ValueError, TypeError):
+        return None
+
+
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 RedisClient = Annotated[Redis, Depends(get_redis)]
 CurrentUserId = Annotated[UUID, Depends(get_current_user_id)]
+OptionalCurrentUserId = Annotated[UUID | None, Depends(get_optional_current_user_id)]

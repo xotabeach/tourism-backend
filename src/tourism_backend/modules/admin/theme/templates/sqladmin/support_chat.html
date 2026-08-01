@@ -1,0 +1,54 @@
+{% extends "sqladmin/layout.html" %}
+{% block content %}
+<div class="col-12">
+  <div class="card ct-chat-card">
+    <div class="card-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
+      <div>
+        <h3 class="card-title mb-1">Чат поддержки</h3>
+        <div class="text-secondary small">
+          Тикет <span class="ct-chip-mono">{{ model.id }}</span>
+          · {{ model.subject or "без темы" }}
+          · статус: {{ model.status }}
+        </div>
+      </div>
+      <div class="d-flex gap-2">
+        <a href="{{ url_for('admin:list', identity=model_view.identity) }}" class="btn">К списку</a>
+        {% if model_view.check_can_edit(request, model) %}
+        <a href="{{ model_view._build_url_for('admin:edit', request, model) }}" class="btn btn-outline-primary">Статус</a>
+        {% endif %}
+      </div>
+    </div>
+    <div class="card-body ct-chat-thread" id="ct-chat-thread">
+      {% set messages = request.state.support_chat_messages %}
+      {% if not messages %}
+      <p class="text-secondary mb-0">Сообщений пока нет.</p>
+      {% endif %}
+      {% for msg in messages %}
+      <div class="ct-chat-bubble ct-chat-{{ msg.author_key }}">
+        <div class="ct-chat-meta">
+          <span class="ct-chat-author">{{ msg.author }}</span>
+          <span class="ct-chat-time">{{ msg.created_at }}</span>
+        </div>
+        <div class="ct-chat-body">{{ msg.body }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="card-footer">
+      <form method="POST" action="{{ url_for('admin:create', identity='support-message') }}" class="ct-chat-compose" autocomplete="off">
+        <input type="hidden" name="ticket_id" value="{{ model.id }}">
+        <label class="form-label" for="ct-chat-body">Ответ оператора</label>
+        <textarea id="ct-chat-body" name="body" class="form-control" rows="3" maxlength="4000" required placeholder="Напишите ответ…"></textarea>
+        <div class="d-flex justify-content-end mt-3">
+          <button type="submit" class="btn btn-primary ct-btn-primary">Отправить</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+<script>
+  (function () {
+    var thread = document.getElementById("ct-chat-thread");
+    if (thread) thread.scrollTop = thread.scrollHeight;
+  })();
+</script>
+{% endblock %}

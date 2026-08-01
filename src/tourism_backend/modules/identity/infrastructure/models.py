@@ -39,6 +39,28 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default=True,
         server_default="true",
     )
+    travel_points: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
+
+class ProfileLike(Base):
+    __tablename__ = "profile_likes"
+
+    liker_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    liked_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    awarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AuthPhoneChangeChallenge(Base, UUIDPrimaryKeyMixin):

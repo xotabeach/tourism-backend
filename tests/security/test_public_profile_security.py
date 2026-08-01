@@ -111,7 +111,17 @@ async def test_public_profile_hides_phone_and_is_readable(
     assert body["display_name"] == "Публичный"
     assert body["avatar_url"]
     assert "phone" not in body
-    assert set(body.keys()) == {"id", "display_name", "avatar_url", "cover_url"}
+    assert "phone_e164" not in body
+    assert isinstance(body["travel_points"], int)
+    assert isinstance(body["liked_by_me"], bool)
+    assert set(body.keys()) == {
+        "id",
+        "display_name",
+        "avatar_url",
+        "cover_url",
+        "travel_points",
+        "liked_by_me",
+    }
 
 
 @pytest.mark.asyncio

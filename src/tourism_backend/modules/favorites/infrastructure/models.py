@@ -45,3 +45,7 @@ class FavoriteRoute(Base):
         nullable=False,
         default=lambda: datetime.now(UTC),
     )
+    author_points_awarded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )

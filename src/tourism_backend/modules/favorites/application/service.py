@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.favorites.application.schemas import FavoritesOut
 from tourism_backend.modules.favorites.infrastructure.models import FavoritePlace, FavoriteRoute
+from tourism_backend.modules.identity.application.travel_points import grant_due_travel_points
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.routes.infrastructure.models import Route
 
@@ -60,14 +61,24 @@ async def add_favorite_route(session: AsyncSession, user_id: UUID, route_id: UUI
 
     existing = await session.get(FavoriteRoute, (user_id, route_id))
     if existing is not None:
+        await grant_due_travel_points(session)
         return
-    session.add(FavoriteRoute(user_id=user_id, route_id=route_id, created_at=datetime.now(UTC)))
+    session.add(
+        FavoriteRoute(
+            user_id=user_id,
+            route_id=route_id,
+            created_at=datetime.now(UTC),
+            author_points_awarded_at=None,
+        )
+    )
     await session.commit()
+    await grant_due_travel_points(session)
 
 
 async def remove_favorite_route(session: AsyncSession, user_id: UUID, route_id: UUID) -> None:
     existing = await session.get(FavoriteRoute, (user_id, route_id))
     if existing is None:
         return
+    # Drop before award → no points; after award → points retained.
     await session.delete(existing)
     await session.commit()
