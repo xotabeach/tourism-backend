@@ -22,6 +22,13 @@ from tourism_backend.modules.admin.presentation.auth import (
     require_admin_role,
     session_principal_id,
 )
+from tourism_backend.modules.admin.presentation.formatters import (
+    format_admin_role,
+    format_debug_code,
+    format_message_author,
+    format_ticket_kind,
+    format_ticket_status,
+)
 from tourism_backend.modules.identity.infrastructure.models import (
     AuthOtpChallenge,
     AuthPhoneChangeChallenge,
@@ -31,8 +38,10 @@ from tourism_backend.modules.support.infrastructure.models import SupportMessage
 
 
 class UserAdmin(ModelView, model=User):
-    name = "User"
-    name_plural = "Users"
+    category = "Пользователи"
+    category_icon = "fa-solid fa-user-group"
+    name = "Пользователь"
+    name_plural = "Пользователи"
     icon = "fa-solid fa-users"
     column_list = [
         User.id,
@@ -41,9 +50,18 @@ class UserAdmin(ModelView, model=User):
         User.created_at,
         User.notify_push_enabled,
     ]
+    column_labels = {
+        User.id: "ID",
+        User.display_name: "Имя",
+        User.phone_e164: "Телефон",
+        User.created_at: "Создан",
+        User.notify_push_enabled: "Push",
+    }
+    column_formatters = {
+        User.notify_push_enabled: lambda m, _a: "Да" if m.notify_push_enabled else "Нет",
+    }
     column_searchable_list = [User.display_name, User.phone_e164]
     column_sortable_list = [User.created_at, User.display_name]
-    column_details_exclude_list = []
     can_create = False
     can_edit = False
     can_delete = False
@@ -82,9 +100,11 @@ def _phone_change_columns(*, show_debug_code: bool) -> list[Any]:
 
 
 class SupportTicketAdmin(ModelView, model=SupportTicket):
-    name = "Support ticket"
-    name_plural = "Support tickets"
-    icon = "fa-solid fa-headset"
+    category = "Поддержка"
+    category_icon = "fa-solid fa-headset"
+    name = "Тикет"
+    name_plural = "Тикеты"
+    icon = "fa-solid fa-ticket"
     column_list = [
         SupportTicket.id,
         SupportTicket.user_id,
@@ -94,6 +114,19 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
         SupportTicket.created_at,
         SupportTicket.updated_at,
     ]
+    column_labels = {
+        SupportTicket.id: "ID",
+        SupportTicket.user_id: "Пользователь",
+        SupportTicket.kind: "Тип",
+        SupportTicket.subject: "Тема",
+        SupportTicket.status: "Статус",
+        SupportTicket.created_at: "Создан",
+        SupportTicket.updated_at: "Обновлён",
+    }
+    column_formatters = {
+        SupportTicket.status: format_ticket_status,
+        SupportTicket.kind: format_ticket_kind,
+    }
     column_searchable_list = [SupportTicket.subject]
     column_filters = [AllUniqueStringValuesFilter(SupportTicket.status)]
     form_columns = [SupportTicket.status]
@@ -104,19 +137,14 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
 
     @action(
         name="reply_as_operator",
-        label="Reply as operator",
-        confirmation_message=(
-            "Enter the reply body in the next prompt is not available; "
-            "use Support messages → Create instead. Continue to open create form?"
-        ),
+        label="Ответить как оператор",
+        confirmation_message="Открыть форму создания сообщения для выбранного тикета?",
         add_in_detail=True,
         add_in_list=True,
     )
     async def reply_as_operator(self, request: Request) -> Response:
-        # List/detail actions only pass pks; redirect operator to message create.
         pks = request.query_params.get("pks", "")
         ticket_id = pks.split(",")[0].strip() if pks else ""
-        # ModelView identity is slugify(SupportMessage) → "support-message".
         url = str(request.url_for("admin:create", identity="support-message"))
         if ticket_id:
             return RedirectResponse(f"{url}?ticket_id={ticket_id}", status_code=302)
@@ -124,8 +152,10 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
 
 
 class SupportMessageAdmin(ModelView, model=SupportMessage):
-    name = "Support message"
-    name_plural = "Support messages"
+    category = "Поддержка"
+    category_icon = "fa-solid fa-headset"
+    name = "Сообщение"
+    name_plural = "Сообщения"
     icon = "fa-solid fa-comments"
     column_list = [
         SupportMessage.id,
@@ -134,8 +164,22 @@ class SupportMessageAdmin(ModelView, model=SupportMessage):
         SupportMessage.body,
         SupportMessage.created_at,
     ]
+    column_labels = {
+        SupportMessage.id: "ID",
+        SupportMessage.ticket_id: "Тикет",
+        SupportMessage.author: "Автор",
+        SupportMessage.body: "Текст",
+        SupportMessage.created_at: "Создано",
+    }
+    column_formatters = {
+        SupportMessage.author: format_message_author,
+    }
     column_searchable_list = [SupportMessage.body]
     form_columns = [SupportMessage.ticket_id, SupportMessage.body]
+    form_args = {
+        "ticket_id": {"label": "Тикет"},
+        "body": {"label": "Ответ оператора"},
+    }
     can_create = True
     can_edit = False
     can_delete = False
@@ -148,7 +192,6 @@ class SupportMessageAdmin(ModelView, model=SupportMessage):
 
         ticket_raw = data.get("ticket_id")
         body = str(data.get("body") or "")
-        # Prefer query prefill from ticket action.
         if not ticket_raw:
             ticket_raw = request.query_params.get("ticket_id")
         try:
@@ -172,8 +215,10 @@ class SupportMessageAdmin(ModelView, model=SupportMessage):
 
 
 class AdminPrincipalAdmin(ModelView, model=AdminPrincipal):
-    name = "Admin principal"
-    name_plural = "Admin principals"
+    category = "Доступ"
+    category_icon = "fa-solid fa-shield-halved"
+    name = "Оператор"
+    name_plural = "Операторы"
     icon = "fa-solid fa-user-shield"
     column_list = [
         AdminPrincipal.id,
@@ -182,6 +227,16 @@ class AdminPrincipalAdmin(ModelView, model=AdminPrincipal):
         AdminPrincipal.created_at,
         AdminPrincipal.updated_at,
     ]
+    column_labels = {
+        AdminPrincipal.id: "ID",
+        AdminPrincipal.login: "Логин",
+        AdminPrincipal.is_active: "Активен",
+        AdminPrincipal.created_at: "Создан",
+        AdminPrincipal.updated_at: "Обновлён",
+    }
+    column_formatters = {
+        AdminPrincipal.is_active: lambda m, _a: "Да" if m.is_active else "Нет",
+    }
     column_details_exclude_list = [AdminPrincipal.password_hash]
     form_columns = [AdminPrincipal.is_active]
     can_create = False
@@ -197,8 +252,10 @@ class AdminPrincipalAdmin(ModelView, model=AdminPrincipal):
 
 
 class AdminRoleBindingAdmin(ModelView, model=AdminRoleBinding):
-    name = "Admin role"
-    name_plural = "Admin roles"
+    category = "Доступ"
+    category_icon = "fa-solid fa-shield-halved"
+    name = "Роль"
+    name_plural = "Роли"
     icon = "fa-solid fa-key"
     column_list = [
         AdminRoleBinding.id,
@@ -206,6 +263,15 @@ class AdminRoleBindingAdmin(ModelView, model=AdminRoleBinding):
         AdminRoleBinding.role,
         AdminRoleBinding.created_at,
     ]
+    column_labels = {
+        AdminRoleBinding.id: "ID",
+        AdminRoleBinding.principal_id: "Оператор",
+        AdminRoleBinding.role: "Роль",
+        AdminRoleBinding.created_at: "Создана",
+    }
+    column_formatters = {
+        AdminRoleBinding.role: format_admin_role,
+    }
     form_columns = [
         AdminRoleBinding.principal_id,
         AdminRoleBinding.role,
@@ -223,8 +289,10 @@ class AdminRoleBindingAdmin(ModelView, model=AdminRoleBinding):
 
 
 class AdminAuditEventAdmin(ModelView, model=AdminAuditEvent):
-    name = "Audit event"
-    name_plural = "Audit log"
+    category = "Доступ"
+    category_icon = "fa-solid fa-shield-halved"
+    name = "Событие аудита"
+    name_plural = "Журнал аудита"
     icon = "fa-solid fa-clipboard-list"
     column_list = [
         AdminAuditEvent.id,
@@ -235,6 +303,15 @@ class AdminAuditEventAdmin(ModelView, model=AdminAuditEvent):
         AdminAuditEvent.ip,
         AdminAuditEvent.created_at,
     ]
+    column_labels = {
+        AdminAuditEvent.id: "ID",
+        AdminAuditEvent.actor_id: "Актор",
+        AdminAuditEvent.action: "Действие",
+        AdminAuditEvent.entity_type: "Сущность",
+        AdminAuditEvent.entity_id: "ID сущности",
+        AdminAuditEvent.ip: "IP",
+        AdminAuditEvent.created_at: "Когда",
+    }
     column_searchable_list = [AdminAuditEvent.action, AdminAuditEvent.entity_type]
     can_create = False
     can_edit = False
@@ -246,10 +323,25 @@ def register_views(admin: Any, settings: Settings) -> None:
     show_debug = settings.otp_store_debug_code_enabled
 
     class OtpChallengeAdmin(ModelView, model=AuthOtpChallenge):
-        name = "OTP challenge"
-        name_plural = "OTP challenges"
+        category = "Пользователи"
+        category_icon = "fa-solid fa-user-group"
+        name = "OTP"
+        name_plural = "OTP"
         icon = "fa-solid fa-sms"
         column_list = _otp_columns(show_debug_code=show_debug)
+        column_labels = {
+            AuthOtpChallenge.id: "ID",
+            AuthOtpChallenge.phone_e164: "Телефон",
+            AuthOtpChallenge.display_name: "Имя",
+            AuthOtpChallenge.debug_code: "Код",
+            AuthOtpChallenge.expires_at: "Истекает",
+            AuthOtpChallenge.attempts: "Попытки",
+            AuthOtpChallenge.consumed_at: "Использован",
+            AuthOtpChallenge.created_at: "Создан",
+        }
+        column_formatters = {
+            AuthOtpChallenge.debug_code: format_debug_code,
+        }
         column_details_exclude_list = [AuthOtpChallenge.code_digest]
         column_searchable_list = [
             AuthOtpChallenge.phone_e164,
@@ -261,10 +353,25 @@ def register_views(admin: Any, settings: Settings) -> None:
         page_size = 50
 
     class PhoneChangeChallengeAdmin(ModelView, model=AuthPhoneChangeChallenge):
-        name = "Phone-change challenge"
-        name_plural = "Phone-change challenges"
+        category = "Пользователи"
+        category_icon = "fa-solid fa-user-group"
+        name = "Смена телефона"
+        name_plural = "Смена телефона"
         icon = "fa-solid fa-mobile"
         column_list = _phone_change_columns(show_debug_code=show_debug)
+        column_labels = {
+            AuthPhoneChangeChallenge.id: "ID",
+            AuthPhoneChangeChallenge.user_id: "Пользователь",
+            AuthPhoneChangeChallenge.phone_e164: "Новый телефон",
+            AuthPhoneChangeChallenge.debug_code: "Код",
+            AuthPhoneChangeChallenge.expires_at: "Истекает",
+            AuthPhoneChangeChallenge.attempts: "Попытки",
+            AuthPhoneChangeChallenge.consumed_at: "Использован",
+            AuthPhoneChangeChallenge.created_at: "Создан",
+        }
+        column_formatters = {
+            AuthPhoneChangeChallenge.debug_code: format_debug_code,
+        }
         column_details_exclude_list = [AuthPhoneChangeChallenge.code_digest]
         column_searchable_list = [AuthPhoneChangeChallenge.phone_e164]
         can_create = False

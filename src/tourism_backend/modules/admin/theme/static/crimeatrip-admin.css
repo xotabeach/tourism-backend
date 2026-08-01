@@ -1,0 +1,310 @@
+/* CrimeaTrip Ops — brand theme over SQLAdmin / Tabler */
+
+:root {
+  --ct-page: #f7f7f7;
+  --ct-card: #ffffff;
+  --ct-ink: #171719;
+  --ct-ink-soft: #77797e;
+  --ct-control: #e7e7e7;
+  --ct-hairline: #e3e3e5;
+  --ct-accent: #386fc4;
+  --ct-accent-hover: #2f6fd0;
+  --ct-sea: #1b6b93;
+  --ct-coast: #0e4d6b;
+  --ct-error: #b3261e;
+  --ct-ok: #294638;
+  --ct-warn: #8a6a2f;
+  --ct-radius: 14px;
+  --ct-shadow: 0 4px 10px rgba(0, 0, 0, 0.08), 0 0 6px rgba(0, 0, 0, 0.05);
+  --tblr-font-sans-serif: "Rubik", system-ui, sans-serif;
+  --tblr-primary: #386fc4;
+  --tblr-primary-rgb: 56, 111, 196;
+  --tblr-body-bg: #f7f7f7;
+  --tblr-body-color: #171719;
+  --tblr-border-radius: 14px;
+}
+
+html,
+body {
+  font-family: "Rubik", system-ui, sans-serif;
+  background: var(--ct-page);
+  color: var(--ct-ink);
+}
+
+/* —— Login —— */
+body.ct-login {
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(27, 107, 147, 0.45), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, rgba(14, 77, 107, 0.55), transparent 50%),
+    linear-gradient(165deg, #0e4d6b 0%, #1b6b93 42%, #f7f7f7 78%);
+}
+
+.ct-login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 20px;
+}
+
+.ct-login-card {
+  width: min(420px, 100%);
+  background: var(--ct-card);
+  border-radius: var(--ct-radius);
+  box-shadow: var(--ct-shadow);
+  padding: 36px 32px 28px;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+}
+
+.ct-brand {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.ct-brand-mark {
+  display: block;
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--ct-ink);
+  line-height: 1.1;
+}
+
+.ct-brand-sub {
+  margin-top: 8px;
+  font-size: 0.95rem;
+  color: var(--ct-ink-soft);
+}
+
+.ct-login-card .form-label {
+  font-weight: 500;
+  color: var(--ct-ink);
+}
+
+.ct-login-card .form-control {
+  border-radius: 12px;
+  border-color: var(--ct-hairline);
+  background: var(--ct-page);
+  min-height: 48px;
+}
+
+.ct-login-card .form-control:focus {
+  border-color: var(--ct-accent);
+  box-shadow: 0 0 0 3px rgba(56, 111, 196, 0.2);
+}
+
+.ct-btn-primary {
+  background: var(--ct-accent) !important;
+  border-color: var(--ct-accent) !important;
+  border-radius: 12px !important;
+  font-weight: 600;
+  min-height: 48px;
+}
+
+.ct-btn-primary:hover {
+  background: var(--ct-accent-hover) !important;
+  border-color: var(--ct-accent-hover) !important;
+}
+
+/* —— Shell / sidebar —— */
+.wrapper > aside.navbar-vertical {
+  background: linear-gradient(180deg, #0e4d6b 0%, #123f57 100%) !important;
+  border-right: none;
+}
+
+.wrapper > aside .navbar-brand h3,
+.wrapper > aside .navbar-brand a {
+  color: #fff !important;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+}
+
+.wrapper > aside .nav-link {
+  color: rgba(255, 255, 255, 0.78) !important;
+  border-radius: 10px;
+  margin: 2px 8px;
+}
+
+.wrapper > aside .nav-link:hover,
+.wrapper > aside .nav-link.active {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #fff !important;
+}
+
+.wrapper > aside .nav-link.active {
+  box-shadow: inset 3px 0 0 var(--ct-accent);
+}
+
+.wrapper > aside .dropdown-header,
+.wrapper > aside .nav-item > span {
+  color: rgba(255, 255, 255, 0.45) !important;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding-left: 1rem;
+}
+
+.wrapper > aside .btn-secondary {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border-radius: 12px;
+}
+
+.page-wrapper {
+  background: var(--ct-page);
+}
+
+.page-title {
+  font-weight: 700;
+  color: var(--ct-ink);
+}
+
+.page-pretitle {
+  color: var(--ct-ink-soft);
+}
+
+.card {
+  border: none;
+  border-radius: var(--ct-radius);
+  box-shadow: var(--ct-shadow);
+  background: var(--ct-card);
+}
+
+.btn-primary {
+  background: var(--ct-accent);
+  border-color: var(--ct-accent);
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: var(--ct-accent-hover);
+  border-color: var(--ct-accent-hover);
+}
+
+.form-control,
+.form-select {
+  border-radius: 12px;
+  background: var(--ct-control);
+  border-color: transparent;
+}
+
+.form-control:focus,
+.form-select:focus {
+  background: #fff;
+  border-color: var(--ct-accent);
+  box-shadow: 0 0 0 3px rgba(56, 111, 196, 0.18);
+}
+
+.table {
+  --tblr-table-bg: transparent;
+}
+
+.table thead th {
+  color: var(--ct-ink-soft);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom-color: var(--ct-hairline);
+}
+
+.table tbody td {
+  vertical-align: middle;
+}
+
+/* Index hub cards */
+.ct-hub {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  width: 100%;
+}
+
+.ct-hub-card {
+  display: block;
+  padding: 22px 20px;
+  background: var(--ct-card);
+  border-radius: var(--ct-radius);
+  box-shadow: var(--ct-shadow);
+  text-decoration: none !important;
+  color: var(--ct-ink) !important;
+  border: 1px solid transparent;
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.ct-hub-card:hover {
+  border-color: rgba(56, 111, 196, 0.35);
+  transform: translateY(-2px);
+}
+
+.ct-hub-card h3 {
+  margin: 0 0 6px;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.ct-hub-card p {
+  margin: 0;
+  color: var(--ct-ink-soft);
+  font-size: 0.92rem;
+}
+
+/* Badges / chips (allowlisted enums only) */
+.ct-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.ct-badge-open,
+.ct-badge-ops {
+  background: rgba(56, 111, 196, 0.12);
+  color: var(--ct-accent);
+}
+
+.ct-badge-closed {
+  background: var(--ct-control);
+  color: var(--ct-ink-soft);
+}
+
+.ct-badge-chat,
+.ct-badge-user {
+  background: rgba(27, 107, 147, 0.12);
+  color: var(--ct-sea);
+}
+
+.ct-badge-route_error,
+.ct-badge-app_error {
+  background: rgba(179, 38, 30, 0.1);
+  color: var(--ct-error);
+}
+
+.ct-badge-operator,
+.ct-badge-admin {
+  background: rgba(41, 70, 56, 0.14);
+  color: var(--ct-ok);
+}
+
+.ct-badge-assistant,
+.ct-badge-system {
+  background: rgba(138, 106, 47, 0.14);
+  color: var(--ct-warn);
+}
+
+.ct-chip-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9rem;
+  letter-spacing: 0.12em;
+  background: #111113;
+  color: #ffd21e;
+  padding: 0.25rem 0.6rem;
+  border-radius: 8px;
+}

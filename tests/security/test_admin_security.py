@@ -189,6 +189,9 @@ async def test_admin_login_links_use_forwarded_https() -> None:
     assert "https://test/admin/statics/" in response.text
     assert 'action="https://test/admin/login"' in response.text
     assert 'href="http://test/admin/statics/' not in response.text
+    assert "crimeatrip-admin.css" in response.text
+    assert "КРЫМТРИП" in response.text
+    assert "ct-login" in response.text
 
 
 @pytest.mark.asyncio

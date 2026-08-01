@@ -1,0 +1,37 @@
+{% extends "sqladmin/base.html" %}
+{% block body_class %}ct-login{% endblock %}
+{% block body %}
+<div class="ct-login-shell">
+  <form class="ct-login-card" action="{{ url_for('admin:login') }}" method="POST" autocomplete="off">
+    <div class="ct-brand">
+      <span class="ct-brand-mark">КРЫМТРИП</span>
+      <p class="ct-brand-sub">Ops · внутренняя панель</p>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Логин</label>
+      {% if error %}
+      <input name="username" type="text" class="form-control is-invalid" placeholder="ops"
+        autocomplete="username">
+      <div class="invalid-feedback">Неверный логин или пароль</div>
+      {% else %}
+      <input name="username" type="text" class="form-control" placeholder="ops" autocomplete="username">
+      {% endif %}
+    </div>
+    <div class="mb-4">
+      <label class="form-label">Пароль</label>
+      <div class="input-group input-group-flat">
+        {% if error %}
+        <input name="password" type="password" class="form-control is-invalid" placeholder="••••••••"
+          autocomplete="current-password">
+        {% else %}
+        <input name="password" type="password" class="form-control" placeholder="••••••••"
+          autocomplete="current-password">
+        {% endif %}
+      </div>
+    </div>
+    <div class="form-footer">
+      <button type="submit" class="btn btn-primary ct-btn-primary w-100">Войти</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

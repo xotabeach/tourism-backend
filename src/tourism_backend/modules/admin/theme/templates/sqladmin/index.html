@@ -1,0 +1,25 @@
+{% extends "sqladmin/layout.html" %}
+{% block content_header %}
+<div class="row align-items-center">
+  <div class="col">
+    <h2 class="page-title">КрымТрип Ops</h2>
+    <div class="page-pretitle">Внутренняя панель поддержки и доступа</div>
+  </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="ct-hub">
+  <a class="ct-hub-card" href="{{ url_for('admin:list', identity='user') }}">
+    <h3>Пользователи</h3>
+    <p>Профили, OTP и смена телефона</p>
+  </a>
+  <a class="ct-hub-card" href="{{ url_for('admin:list', identity='support-ticket') }}">
+    <h3>Поддержка</h3>
+    <p>Тикеты и ответы оператора</p>
+  </a>
+  <a class="ct-hub-card" href="{{ url_for('admin:list', identity='admin-audit-event') }}">
+    <h3>Доступ</h3>
+    <p>Операторы, роли и журнал аудита</p>
+  </a>
+</div>
+{% endblock %}
