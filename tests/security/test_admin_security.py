@@ -165,6 +165,33 @@ async def test_admin_rejects_mutating_request_without_origin() -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_login_links_use_forwarded_https() -> None:
+    settings = Settings(
+        app_env="test",
+        admin_enabled=True,
+        admin_session_secret="test-admin-session-secret-32chars!!",
+        jwt_signing_key="test-jwt-signing-key-at-least-32-chars!!",
+    )
+    app = create_app(settings)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/admin/login",
+            headers={
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-Host": "api.example.test",
+            },
+        )
+    await app.state.redis.aclose()
+    await app.state.engine.dispose()
+    assert response.status_code == 200
+    # ProxyHeadersMiddleware rewrites scheme from X-Forwarded-Proto.
+    assert "https://test/admin/statics/" in response.text
+    assert 'action="https://test/admin/login"' in response.text
+    assert 'href="http://test/admin/statics/' not in response.text
+
+
+@pytest.mark.asyncio
 async def test_mobile_jwt_does_not_authenticate_admin(admin_client: AsyncClient) -> None:
     # Obtain a mobile access token.
     phone = f"+7903{uuid4().int % 10_000_000:07d}"

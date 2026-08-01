@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from tourism_backend.api.errors import register_exception_handlers
 from tourism_backend.api.router import api_router
@@ -69,6 +70,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=str(_MEDIA_DIR)), name="media")
     mount_admin(app, session_factory=session_factory, settings=resolved_settings)
+    # Caddy terminates TLS; without this SQLAdmin emits http:// links (mixed
+    # content → unstyled UI) and login POSTs break CSRF after http→https redirect.
+    if resolved_settings.app_env is not AppEnvironment.LOCAL:
+        app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
     return app
 
 

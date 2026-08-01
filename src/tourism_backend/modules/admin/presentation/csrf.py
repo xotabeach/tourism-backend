@@ -13,23 +13,41 @@ from starlette.types import ASGIApp
 _SAFE = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
 
+def _request_host(request: Request) -> str | None:
+    forwarded = request.headers.get("x-forwarded-host")
+    if forwarded:
+        # First hop only; strip optional port for comparison below.
+        return forwarded.split(",")[0].strip()
+    return request.headers.get("host")
+
+
+def _hosts_match(candidate_netloc: str, host: str) -> bool:
+    # Compare hostnames case-insensitively; ignore default ports.
+    cand = candidate_netloc.lower()
+    expected = host.lower()
+    if cand == expected:
+        return True
+    return cand.split(":")[0] == expected.split(":")[0]
+
+
 def _origin_ok(request: Request) -> bool:
-    host = request.headers.get("host")
+    host = _request_host(request)
     if not host:
         return False
     origin = request.headers.get("origin")
     if origin:
         try:
-            return URL(origin).netloc == host
+            return _hosts_match(URL(origin).netloc, host)
         except Exception:  # noqa: BLE001
             return False
     referer = request.headers.get("referer")
     if referer:
         try:
-            return URL(referer).netloc == host
+            return _hosts_match(URL(referer).netloc, host)
         except Exception:  # noqa: BLE001
             return False
-    # No Origin/Referer — reject mutating admin requests (CSRF-ish).
+    # Caddy may send Referrer-Policy: no-referrer; browsers still send Origin on
+    # POST. If both are absent, reject.
     return False
 
 

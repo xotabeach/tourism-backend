@@ -7,7 +7,7 @@ from sqladmin import Admin
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware import Middleware
 
-from tourism_backend.config import Settings
+from tourism_backend.config import AppEnvironment, Settings
 from tourism_backend.modules.admin.presentation.auth import AdminAuthBackend
 from tourism_backend.modules.admin.presentation.csrf import AdminCsrfMiddleware
 from tourism_backend.modules.admin.presentation.views import register_views
@@ -27,7 +27,9 @@ def mount_admin(
         session_factory=session_factory,
         settings=settings,
         same_site="lax",
-        https_only=settings.app_env.value in {"staging", "production"},
+        # Secure cookies on staging/prod. Test contour is HTTPS but CI clients use http://.
+        https_only=settings.app_env
+        in {AppEnvironment.STAGING, AppEnvironment.PRODUCTION},
     )
     admin = Admin(
         app=app,
