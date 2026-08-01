@@ -148,11 +148,19 @@ def test_support_ticket_chat_reply_is_exposed_not_model_create() -> None:
     assert getattr(reply, "_path", None) == "/reply/{pk}"
     assert "POST" in getattr(reply, "_methods", [])
 
+    messages = SupportTicketAdmin.list_messages
+    assert getattr(messages, "_exposed", False) is True
+    assert getattr(messages, "_path", None) == "/messages/{pk}"
+    assert "GET" in getattr(messages, "_methods", [])
+
     template = (
         Path(__file__).resolve().parents[2]
         / "src/tourism_backend/modules/admin/theme/templates/sqladmin/support_chat.html"
     ).read_text(encoding="utf-8")
     assert "view-support-ticket-post_reply" in template
+    assert "view-support-ticket-list_messages" in template
+    assert "setInterval" in template
+    assert "escapeHtml" in template
     assert "admin:create" not in template
     assert "support-message" not in template
 
@@ -555,3 +563,20 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
     )
     assert chat_after.status_code == 200, chat_after.text
     assert "Chat compose reply from ops" in chat_after.text
+    assert f"/admin/support-ticket/messages/{ticket_id}" in chat_after.text
+    assert "ct-chat-live" in chat_after.text
+
+    live = await admin_client.get(
+        f"/admin/support-ticket/messages/{ticket_id}",
+        headers={**headers, "Accept": "application/json"},
+    )
+    assert live.status_code == 200, live.text
+    payload = live.json()
+    assert payload["ticket_id"] == ticket_id
+    assert payload["status"] == "open"
+    bodies = [m["body"] for m in payload["messages"]]
+    assert "Need help from ops" in bodies
+    assert "Chat compose reply from ops" in bodies
+    assert all("id" in m and "author_key" in m for m in payload["messages"])
+    # Poll payload is data, not HTML — bodies stay plain text.
+    assert "<script>" not in live.text

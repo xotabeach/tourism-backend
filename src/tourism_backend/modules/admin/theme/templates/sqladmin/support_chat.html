@@ -6,14 +6,17 @@
   'closed': 'Закрыт'
 }.get(model.status, model.status) %}
 <div class="col-12">
-  <div class="ct-chat-shell">
+  <div class="ct-chat-shell" data-ticket-id="{{ model.id }}">
     <header class="ct-chat-header">
       <div class="ct-chat-header-main">
-        <div class="ct-chat-header-kicker">Поддержка · диалог</div>
+        <div class="ct-chat-header-kicker">
+          Поддержка · диалог
+          <span class="ct-chat-live" id="ct-chat-live" hidden>live</span>
+        </div>
         <h3 class="ct-chat-title">{{ model.subject or "Без темы" }}</h3>
         <div class="ct-chat-header-meta">
           <span class="ct-chip-mono">{{ model.id }}</span>
-          <span class="ct-badge ct-badge-{{ model.status }}">{{ status_label }}</span>
+          <span class="ct-badge ct-badge-{{ model.status }}" id="ct-chat-status">{{ status_label }}</span>
           <span class="ct-chat-header-user">
             Пользователь
             <button type="button" class="ct-user-peek" data-user-id="{{ model.user_id }}" title="Показать пользователя">
@@ -44,7 +47,7 @@
       {% endif %}
       {% for msg in messages %}
       {% set side = 'operator' if msg.author_key == 'operator' else ('user' if msg.author_key == 'user' else 'system') %}
-      <div class="ct-chat-row ct-chat-row-{{ side }}">
+      <div class="ct-chat-row ct-chat-row-{{ side }}" data-msg-id="{{ msg.id }}">
         <div class="ct-chat-avatar ct-chat-avatar-{{ side }}" aria-hidden="true">
           {% if side == 'operator' %}Ops{% elif side == 'user' %}U{% else %}·{% endif %}
         </div>
@@ -80,16 +83,161 @@
             Отправить
           </button>
         </div>
-        <div class="ct-chat-compose-hint">Сообщение от имени оператора · до 4000 символов</div>
+        <div class="ct-chat-compose-hint">Сообщение от имени оператора · до 4000 символов · обновление каждые 3 с</div>
       </form>
     </footer>
   </div>
 </div>
 <script>
   (function () {
+    var POLL_MS = 3000;
+    var STATUS_RU = { open: "Открыт", closed: "Закрыт" };
     var thread = document.getElementById("ct-chat-thread");
-    if (thread) thread.scrollTop = thread.scrollHeight;
+    var live = document.getElementById("ct-chat-live");
+    var statusEl = document.getElementById("ct-chat-status");
     var ta = document.getElementById("ct-chat-body");
+    var shell = document.querySelector(".ct-chat-shell");
+    if (!thread || !shell) return;
+
+    var messagesUrl =
+      "{{ url_for('admin:view-support-ticket-list_messages', pk=model.id) }}";
+    var lastFingerprint = "";
+    var pollTimer = null;
+
+    function scrollToBottom(force) {
+      var nearBottom =
+        thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80;
+      if (force || nearBottom) {
+        thread.scrollTop = thread.scrollHeight;
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function sideFor(authorKey) {
+      if (authorKey === "operator") return "operator";
+      if (authorKey === "user") return "user";
+      return "system";
+    }
+
+    function avatarLabel(side) {
+      if (side === "operator") return "Ops";
+      if (side === "user") return "U";
+      return "·";
+    }
+
+    function fingerprint(messages) {
+      if (!messages || !messages.length) return "0";
+      var last = messages[messages.length - 1];
+      return messages.length + ":" + (last.id || "") + ":" + (last.created_at || "");
+    }
+
+    function renderMessages(messages) {
+      if (!messages.length) {
+        thread.innerHTML =
+          '<div class="ct-chat-empty">' +
+          '<div class="ct-chat-empty-title">Диалог пуст</div>' +
+          "<p>Напишите первый ответ оператора ниже — пользователь увидит его в приложении.</p>" +
+          "</div>";
+        return;
+      }
+      var html = "";
+      for (var i = 0; i < messages.length; i++) {
+        var msg = messages[i];
+        var side = sideFor(msg.author_key);
+        html +=
+          '<div class="ct-chat-row ct-chat-row-' +
+          side +
+          '" data-msg-id="' +
+          escapeHtml(msg.id || "") +
+          '">' +
+          '<div class="ct-chat-avatar ct-chat-avatar-' +
+          side +
+          '" aria-hidden="true">' +
+          avatarLabel(side) +
+          "</div>" +
+          '<div class="ct-chat-bubble ct-chat-' +
+          side +
+          '">' +
+          '<div class="ct-chat-meta">' +
+          '<span class="ct-chat-author">' +
+          escapeHtml(msg.author || "") +
+          "</span>" +
+          '<span class="ct-chat-time">' +
+          escapeHtml(msg.created_at || "") +
+          "</span>" +
+          "</div>" +
+          '<div class="ct-chat-body">' +
+          escapeHtml(msg.body || "") +
+          "</div>" +
+          "</div></div>";
+      }
+      thread.innerHTML = html;
+    }
+
+    function applyPayload(data, forceScroll) {
+      var next = fingerprint(data.messages || []);
+      if (next !== lastFingerprint) {
+        var hadMessages = lastFingerprint !== "" && lastFingerprint !== "0";
+        renderMessages(data.messages || []);
+        lastFingerprint = next;
+        scrollToBottom(forceScroll || hadMessages);
+      }
+      if (statusEl && data.status) {
+        statusEl.textContent = STATUS_RU[data.status] || data.status;
+        statusEl.className = "ct-badge ct-badge-" + data.status;
+      }
+    }
+
+    function poll() {
+      if (document.hidden) return;
+      fetch(messagesUrl, {
+        method: "GET",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      })
+        .then(function (res) {
+          if (res.status === 401) {
+            window.location.href = "{{ url_for('admin:login') }}";
+            return null;
+          }
+          if (!res.ok) throw new Error("poll failed");
+          return res.json();
+        })
+        .then(function (data) {
+          if (!data) return;
+          if (live) live.hidden = false;
+          applyPayload(data, false);
+        })
+        .catch(function () {
+          if (live) live.hidden = true;
+        });
+    }
+
+    scrollToBottom(true);
+    (function seedFingerprint() {
+      var rows = thread.querySelectorAll("[data-msg-id]");
+      var last = rows.length ? rows[rows.length - 1].getAttribute("data-msg-id") : "";
+      lastFingerprint = rows.length + ":" + (last || "") + ":";
+    })();
+
+    pollTimer = window.setInterval(poll, POLL_MS);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) poll();
+    });
+    window.addEventListener("beforeunload", function () {
+      if (pollTimer) window.clearInterval(pollTimer);
+    });
+    // Immediate first poll after paint.
+    window.setTimeout(poll, 400);
+
     if (!ta) return;
     ta.addEventListener("keydown", function (ev) {
       if (ev.key === "Enter" && !ev.shiftKey) {

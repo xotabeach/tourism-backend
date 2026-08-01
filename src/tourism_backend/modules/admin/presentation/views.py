@@ -10,7 +10,7 @@ from sqladmin import ModelView, action, expose
 from sqladmin.filters import AllUniqueStringValuesFilter, OperationColumnFilter
 from sqlalchemy import select
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from wtforms import PasswordField  # type: ignore[import-untyped]
 from wtforms.validators import Length, Optional  # type: ignore[import-untyped]
 
@@ -305,26 +305,32 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
     page_size = 50
     details_template = "sqladmin/support_chat.html"
 
+    async def _load_chat_messages(self, ticket_id: UUID) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        async with self.session_maker(expire_on_commit=False) as session:
+            result = await session.execute(
+                select(SupportMessage)
+                .where(SupportMessage.ticket_id == ticket_id)
+                .order_by(SupportMessage.created_at.asc())
+            )
+            for msg in result.scalars().all():
+                messages.append(
+                    {
+                        "id": str(msg.id),
+                        "author": _AUTHOR_RU.get(msg.author, msg.author),
+                        "author_key": msg.author,
+                        "body": msg.body,
+                        "created_at": msg.created_at.strftime("%d.%m.%Y %H:%M"),
+                    }
+                )
+        return messages
+
     async def get_object_for_details(self, request: Request) -> Any:
         model = await super().get_object_for_details(request)
-        messages: list[dict[str, str]] = []
         if model is not None:
-            async with self.session_maker(expire_on_commit=False) as session:
-                result = await session.execute(
-                    select(SupportMessage)
-                    .where(SupportMessage.ticket_id == model.id)
-                    .order_by(SupportMessage.created_at.asc())
-                )
-                for msg in result.scalars().all():
-                    messages.append(
-                        {
-                            "author": _AUTHOR_RU.get(msg.author, msg.author),
-                            "author_key": msg.author,
-                            "body": msg.body,
-                            "created_at": msg.created_at.strftime("%d.%m.%Y %H:%M"),
-                        }
-                    )
-        request.state.support_chat_messages = messages
+            request.state.support_chat_messages = await self._load_chat_messages(model.id)
+        else:
+            request.state.support_chat_messages = []
         return model
 
     @action(
@@ -345,6 +351,37 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
         return RedirectResponse(
             str(request.url_for("admin:list", identity="support-ticket")),
             status_code=302,
+        )
+
+    @expose("/messages/{pk}", methods=["GET"])
+    async def list_messages(self, request: Request) -> Response:
+        """JSON poll endpoint for live chat updates on the details page."""
+        if session_principal_id(request) is None:
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+
+        pk = str(request.path_params.get("pk") or "").strip()
+        try:
+            ticket_id = UUID(pk)
+        except (TypeError, ValueError) as exc:
+            raise AppError(
+                code="validation_error",
+                message="ticket_id must be a UUID",
+                status_code=400,
+            ) from exc
+
+        async with self.session_maker(expire_on_commit=False) as session:
+            ticket = await session.get(SupportTicket, ticket_id)
+            if ticket is None:
+                return JSONResponse({"detail": "not_found"}, status_code=404)
+            ticket_status = ticket.status
+
+        messages = await self._load_chat_messages(ticket_id)
+        return JSONResponse(
+            {
+                "ticket_id": str(ticket_id),
+                "status": ticket_status,
+                "messages": messages,
+            }
         )
 
     @expose("/reply/{pk}", methods=["POST"])

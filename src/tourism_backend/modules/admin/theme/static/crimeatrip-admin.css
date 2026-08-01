@@ -452,6 +452,44 @@ body.ct-login {
   border-bottom: 1px solid var(--ct-hairline);
 }
 
+.ct-chat-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.45rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #0b6b3a;
+  background: rgba(34, 197, 94, 0.16);
+  vertical-align: middle;
+}
+
+.ct-chat-live::before {
+  content: "";
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45);
+  animation: ct-chat-live-pulse 1.6s ease-out infinite;
+}
+
+@keyframes ct-chat-live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 0.35rem rgba(34, 197, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
 .ct-chat-header-kicker {
   font-size: 0.72rem;
   text-transform: uppercase;
