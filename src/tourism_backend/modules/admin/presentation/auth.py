@@ -78,9 +78,7 @@ class AdminAuthBackend(AuthenticationBackend):
                 return False
 
             roles_result = await session.execute(
-                select(AdminRoleBinding.role).where(
-                    AdminRoleBinding.principal_id == principal.id
-                )
+                select(AdminRoleBinding.role).where(AdminRoleBinding.principal_id == principal.id)
             )
             roles = list(roles_result.scalars().all())
             if not roles:

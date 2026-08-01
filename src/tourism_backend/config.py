@@ -129,9 +129,7 @@ def validate_settings(settings: Settings) -> None:
             )
             raise RuntimeError(msg)
     if len(settings.admin_session_secret) < 32:
-        raise RuntimeError(
-            "Admin session secret must be at least 32 characters outside local/test"
-        )
+        raise RuntimeError("Admin session secret must be at least 32 characters outside local/test")
     if settings.admin_bootstrap_password and len(settings.admin_bootstrap_password) < 12:
         raise RuntimeError(
             "ADMIN_BOOTSTRAP_PASSWORD must be at least 12 characters outside local/test"

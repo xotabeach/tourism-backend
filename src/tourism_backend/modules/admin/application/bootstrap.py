@@ -26,17 +26,12 @@ async def ensure_bootstrap_admin(
     if not login or not password:
         return
     # Staging/prod may still bootstrap explicitly, but never with a short password.
-    if (
-        settings.app_env not in {AppEnvironment.LOCAL, AppEnvironment.TEST}
-        and len(password) < 12
-    ):
+    if settings.app_env not in {AppEnvironment.LOCAL, AppEnvironment.TEST} and len(password) < 12:
         logger.warning("Skipping admin bootstrap: password too short outside local/test")
         return
 
     async with session_factory() as session:
-        result = await session.execute(
-            select(AdminPrincipal).where(AdminPrincipal.login == login)
-        )
+        result = await session.execute(select(AdminPrincipal).where(AdminPrincipal.login == login))
         principal = result.scalar_one_or_none()
         now = datetime.now(UTC)
         if principal is None:
