@@ -547,9 +547,7 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
         follow_redirects=False,
     )
     assert compose.status_code in {302, 303}, compose.text
-    assert f"/admin/support-ticket/details/{ticket_id}" in compose.headers.get(
-        "location", ""
-    )
+    assert f"/admin/support-ticket/details/{ticket_id}" in compose.headers.get("location", "")
 
     chat_after = await admin_client.get(
         f"/admin/support-ticket/details/{ticket_id}",
