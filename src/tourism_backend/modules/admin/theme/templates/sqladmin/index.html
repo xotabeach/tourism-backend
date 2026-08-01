@@ -10,14 +10,17 @@
 {% block content %}
 <div class="ct-hub">
   <a class="ct-hub-card" href="{{ url_for('admin:list', identity='user') }}">
+    <div class="ct-hub-icon"><i class="fa-solid fa-users"></i></div>
     <h3>Пользователи</h3>
-    <p>Профили, OTP и смена телефона</p>
+    <p>Профили с аватарками, OTP-коды и смена телефона</p>
   </a>
   <a class="ct-hub-card" href="{{ url_for('admin:list', identity='support-ticket') }}">
+    <div class="ct-hub-icon"><i class="fa-solid fa-headset"></i></div>
     <h3>Поддержка</h3>
-    <p>Тикеты и ответы оператора</p>
+    <p>Тикеты и чат с пользователем — ответы оператора</p>
   </a>
   <a class="ct-hub-card" href="{{ url_for('admin:list', identity='admin-audit-event') }}">
+    <div class="ct-hub-icon"><i class="fa-solid fa-shield-halved"></i></div>
     <h3>Доступ</h3>
     <p>Операторы, роли и журнал аудита</p>
   </a>

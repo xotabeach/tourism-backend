@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from markupsafe import Markup, escape
+from starlette.requests import Request
 
 _STATUS_LABELS = {
     "open": ("Открыт", "ct-badge-open"),
@@ -42,6 +45,27 @@ _ALLOWED_CSS = frozenset(
         "ct-badge-admin",
     }
 )
+
+
+def _safe_media_url(url: object) -> str | None:
+    """Only same-origin /media/ paths — never javascript: or external."""
+    if not isinstance(url, str):
+        return None
+    if not url.startswith("/media/"):
+        return None
+    if ".." in url or "\\" in url or "\n" in url or "\r" in url:
+        return None
+    return url
+
+
+def _user_media(request: Request | None, user_id: UUID) -> tuple[str | None, str | None]:
+    cache = getattr(getattr(request, "state", None), "user_media", None)
+    if not isinstance(cache, dict):
+        return None, None
+    entry = cache.get(user_id)
+    if not isinstance(entry, dict):
+        return None, None
+    return _safe_media_url(entry.get("avatar")), _safe_media_url(entry.get("cover"))
 
 
 def _badge(value: object, mapping: dict[str, tuple[str, str]]) -> Markup:
@@ -86,3 +110,54 @@ def format_user_id_peek(model: object, attribute: object) -> Markup:
         '<button type="button" class="ct-user-peek" data-user-id="{}" '
         'title="Показать пользователя">{}…</button>'
     ).format(escape(uid), escape(short))
+
+
+def format_user_avatar_name(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    name = escape(str(getattr(model, "display_name", "") or "—"))
+    user_id = getattr(model, "id", None)
+    avatar = None
+    if isinstance(user_id, UUID):
+        avatar, _cover = _user_media(request, user_id)
+    if avatar:
+        thumb = Markup(
+            '<img class="ct-user-avatar" src="{}" alt="" width="36" height="36" '
+            'loading="lazy" decoding="async">'
+        ).format(escape(avatar))
+    else:
+        initial = escape(str(getattr(model, "display_name", "?") or "?")[:1].upper())
+        thumb = Markup(
+            '<span class="ct-user-avatar ct-user-avatar-fallback">{}</span>'
+        ).format(initial)
+    return Markup(
+        '<span class="ct-user-profile-cell">{}<span class="ct-user-name">{}</span></span>'
+    ).format(thumb, name)
+
+
+def format_user_cover(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    user_id = getattr(model, "id", None)
+    if not isinstance(user_id, UUID):
+        return Markup('<span class="text-secondary">—</span>')
+    _avatar, cover = _user_media(request, user_id)
+    uid = str(user_id)
+    short = escape(uid[:8])
+    id_chip = Markup(
+        '<button type="button" class="ct-user-peek" data-user-id="{}" '
+        'title="{}">{}…</button>'
+    ).format(escape(uid), escape(uid), short)
+    if cover:
+        banner = Markup(
+            '<span class="ct-user-banner"><img src="{}" alt="" '
+            'loading="lazy" decoding="async"></span>'
+        ).format(escape(cover))
+    else:
+        banner = Markup('<span class="ct-user-banner ct-user-banner-empty">нет баннера</span>')
+    return Markup('<span class="ct-user-banner-cell">{}{}</span>').format(banner, id_chip)
+

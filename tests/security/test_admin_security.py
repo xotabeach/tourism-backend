@@ -113,6 +113,10 @@ def test_otp_admin_view_never_lists_code_digest() -> None:
     assert AuthOtpChallenge.debug_code in listed
     details_excluded = list(otp_view.column_details_exclude_list)  # type: ignore[attr-defined]
     assert AuthOtpChallenge.code_digest in details_excluded
+    assert otp_view.column_default_sort == (AuthOtpChallenge.created_at, True)  # type: ignore[attr-defined]
+    filter_names = {getattr(f, "parameter_name", None) for f in otp_view.column_filters}  # type: ignore[attr-defined]
+    assert "phone_e164" in filter_names
+    assert "user_id" in filter_names
 
     admin_prodish = _FakeAdmin()
     register_views(
@@ -123,6 +127,119 @@ def test_otp_admin_view_never_lists_code_digest() -> None:
         v for v in admin_prodish.views if getattr(v, "model", None) is AuthOtpChallenge
     )
     assert AuthOtpChallenge.debug_code not in list(otp_hidden.column_list)  # type: ignore[attr-defined]
+
+
+def test_user_admin_allows_edit_and_shows_media_formatters() -> None:
+    from tourism_backend.modules.admin.presentation.views import UserAdmin
+    from tourism_backend.modules.identity.infrastructure.models import User
+
+    assert UserAdmin.can_edit is True
+    assert User.display_name in UserAdmin.column_formatters
+    assert User.id in UserAdmin.column_formatters
+
+
+def test_media_formatter_rejects_unsafe_urls() -> None:
+    from tourism_backend.modules.admin.presentation.formatters import _safe_media_url
+
+    assert _safe_media_url("/media/profiles/x.webp") == "/media/profiles/x.webp"
+    assert _safe_media_url("javascript:alert(1)") is None
+    assert _safe_media_url("/media/../etc/passwd") is None
+    assert _safe_media_url("https://evil.example/a.png") is None
+
+
+def test_admin_formatters_escape_and_render_media() -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from starlette.requests import Request
+
+    from tourism_backend.modules.admin.presentation.formatters import (
+        format_admin_role,
+        format_debug_code,
+        format_message_author,
+        format_ticket_kind,
+        format_ticket_status,
+        format_user_avatar_name,
+        format_user_cover,
+        format_user_id_peek,
+    )
+
+    assert "Открыт" in str(format_ticket_status(SimpleNamespace(status="open"), None))
+    assert "Чат" in str(format_ticket_kind(SimpleNamespace(kind="chat"), None))
+    assert "Оператор" in str(format_message_author(SimpleNamespace(author="operator"), None))
+    assert "Admin" in str(format_admin_role(SimpleNamespace(role="admin"), None))
+    assert "—" in str(format_debug_code(SimpleNamespace(debug_code=None), None))
+    assert "1234" in str(format_debug_code(SimpleNamespace(debug_code="1234"), None))
+
+    uid = uuid4()
+    peek = str(format_user_id_peek(SimpleNamespace(user_id=uid), None))
+    assert str(uid) in peek
+    assert "ct-user-peek" in peek
+    assert "—" in str(format_user_id_peek(SimpleNamespace(user_id=None), None))
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 123),
+        "server": ("test", 80),
+    }
+    request = Request(scope)
+    request.state.user_media = {
+        uid: {"avatar": "/media/a.webp", "cover": "/media/c.webp"},
+    }
+    user = SimpleNamespace(id=uid, display_name="Ada")
+    avatar_html = str(format_user_avatar_name(user, "display_name", request))
+    assert "/media/a.webp" in avatar_html
+    assert "Ada" in avatar_html
+    cover_html = str(format_user_cover(user, "id", request))
+    assert "/media/c.webp" in cover_html
+
+    empty_req = Request(scope)
+    empty_req.state.user_media = {}
+    assert "ct-user-avatar-fallback" in str(
+        format_user_avatar_name(user, "display_name", empty_req)
+    )
+    assert "нет баннера" in str(format_user_cover(user, "id", empty_req))
+
+
+@pytest.mark.asyncio
+async def test_otp_linked_user_id_filter_builds_query() -> None:
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from tourism_backend.modules.admin.presentation.filters import OtpLinkedUserIdFilter
+    from tourism_backend.modules.identity.infrastructure.models import AuthOtpChallenge
+
+    filt = OtpLinkedUserIdFilter()
+    base = select(AuthOtpChallenge)
+    assert await filt.get_filtered_query(base, "equals", "", AuthOtpChallenge) is base
+    bad = await filt.get_filtered_query(base, "equals", "not-a-uuid", AuthOtpChallenge)
+    assert bad is not base
+    uid = uuid4()
+    ok = await filt.get_filtered_query(base, "equals", str(uid), AuthOtpChallenge)
+    compiled = str(ok.compile(compile_kwargs={"literal_binds": False}))
+    assert "phone_e164" in compiled.lower() or "users" in compiled.lower()
+    contains = await filt.get_filtered_query(base, "contains", str(uid)[:8], AuthOtpChallenge)
+    assert contains is not base
+    starts = await filt.get_filtered_query(base, "starts_with", str(uid)[:4], AuthOtpChallenge)
+    assert starts is not base
+    assert filt.get_operation_options_for_model(AuthOtpChallenge)
+    assert await filt.lookups(None, AuthOtpChallenge, None) == []  # type: ignore[arg-type]
+    assert await filt.get_filtered_query(base, "unknown", "x", AuthOtpChallenge) is base
+    assert "—" in str(
+        __import__(
+            "tourism_backend.modules.admin.presentation.formatters",
+            fromlist=["format_user_cover"],
+        ).format_user_cover(__import__("types").SimpleNamespace(id="nope"), "id", None)
+    )
 
 
 @pytest.mark.asyncio
@@ -285,6 +402,12 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
     otp_list = await admin_client.get("/admin/auth-otp-challenge/list", headers=headers)
     assert otp_list.status_code == 200, otp_list.text
     assert "code_digest" not in otp_list.text
+    otp_filtered = await admin_client.get(
+        "/admin/auth-otp-challenge/list",
+        params={"phone_e164": "+7", "phone_e164_op": "contains"},
+        headers=headers,
+    )
+    assert otp_filtered.status_code == 200, otp_filtered.text
 
     # Create a support ticket as a mobile user, then reply as operator via service.
     phone = f"+7904{uuid4().int % 10_000_000:07d}"
@@ -302,6 +425,35 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
         },
     )
     access = verify.json()["access_token"]
+    me = await admin_client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {access}"},
+    )
+    assert me.status_code == 200, me.text
+    user_id = me.json()["id"]
+
+    users_list = await admin_client.get("/admin/user/list", headers=headers)
+    assert users_list.status_code == 200, users_list.text
+    assert "ct-user-profile-cell" in users_list.text or "User" in users_list.text
+
+    user_details = await admin_client.get(f"/admin/user/details/{user_id}", headers=headers)
+    assert user_details.status_code == 200, user_details.text
+
+    edit = await admin_client.post(
+        f"/admin/user/edit/{user_id}",
+        data={
+            "display_name": "User Edited",
+            "phone_e164": phone,
+            "travel_points": "7",
+            "notify_push_enabled": "y",
+            "notify_sms_enabled": "",
+            "notify_haptics_enabled": "y",
+        },
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert edit.status_code in {302, 303, 200}, edit.text
+
     ticket_resp = await admin_client.post(
         "/api/v1/support/tickets",
         headers={"Authorization": f"Bearer {access}"},
@@ -356,3 +508,12 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
         ticket = await session.get(SupportTicket, UUID(ticket_id))
         assert ticket is not None
         assert ticket.updated_at <= datetime.now(UTC)
+
+    chat = await admin_client.get(
+        f"/admin/support-ticket/details/{ticket_id}",
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    assert "ct-chat-shell" in chat.text
+    assert "Need help from ops" in chat.text
+    assert "Ops here" in chat.text

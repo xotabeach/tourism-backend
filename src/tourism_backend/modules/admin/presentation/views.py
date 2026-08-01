@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqladmin import ModelView, action
-from sqladmin.filters import AllUniqueStringValuesFilter
+from sqladmin.filters import AllUniqueStringValuesFilter, OperationColumnFilter
 from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
@@ -28,19 +28,24 @@ from tourism_backend.modules.admin.presentation.auth import (
     require_admin_role,
     session_principal_id,
 )
+from tourism_backend.modules.admin.presentation.filters import OtpLinkedUserIdFilter
 from tourism_backend.modules.admin.presentation.formatters import (
     format_admin_role,
     format_debug_code,
     format_message_author,
     format_ticket_kind,
     format_ticket_status,
+    format_user_avatar_name,
+    format_user_cover,
     format_user_id_peek,
 )
+from tourism_backend.modules.identity.application.schemas import normalize_ru_phone
 from tourism_backend.modules.identity.infrastructure.models import (
     AuthOtpChallenge,
     AuthPhoneChangeChallenge,
     User,
 )
+from tourism_backend.modules.media.application.service import resolve_urls
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
 
 _AUTHOR_RU = {
@@ -61,26 +66,166 @@ class UserAdmin(ModelView, model=User):
         User.id,
         User.display_name,
         User.phone_e164,
+        User.travel_points,
         User.created_at,
         User.notify_push_enabled,
     ]
     column_labels = {
-        User.id: "ID",
-        User.display_name: "Имя",
+        User.id: "Баннер",
+        User.display_name: "Профиль",
         User.phone_e164: "Телефон",
+        User.travel_points: "ТП",
         User.created_at: "Создан",
         User.notify_push_enabled: "Push",
+        User.notify_sms_enabled: "SMS",
+        User.notify_haptics_enabled: "Тактильность",
     }
     column_formatters = {
+        User.id: format_user_cover,
+        User.display_name: format_user_avatar_name,
         User.notify_push_enabled: lambda m, _a: "Да" if m.notify_push_enabled else "Нет",
     }
+    column_formatters_detail = {
+        User.id: format_user_cover,
+        User.display_name: format_user_avatar_name,
+    }
     column_searchable_list = [User.display_name, User.phone_e164]
-    column_sortable_list = [User.created_at, User.display_name]
+    column_sortable_list = [User.created_at, User.display_name, User.travel_points]
+    column_default_sort = (User.created_at, True)
+    column_filters = [
+        OperationColumnFilter(User.phone_e164, title="Телефон"),
+        OperationColumnFilter(User.id, title="ID пользователя"),
+    ]
+    form_columns = [
+        User.display_name,
+        User.phone_e164,
+        User.travel_points,
+        User.notify_push_enabled,
+        User.notify_sms_enabled,
+        User.notify_haptics_enabled,
+    ]
+    form_args = {
+        "display_name": {"label": "Имя", "validators": [Length(min=1, max=120)]},
+        "phone_e164": {"label": "Телефон"},
+        "travel_points": {"label": "Путевые точки"},
+        "notify_push_enabled": {"label": "Push"},
+        "notify_sms_enabled": {"label": "SMS"},
+        "notify_haptics_enabled": {"label": "Тактильность"},
+    }
     can_create = False
-    can_edit = False
+    can_edit = True
     can_delete = False
     can_export = False
     page_size = 50
+
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        ids = [row.id for row in pagination.rows]
+        media: dict[UUID, dict[str, str | None]] = {
+            uid: {"avatar": None, "cover": None} for uid in ids
+        }
+        if ids:
+            async with self.session_maker(expire_on_commit=False) as session:
+                avatars = await resolve_urls(
+                    session, entity_type="user", entity_ids=ids, role="avatar"
+                )
+                covers = await resolve_urls(
+                    session, entity_type="user", entity_ids=ids, role="cover"
+                )
+            for uid in ids:
+                media[uid] = {
+                    "avatar": avatars.get(uid),
+                    "cover": covers.get(uid),
+                }
+        request.state.user_media = media
+        return pagination
+
+    async def get_object_for_details(self, request: Request) -> Any:
+        model = await super().get_object_for_details(request)
+        if model is not None:
+            async with self.session_maker(expire_on_commit=False) as session:
+                avatars = await resolve_urls(
+                    session, entity_type="user", entity_ids=[model.id], role="avatar"
+                )
+                covers = await resolve_urls(
+                    session, entity_type="user", entity_ids=[model.id], role="cover"
+                )
+            request.state.user_media = {
+                model.id: {
+                    "avatar": avatars.get(model.id),
+                    "cover": covers.get(model.id),
+                }
+            }
+        return model
+
+    async def update_model(self, request: Request, pk: Any, data: dict[str, Any]) -> Any:
+        actor_id = session_principal_id(request)
+        display_name = str(data.get("display_name") or "").strip()
+        if not display_name or len(display_name) > 120:
+            raise AppError(
+                code="validation_error",
+                message="display_name must be 1..120 characters",
+                status_code=400,
+            )
+        try:
+            phone = normalize_ru_phone(str(data.get("phone_e164") or ""))
+        except ValueError as exc:
+            raise AppError(
+                code="validation_error",
+                message="Invalid phone",
+                status_code=400,
+            ) from exc
+        if not phone.startswith("+7") or len(phone) != 12 or not phone[1:].isdigit():
+            raise AppError(
+                code="validation_error",
+                message="phone must match +7XXXXXXXXXX",
+                status_code=400,
+            )
+        try:
+            points = int(data.get("travel_points") or 0)
+        except (TypeError, ValueError) as exc:
+            raise AppError(
+                code="validation_error",
+                message="travel_points must be an integer",
+                status_code=400,
+            ) from exc
+        if points < 0 or points > 1_000_000:
+            raise AppError(
+                code="validation_error",
+                message="travel_points out of range",
+                status_code=400,
+            )
+
+        async with self.session_maker(expire_on_commit=False) as session:
+            user = await session.get(User, UUID(str(pk)))
+            if user is None:
+                raise AppError(code="not_found", message="User not found", status_code=404)
+            clash = await session.execute(
+                select(User.id).where(User.phone_e164 == phone, User.id != user.id).limit(1)
+            )
+            if clash.scalar_one_or_none() is not None:
+                raise AppError(
+                    code="conflict",
+                    message="Phone already in use",
+                    status_code=409,
+                )
+            user.display_name = display_name
+            user.phone_e164 = phone
+            user.travel_points = points
+            user.notify_push_enabled = bool(data.get("notify_push_enabled"))
+            user.notify_sms_enabled = bool(data.get("notify_sms_enabled"))
+            user.notify_haptics_enabled = bool(data.get("notify_haptics_enabled"))
+            await record_audit(
+                session,
+                actor_id=actor_id,
+                action="admin.user_update",
+                entity_type="user",
+                entity_id=str(user.id),
+                ip=request.client.host if request.client else None,
+            )
+            await session.commit()
+            await session.refresh(user)
+            return user
 
 
 def _otp_columns(*, show_debug_code: bool) -> list[Any]:
@@ -494,6 +639,16 @@ def register_views(admin: Any, settings: Settings) -> None:
             AuthOtpChallenge.phone_e164,
             AuthOtpChallenge.display_name,
         ]
+        column_sortable_list = [
+            AuthOtpChallenge.created_at,
+            AuthOtpChallenge.expires_at,
+            AuthOtpChallenge.phone_e164,
+        ]
+        column_default_sort = (AuthOtpChallenge.created_at, True)
+        column_filters = [
+            OperationColumnFilter(AuthOtpChallenge.phone_e164, title="Телефон"),
+            OtpLinkedUserIdFilter(),
+        ]
         can_create = False
         can_edit = False
         can_delete = False
@@ -522,6 +677,15 @@ def register_views(admin: Any, settings: Settings) -> None:
         }
         column_details_exclude_list = [AuthPhoneChangeChallenge.code_digest]
         column_searchable_list = [AuthPhoneChangeChallenge.phone_e164]
+        column_sortable_list = [
+            AuthPhoneChangeChallenge.created_at,
+            AuthPhoneChangeChallenge.phone_e164,
+        ]
+        column_default_sort = (AuthPhoneChangeChallenge.created_at, True)
+        column_filters = [
+            OperationColumnFilter(AuthPhoneChangeChallenge.phone_e164, title="Телефон"),
+            OperationColumnFilter(AuthPhoneChangeChallenge.user_id, title="ID пользователя"),
+        ]
         can_create = False
         can_edit = False
         can_delete = False
