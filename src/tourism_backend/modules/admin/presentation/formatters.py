@@ -129,9 +129,9 @@ def format_user_avatar_name(
         ).format(escape(avatar))
     else:
         initial = escape(str(getattr(model, "display_name", "?") or "?")[:1].upper())
-        thumb = Markup(
-            '<span class="ct-user-avatar ct-user-avatar-fallback">{}</span>'
-        ).format(initial)
+        thumb = Markup('<span class="ct-user-avatar ct-user-avatar-fallback">{}</span>').format(
+            initial
+        )
     return Markup(
         '<span class="ct-user-profile-cell">{}<span class="ct-user-name">{}</span></span>'
     ).format(thumb, name)
@@ -149,8 +149,7 @@ def format_user_cover(
     uid = str(user_id)
     short = escape(uid[:8])
     id_chip = Markup(
-        '<button type="button" class="ct-user-peek" data-user-id="{}" '
-        'title="{}">{}…</button>'
+        '<button type="button" class="ct-user-peek" data-user-id="{}" title="{}">{}…</button>'
     ).format(escape(uid), escape(uid), short)
     if cover:
         banner = Markup(
@@ -160,4 +159,3 @@ def format_user_cover(
     else:
         banner = Markup('<span class="ct-user-banner ct-user-banner-empty">нет баннера</span>')
     return Markup('<span class="ct-user-banner-cell">{}{}</span>').format(banner, id_chip)
-
