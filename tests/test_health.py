@@ -22,7 +22,11 @@ async def test_health_live_returns_ok(app, path: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/health/ready", "/ready"])
-async def test_ready_reports_not_ready_without_lifespan(app, path: str) -> None:
+async def test_ready_reports_not_ready_without_dependencies(app, path: str) -> None:
+    # create_app wires engine clients early for SQLAdmin; readiness still requires
+    # live session_factory + redis on app.state.
+    app.state.session_factory = None
+    app.state.redis = None
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(path)
