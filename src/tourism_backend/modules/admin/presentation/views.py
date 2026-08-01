@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqladmin import ModelView, action
+from sqladmin import ModelView, action, expose
 from sqladmin.filters import AllUniqueStringValuesFilter, OperationColumnFilter
 from sqlalchemy import select
 from starlette.requests import Request
@@ -330,7 +330,7 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
     @action(
         name="reply_as_operator",
         label="Ответить как оператор",
-        confirmation_message="Открыть форму создания сообщения для выбранного тикета?",
+        confirmation_message="Открыть чат выбранного тикета?",
         add_in_detail=True,
         add_in_list=True,
     )
@@ -342,8 +342,47 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
                 str(request.url_for("admin:details", identity="support-ticket", pk=ticket_id)),
                 status_code=302,
             )
-        url = str(request.url_for("admin:create", identity="support-message"))
-        return RedirectResponse(url, status_code=302)
+        return RedirectResponse(
+            str(request.url_for("admin:list", identity="support-ticket")),
+            status_code=302,
+        )
+
+    @expose("/reply/{pk}", methods=["POST"])
+    async def post_reply(self, request: Request) -> Response:
+        """Compose box on the chat details page — not SQLAdmin model create."""
+        actor_id = session_principal_id(request)
+        if actor_id is None:
+            return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
+
+        pk = str(request.path_params.get("pk") or "").strip()
+        try:
+            ticket_id = UUID(pk)
+        except (TypeError, ValueError) as exc:
+            raise AppError(
+                code="validation_error",
+                message="ticket_id must be a UUID",
+                status_code=400,
+            ) from exc
+
+        form = await request.form()
+        body = str(form.get("body") or "")
+        client_ip = request.client.host if request.client else None
+        details_url = str(
+            request.url_for("admin:details", identity="support-ticket", pk=str(ticket_id))
+        )
+        try:
+            async with self.session_maker(expire_on_commit=False) as session:
+                await operator_reply(
+                    session,
+                    ticket_id=ticket_id,
+                    body=body,
+                    actor_id=actor_id,
+                    ip=client_ip,
+                )
+        except AppError:
+            # Stay in the chat thread; operator can retry after fixing body/status.
+            return RedirectResponse(details_url, status_code=303)
+        return RedirectResponse(details_url, status_code=303)
 
 
 class SupportMessageAdmin(ModelView, model=SupportMessage):
@@ -385,12 +424,15 @@ class SupportMessageAdmin(ModelView, model=SupportMessage):
         if actor_id is None:
             raise AppError(code="unauthorized", message="Not authenticated", status_code=401)
 
-        ticket_raw = data.get("ticket_id")
+        ticket_raw: Any = data.get("ticket_id")
         body = str(data.get("body") or "")
         if not ticket_raw:
             ticket_raw = request.query_params.get("ticket_id")
+        related_id = getattr(ticket_raw, "id", None)
+        if related_id is not None:
+            ticket_raw = related_id
         try:
-            ticket_id = UUID(str(ticket_raw))
+            ticket_id = ticket_raw if isinstance(ticket_raw, UUID) else UUID(str(ticket_raw))
         except (TypeError, ValueError) as exc:
             raise AppError(
                 code="validation_error",
@@ -416,7 +458,7 @@ class SupportMessageAdmin(ModelView, model=SupportMessage):
                     pk=str(ticket_id),
                 )
             ),
-            status_code=302,
+            status_code=303,
         )
         return message
 

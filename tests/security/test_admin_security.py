@@ -138,6 +138,25 @@ def test_user_admin_allows_edit_and_shows_media_formatters() -> None:
     assert User.id in UserAdmin.column_formatters
 
 
+def test_support_ticket_chat_reply_is_exposed_not_model_create() -> None:
+    from pathlib import Path
+
+    from tourism_backend.modules.admin.presentation.views import SupportTicketAdmin
+
+    reply = SupportTicketAdmin.post_reply
+    assert getattr(reply, "_exposed", False) is True
+    assert getattr(reply, "_path", None) == "/reply/{pk}"
+    assert "POST" in getattr(reply, "_methods", [])
+
+    template = (
+        Path(__file__).resolve().parents[2]
+        / "src/tourism_backend/modules/admin/theme/templates/sqladmin/support_chat.html"
+    ).read_text(encoding="utf-8")
+    assert "view-support-ticket-post_reply" in template
+    assert "admin:create" not in template
+    assert "support-message" not in template
+
+
 def test_media_formatter_rejects_unsafe_urls() -> None:
     from tourism_backend.modules.admin.presentation.formatters import _safe_media_url
 
@@ -517,3 +536,24 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
     assert "ct-chat-shell" in chat.text
     assert "Need help from ops" in chat.text
     assert "Ops here" in chat.text
+    assert f"/admin/support-ticket/reply/{ticket_id}" in chat.text
+    assert "/admin/support-message/create" not in chat.text
+
+    # Compose box posts into the ticket chat route (not model create).
+    compose = await admin_client.post(
+        f"/admin/support-ticket/reply/{ticket_id}",
+        data={"body": "Chat compose reply from ops"},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert compose.status_code in {302, 303}, compose.text
+    assert f"/admin/support-ticket/details/{ticket_id}" in compose.headers.get(
+        "location", ""
+    )
+
+    chat_after = await admin_client.get(
+        f"/admin/support-ticket/details/{ticket_id}",
+        headers=headers,
+    )
+    assert chat_after.status_code == 200, chat_after.text
+    assert "Chat compose reply from ops" in chat_after.text

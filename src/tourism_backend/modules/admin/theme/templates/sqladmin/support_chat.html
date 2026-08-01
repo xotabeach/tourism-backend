@@ -60,8 +60,12 @@
     </div>
 
     <footer class="ct-chat-compose-wrap">
-      <form method="POST" action="{{ url_for('admin:create', identity='support-message') }}" class="ct-chat-compose" autocomplete="off">
-        <input type="hidden" name="ticket_id" value="{{ model.id }}">
+      <form
+        method="POST"
+        action="{{ url_for('admin:view-support-ticket-post_reply', pk=model.id) }}"
+        class="ct-chat-compose"
+        autocomplete="off"
+      >
         <label class="visually-hidden" for="ct-chat-body">Ответ оператора</label>
         <div class="ct-chat-compose-box">
           <textarea
