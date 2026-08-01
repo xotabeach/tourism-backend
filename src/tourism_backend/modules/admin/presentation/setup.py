@@ -35,8 +35,7 @@ def mount_admin(
         settings=settings,
         same_site="lax",
         # Secure cookies on staging/prod. Test contour is HTTPS but CI clients use http://.
-        https_only=settings.app_env
-        in {AppEnvironment.STAGING, AppEnvironment.PRODUCTION},
+        https_only=settings.app_env in {AppEnvironment.STAGING, AppEnvironment.PRODUCTION},
     )
     admin = Admin(
         app=app,
