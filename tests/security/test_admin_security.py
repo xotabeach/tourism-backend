@@ -165,6 +165,52 @@ async def test_admin_rejects_mutating_request_without_origin() -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_rejects_cross_site_fetch_even_with_matching_host_hint() -> None:
+    settings = Settings(
+        app_env="test",
+        admin_enabled=True,
+        admin_session_secret="test-admin-session-secret-32chars!!",
+        jwt_signing_key="test-jwt-signing-key-at-least-32-chars!!",
+    )
+    app = create_app(settings)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/admin/login",
+            data={"username": "x", "password": "y"},
+            headers={"Sec-Fetch-Site": "cross-site"},
+        )
+    await app.state.redis.aclose()
+    await app.state.engine.dispose()
+    assert response.status_code == 403
+    assert "CSRF" in response.text
+
+
+@pytest.mark.asyncio
+async def test_admin_accepts_same_origin_sec_fetch_without_origin() -> None:
+    """Browsers behind Referrer-Policy: no-referrer may omit Origin/Referer."""
+    settings = Settings(
+        app_env="test",
+        admin_enabled=True,
+        admin_session_secret="test-admin-session-secret-32chars!!",
+        jwt_signing_key="test-jwt-signing-key-at-least-32-chars!!",
+    )
+    app = create_app(settings)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/admin/login",
+            data={"username": "x", "password": "y"},
+            headers={"Sec-Fetch-Site": "same-origin"},
+        )
+    await app.state.redis.aclose()
+    await app.state.engine.dispose()
+    # CSRF passed; login itself fails with bad credentials (400 from SQLAdmin).
+    assert response.status_code != 403
+    assert "CSRF" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_admin_login_links_use_forwarded_https() -> None:
     settings = Settings(
         app_env="test",
@@ -187,8 +233,9 @@ async def test_admin_login_links_use_forwarded_https() -> None:
     assert response.status_code == 200
     # ProxyHeadersMiddleware rewrites scheme from X-Forwarded-Proto.
     assert "https://test/admin/statics/" in response.text
-    assert 'action="https://test/admin/login"' in response.text
+    assert 'action="/admin/login"' in response.text
     assert 'href="http://test/admin/statics/' not in response.text
+    assert 'name="referrer" content="same-origin"' in response.text
     assert "crimeatrip-admin.css" in response.text
     assert "КРЫМТРИП" in response.text
     assert "ct-login" in response.text
