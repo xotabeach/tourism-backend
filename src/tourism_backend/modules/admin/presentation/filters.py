@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, String, false, select
+from sqlalchemy import Select, String, false, or_, select
 from starlette.requests import Request
 
 from tourism_backend.modules.identity.infrastructure.models import (
     AuthOtpChallenge,
     User,
 )
+from tourism_backend.modules.support.infrastructure.models import SupportTicket
 
 
 class OtpLinkedUserIdFilter:
@@ -72,3 +73,48 @@ class OtpLinkedUserIdFilter:
             return query
 
         return query.where(AuthOtpChallenge.phone_e164.in_(phones))
+
+
+class AwaitingOperatorReplyFilter:
+    """Support tickets whose last human message is from the user."""
+
+    has_operator = False
+    template = "sqladmin/filters/lookup_filter.html"
+    title = "Ожидание ответа"
+    parameter_name = "awaiting_reply"
+    column = SupportTicket.last_human_author
+    default_value = None
+
+    async def lookups(
+        self,
+        request: Request,
+        model: Any,
+        run_query: Any,
+    ) -> list[tuple[str, str]]:
+        return [
+            ("1", "Ждёт ответа оператора"),
+            ("0", "Уже отвечено / без ожидания"),
+        ]
+
+    async def get_filtered_query(
+        self,
+        query: Select[Any],
+        value: Any,
+        model: Any,
+    ) -> Select[Any]:
+        raw = str(value or "").strip()
+        if raw in {"", "all", "None"}:
+            return query
+        if raw == "1":
+            return query.where(
+                SupportTicket.status != "closed",
+                SupportTicket.last_human_author == "user",
+            )
+        if raw == "0":
+            return query.where(
+                or_(
+                    SupportTicket.status == "closed",
+                    SupportTicket.last_human_author.is_distinct_from("user"),
+                )
+            )
+        return query

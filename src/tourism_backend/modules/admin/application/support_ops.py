@@ -45,6 +45,8 @@ async def operator_reply(
         created_at=now,
     )
     ticket.updated_at = now
+    ticket.last_message_at = now
+    ticket.last_human_author = "operator"
     session.add(message)
     await record_audit(
         session,

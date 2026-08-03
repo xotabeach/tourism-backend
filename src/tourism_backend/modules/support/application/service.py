@@ -19,6 +19,20 @@ _ASSISTANT_WELCOME = (
     "Пока можете уточнить детали в этом чате."
 )
 
+_HUMAN_AUTHORS = frozenset({"user", "operator"})
+
+
+def _touch_ticket_on_message(
+    ticket: SupportTicket,
+    *,
+    author: str,
+    at: datetime,
+) -> None:
+    ticket.updated_at = at
+    ticket.last_message_at = at
+    if author in _HUMAN_AUTHORS:
+        ticket.last_human_author = author
+
 
 def _message_out(message: SupportMessage) -> SupportMessageOut:
     return SupportMessageOut(
@@ -64,6 +78,8 @@ async def create_ticket(
         route_id=payload.route_id,
         created_at=now,
         updated_at=now,
+        last_human_author="user",
+        last_message_at=now,
     )
     session.add(ticket)
     await session.flush()
@@ -88,6 +104,8 @@ async def create_ticket(
         )
         session.add(assistant)
         messages.append(assistant)
+        # Welcome is not a human reply — keep awaiting operator.
+        _touch_ticket_on_message(ticket, author="assistant", at=now)
 
     await session.commit()
     return _ticket_out(ticket, messages)
@@ -153,7 +171,7 @@ async def add_message(
         body=payload.body,
         created_at=now,
     )
-    ticket.updated_at = now
+    _touch_ticket_on_message(ticket, author="user", at=now)
     session.add(message)
     await session.commit()
     return _message_out(message)

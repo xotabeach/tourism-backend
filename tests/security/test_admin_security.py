@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -136,6 +136,49 @@ def test_user_admin_allows_edit_and_shows_media_formatters() -> None:
     assert UserAdmin.can_edit is True
     assert User.display_name in UserAdmin.column_formatters
     assert User.id in UserAdmin.column_formatters
+    assert User.travel_points not in UserAdmin.form_columns
+    assert User.travel_points in UserAdmin.column_list
+
+
+def test_support_ticket_admin_sorts_and_flags_awaiting_reply() -> None:
+    from tourism_backend.modules.admin.presentation.filters import AwaitingOperatorReplyFilter
+    from tourism_backend.modules.admin.presentation.formatters import format_ticket_awaiting
+    from tourism_backend.modules.admin.presentation.views import SupportTicketAdmin
+    from tourism_backend.modules.support.infrastructure.models import SupportTicket
+
+    assert SupportTicket.last_message_at in SupportTicketAdmin.column_sortable_list
+    assert SupportTicketAdmin.column_default_sort == (SupportTicket.last_message_at, True)
+    assert any(
+        isinstance(f, AwaitingOperatorReplyFilter) for f in SupportTicketAdmin.column_filters
+    )
+
+    awaiting = format_ticket_awaiting(
+        __import__("types").SimpleNamespace(status="open", last_human_author="user"),
+        None,
+    )
+    assert "Ждёт ответа" in str(awaiting)
+    assert "ct-ticket-awaiting" in str(awaiting)
+    answered = format_ticket_awaiting(
+        __import__("types").SimpleNamespace(status="open", last_human_author="operator"),
+        None,
+    )
+    assert "Отвечено" in str(answered)
+
+
+def test_admin_moscow_datetime_formatter() -> None:
+    from datetime import UTC, datetime
+
+    from tourism_backend.modules.admin.presentation.datetime_fmt import (
+        format_moscow_datetime,
+        format_moscow_plain,
+        to_moscow,
+    )
+
+    utc = datetime(2026, 8, 3, 10, 0, tzinfo=UTC)
+    msk = to_moscow(utc)
+    assert msk.hour == 13  # UTC+3
+    assert "МСК" in str(format_moscow_datetime(utc))
+    assert "13:00" in format_moscow_plain(utc)
 
 
 def test_support_ticket_chat_reply_is_exposed_not_model_create() -> None:
@@ -466,12 +509,21 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
     user_details = await admin_client.get(f"/admin/user/details/{user_id}", headers=headers)
     assert user_details.status_code == 200, user_details.text
 
+    # travel_points must remain auto-managed (posted value ignored).
+    from tourism_backend.modules.identity.infrastructure.models import User
+
+    app = admin_client._transport.app  # type: ignore[attr-defined]
+    async with app.state.session_factory() as session:
+        before = await session.get(User, UUID(user_id))
+        assert before is not None
+        points_before = before.travel_points
+
     edit = await admin_client.post(
         f"/admin/user/edit/{user_id}",
         data={
             "display_name": "User Edited",
             "phone_e164": phone,
-            "travel_points": "7",
+            "travel_points": "999999",
             "notify_push_enabled": "y",
             "notify_sms_enabled": "",
             "notify_haptics_enabled": "y",
@@ -480,6 +532,21 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
         follow_redirects=False,
     )
     assert edit.status_code in {302, 303, 200}, edit.text
+
+    async with app.state.session_factory() as session:
+        after = await session.get(User, UUID(user_id))
+        assert after is not None
+        assert after.display_name == "User Edited"
+        assert after.travel_points == points_before
+
+    user_edit_page = await admin_client.get(f"/admin/user/edit/{user_id}", headers=headers)
+    assert user_edit_page.status_code == 200, user_edit_page.text
+    assert "avatar_file" in user_edit_page.text
+    assert "cover_file" in user_edit_page.text
+    assert 'name="travel_points"' not in user_edit_page.text
+
+    tickets_list = await admin_client.get("/admin/support-ticket/list", headers=headers)
+    assert tickets_list.status_code == 200, tickets_list.text
 
     ticket_resp = await admin_client.post(
         "/api/v1/support/tickets",
@@ -493,12 +560,18 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
     assert ticket_resp.status_code in {200, 201}, ticket_resp.text
     ticket_id = ticket_resp.json()["id"]
 
-    from uuid import UUID
+    awaiting_list = await admin_client.get(
+        "/admin/support-ticket/list",
+        params={"awaiting_reply": "1"},
+        headers=headers,
+    )
+    assert awaiting_list.status_code == 200, awaiting_list.text
+    assert "Ждёт ответа" in awaiting_list.text or ticket_id[:8] in awaiting_list.text
+    assert "МСК" in awaiting_list.text
 
     from tourism_backend.api.errors import AppError
     from tourism_backend.modules.admin.infrastructure.models import AdminPrincipal
 
-    app = admin_client._transport.app  # type: ignore[attr-defined]
     async with app.state.session_factory() as session:
         principal = (
             await session.execute(

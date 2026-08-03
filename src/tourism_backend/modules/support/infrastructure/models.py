@@ -24,6 +24,13 @@ class SupportTicket(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ForeignKey("routes.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Last user/operator author (assistant/system ignored) — ops "needs reply".
+    last_human_author: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    last_message_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
 
 
 class SupportMessage(Base, UUIDPrimaryKeyMixin):

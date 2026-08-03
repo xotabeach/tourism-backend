@@ -43,6 +43,8 @@ _ALLOWED_CSS = frozenset(
         "ct-badge-system",
         "ct-badge-ops",
         "ct-badge-admin",
+        "ct-badge-awaiting",
+        "ct-badge-answered",
     }
 )
 
@@ -97,6 +99,19 @@ def format_debug_code(model: object, attribute: object) -> Markup:
     if not code:
         return Markup('<span class="text-secondary">—</span>')
     return Markup('<span class="ct-chip-mono">{}</span>').format(escape(str(code)))
+
+
+def format_ticket_awaiting(model: object, attribute: object) -> Markup:
+    """Highlight tickets whose last human message is from the user."""
+    status = str(getattr(model, "status", "") or "")
+    last_human = str(getattr(model, "last_human_author", "") or "")
+    if status != "closed" and last_human == "user":
+        return Markup(
+            '<span class="ct-badge ct-badge-awaiting ct-ticket-awaiting">Ждёт ответа</span>'
+        )
+    if last_human == "operator":
+        return Markup('<span class="ct-badge ct-badge-answered">Отвечено</span>')
+    return Markup('<span class="text-secondary">—</span>')
 
 
 def format_user_id_peek(model: object, attribute: object) -> Markup:

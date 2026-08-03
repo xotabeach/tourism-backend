@@ -316,6 +316,26 @@ body.ct-login {
   color: var(--ct-warn);
 }
 
+.ct-badge-awaiting {
+  background: rgba(179, 38, 30, 0.14);
+  color: var(--ct-error);
+  font-weight: 700;
+}
+
+.ct-badge-answered {
+  background: rgba(41, 70, 56, 0.12);
+  color: var(--ct-ok);
+}
+
+/* Highlight ticket rows waiting for an operator reply */
+table.model-list tbody tr:has(.ct-ticket-awaiting) {
+  background: rgba(179, 38, 30, 0.06);
+}
+
+table.model-list tbody tr:has(.ct-ticket-awaiting):hover {
+  background: rgba(179, 38, 30, 0.1);
+}
+
 .ct-chip-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.9rem;

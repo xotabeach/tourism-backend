@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 from sqladmin import ModelView, action, expose
@@ -11,7 +12,7 @@ from sqladmin.filters import AllUniqueStringValuesFilter, OperationColumnFilter
 from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
-from wtforms import PasswordField  # type: ignore[import-untyped]
+from wtforms import FileField, PasswordField  # type: ignore[import-untyped]
 from wtforms.validators import Length, Optional  # type: ignore[import-untyped]
 
 from tourism_backend.api.errors import AppError
@@ -28,17 +29,26 @@ from tourism_backend.modules.admin.presentation.auth import (
     require_admin_role,
     session_principal_id,
 )
-from tourism_backend.modules.admin.presentation.filters import OtpLinkedUserIdFilter
+from tourism_backend.modules.admin.presentation.datetime_fmt import (
+    ADMIN_COLUMN_TYPE_FORMATTERS,
+    format_moscow_plain,
+)
+from tourism_backend.modules.admin.presentation.filters import (
+    AwaitingOperatorReplyFilter,
+    OtpLinkedUserIdFilter,
+)
 from tourism_backend.modules.admin.presentation.formatters import (
     format_admin_role,
     format_debug_code,
     format_message_author,
+    format_ticket_awaiting,
     format_ticket_kind,
     format_ticket_status,
     format_user_avatar_name,
     format_user_cover,
     format_user_id_peek,
 )
+from tourism_backend.modules.identity.application import media as identity_media
 from tourism_backend.modules.identity.application.display_name import (
     DISPLAY_NAME_MAX_LENGTH,
     DISPLAY_NAME_MIN_LENGTH,
@@ -50,6 +60,7 @@ from tourism_backend.modules.identity.infrastructure.models import (
     AuthPhoneChangeChallenge,
     User,
 )
+from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.application.service import resolve_urls
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
 
@@ -61,18 +72,43 @@ _AUTHOR_RU = {
 }
 
 
+def _read_upload_bytes(value: Any) -> bytes | None:
+    """Accept WTForms FileStorage / Starlette UploadFile / raw bytes."""
+    if value is None or value == "":
+        return None
+    filename = getattr(value, "filename", None)
+    if filename is not None and str(filename).strip() == "":
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    read = getattr(value, "read", None)
+    if not callable(read):
+        return None
+    raw = read()
+    if hasattr(value, "seek"):
+        with contextlib.suppress(OSError):
+            value.seek(0)
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if not isinstance(raw, (bytes, bytearray)):
+        return None
+    return bytes(raw) if raw else None
+
+
 class UserAdmin(ModelView, model=User):
     category = "Пользователи"
     category_icon = "fa-solid fa-user-group"
     name = "Пользователь"
     name_plural = "Пользователи"
     icon = "fa-solid fa-users"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
     column_list = [
         User.id,
         User.display_name,
         User.phone_e164,
         User.travel_points,
         User.created_at,
+        User.updated_at,
         User.notify_push_enabled,
     ]
     column_labels = {
@@ -81,6 +117,7 @@ class UserAdmin(ModelView, model=User):
         User.phone_e164: "Телефон",
         User.travel_points: "ТП",
         User.created_at: "Создан",
+        User.updated_at: "Обновлён",
         User.notify_push_enabled: "Push",
         User.notify_sms_enabled: "SMS",
         User.notify_haptics_enabled: "Тактильность",
@@ -95,16 +132,22 @@ class UserAdmin(ModelView, model=User):
         User.display_name: format_user_avatar_name,
     }
     column_searchable_list = [User.display_name, User.phone_e164]
-    column_sortable_list = [User.created_at, User.display_name, User.travel_points]
+    column_sortable_list = [
+        User.created_at,
+        User.updated_at,
+        User.display_name,
+        User.travel_points,
+        User.phone_e164,
+    ]
     column_default_sort = (User.created_at, True)
     column_filters = [
         OperationColumnFilter(User.phone_e164, title="Телефон"),
+        OperationColumnFilter(User.display_name, title="Имя"),
         OperationColumnFilter(User.id, title="ID пользователя"),
     ]
     form_columns = [
         User.display_name,
         User.phone_e164,
-        User.travel_points,
         User.notify_push_enabled,
         User.notify_sms_enabled,
         User.notify_haptics_enabled,
@@ -115,7 +158,6 @@ class UserAdmin(ModelView, model=User):
             "validators": [Length(min=DISPLAY_NAME_MIN_LENGTH, max=DISPLAY_NAME_MAX_LENGTH)],
         },
         "phone_e164": {"label": "Телефон"},
-        "travel_points": {"label": "Путевые точки"},
         "notify_push_enabled": {"label": "Push"},
         "notify_sms_enabled": {"label": "SMS"},
         "notify_haptics_enabled": {"label": "Тактильность"},
@@ -125,6 +167,23 @@ class UserAdmin(ModelView, model=User):
     can_delete = False
     can_export = False
     page_size = 50
+
+    async def scaffold_form(self, rules: Any = None) -> Any:
+        form_cls = await super().scaffold_form(rules)
+
+        class _Form(form_cls):  # type: ignore[misc,valid-type]
+            avatar_file = FileField(
+                "Аватар",
+                validators=[Optional()],
+                description="JPEG / PNG / WebP, до 5 МБ. Пусто = без изменения.",
+            )
+            cover_file = FileField(
+                "Баннер",
+                validators=[Optional()],
+                description="JPEG / PNG / WebP, до 5 МБ. Пусто = без изменения.",
+            )
+
+        return _Form
 
     async def list(self, request: Request) -> Any:
         pagination = await super().list(request)
@@ -190,20 +249,13 @@ class UserAdmin(ModelView, model=User):
                 message="phone must match +7XXXXXXXXXX",
                 status_code=400,
             )
-        try:
-            points = int(data.get("travel_points") or 0)
-        except (TypeError, ValueError) as exc:
-            raise AppError(
-                code="validation_error",
-                message="travel_points must be an integer",
-                status_code=400,
-            ) from exc
-        if points < 0 or points > 1_000_000:
-            raise AppError(
-                code="validation_error",
-                message="travel_points out of range",
-                status_code=400,
-            )
+
+        # travel_points are auto-awarded — ignore any posted value.
+        if "travel_points" in data:
+            data = {k: v for k, v in data.items() if k != "travel_points"}
+
+        avatar_bytes = _read_upload_bytes(data.get("avatar_file"))
+        cover_bytes = _read_upload_bytes(data.get("cover_file"))
 
         async with self.session_maker(expire_on_commit=False) as session:
             user = await session.get(User, UUID(str(pk)))
@@ -220,10 +272,28 @@ class UserAdmin(ModelView, model=User):
                 )
             user.display_name = display_name
             user.phone_e164 = phone
-            user.travel_points = points
             user.notify_push_enabled = bool(data.get("notify_push_enabled"))
             user.notify_sms_enabled = bool(data.get("notify_sms_enabled"))
             user.notify_haptics_enabled = bool(data.get("notify_haptics_enabled"))
+            user.updated_at = datetime.now(UTC)
+
+            for kind, payload in (("avatar", avatar_bytes), ("cover", cover_bytes)):
+                if payload is None:
+                    continue
+                saved = identity_media.save_profile_image_bytes(payload, user_id=user.id, kind=kind)
+                await media_service.replace_attachment(
+                    session,
+                    entity_type="user",
+                    entity_id=user.id,
+                    role=kind,
+                    storage_key=saved.storage_key,
+                    content_type=saved.content_type,
+                    byte_size=saved.byte_size,
+                    width=saved.width,
+                    height=saved.height,
+                    uploaded_by_user_id=user.id,
+                )
+
             await record_audit(
                 session,
                 actor_id=actor_id,
@@ -273,21 +343,26 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
     name = "Тикет"
     name_plural = "Тикеты"
     icon = "fa-solid fa-ticket"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
     column_list = [
+        SupportTicket.last_human_author,
         SupportTicket.id,
         SupportTicket.user_id,
         SupportTicket.kind,
         SupportTicket.subject,
         SupportTicket.status,
-        SupportTicket.created_at,
+        SupportTicket.last_message_at,
         SupportTicket.updated_at,
+        SupportTicket.created_at,
     ]
     column_labels = {
+        SupportTicket.last_human_author: "Ответ",
         SupportTicket.id: "ID",
         SupportTicket.user_id: "Пользователь",
         SupportTicket.kind: "Тип",
         SupportTicket.subject: "Тема",
         SupportTicket.status: "Статус",
+        SupportTicket.last_message_at: "Последнее сообщение",
         SupportTicket.created_at: "Создан",
         SupportTicket.updated_at: "Обновлён",
     }
@@ -295,9 +370,24 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
         SupportTicket.status: format_ticket_status,
         SupportTicket.kind: format_ticket_kind,
         SupportTicket.user_id: format_user_id_peek,
+        SupportTicket.last_human_author: format_ticket_awaiting,
     }
     column_searchable_list = [SupportTicket.subject]
-    column_filters = [AllUniqueStringValuesFilter(SupportTicket.status)]
+    column_sortable_list = [
+        SupportTicket.last_message_at,
+        SupportTicket.updated_at,
+        SupportTicket.created_at,
+        SupportTicket.status,
+        SupportTicket.kind,
+        SupportTicket.subject,
+    ]
+    column_default_sort = (SupportTicket.last_message_at, True)
+    column_filters: ClassVar[list[Any]] = [
+        AllUniqueStringValuesFilter(SupportTicket.status),
+        AllUniqueStringValuesFilter(SupportTicket.kind),
+        OperationColumnFilter(SupportTicket.user_id, title="ID пользователя"),
+        AwaitingOperatorReplyFilter(),
+    ]
     form_columns = [SupportTicket.status]
     can_create = False
     can_delete = False
@@ -320,7 +410,7 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
                         "author": _AUTHOR_RU.get(msg.author, msg.author),
                         "author_key": msg.author,
                         "body": msg.body,
-                        "created_at": msg.created_at.strftime("%d.%m.%Y %H:%M"),
+                        "created_at": format_moscow_plain(msg.created_at),
                     }
                 )
         return messages
@@ -428,6 +518,7 @@ class SupportMessageAdmin(ModelView, model=SupportMessage):
     name = "Сообщение"
     name_plural = "Сообщения"
     icon = "fa-solid fa-comments"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
     column_list = [
         SupportMessage.id,
         SupportMessage.ticket_id,
@@ -446,6 +537,12 @@ class SupportMessageAdmin(ModelView, model=SupportMessage):
         SupportMessage.author: format_message_author,
     }
     column_searchable_list = [SupportMessage.body]
+    column_sortable_list = [SupportMessage.created_at, SupportMessage.author]
+    column_default_sort = (SupportMessage.created_at, True)
+    column_filters = [
+        AllUniqueStringValuesFilter(SupportMessage.author),
+        OperationColumnFilter(SupportMessage.ticket_id, title="ID тикета"),
+    ]
     form_columns = [SupportMessage.ticket_id, SupportMessage.body]
     form_args = {
         "ticket_id": {"label": "Тикет"},
@@ -506,6 +603,7 @@ class AdminPrincipalAdmin(ModelView, model=AdminPrincipal):
     name = "Оператор"
     name_plural = "Операторы"
     icon = "fa-solid fa-user-shield"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
     column_list = [
         AdminPrincipal.id,
         AdminPrincipal.login,
@@ -637,6 +735,7 @@ class AdminRoleBindingAdmin(ModelView, model=AdminRoleBinding):
     name = "Роль"
     name_plural = "Роли"
     icon = "fa-solid fa-key"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
     column_list = [
         AdminRoleBinding.id,
         AdminRoleBinding.principal_id,
@@ -674,6 +773,7 @@ class AdminAuditEventAdmin(ModelView, model=AdminAuditEvent):
     name = "Событие аудита"
     name_plural = "Журнал аудита"
     icon = "fa-solid fa-clipboard-list"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
     column_list = [
         AdminAuditEvent.id,
         AdminAuditEvent.actor_id,
@@ -708,6 +808,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         name = "OTP"
         name_plural = "OTP"
         icon = "fa-solid fa-sms"
+        column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
         column_list = _otp_columns(show_debug_code=show_debug)
         column_labels = {
             AuthOtpChallenge.id: "ID",
@@ -748,6 +849,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         name = "Смена телефона"
         name_plural = "Смена телефона"
         icon = "fa-solid fa-mobile"
+        column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
         column_list = _phone_change_columns(show_debug_code=show_debug)
         column_labels = {
             AuthPhoneChangeChallenge.id: "ID",

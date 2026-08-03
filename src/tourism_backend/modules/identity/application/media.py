@@ -102,10 +102,18 @@ async def save_profile_image(
     user_id: UUID,
     kind: str,
 ) -> SavedProfileImage:
+    raw = await upload.read(_MAX_BYTES + 1)
+    return save_profile_image_bytes(raw, user_id=user_id, kind=kind)
+
+
+def save_profile_image_bytes(
+    raw: bytes,
+    *,
+    user_id: UUID,
+    kind: str,
+) -> SavedProfileImage:
     if kind not in {"avatar", "cover"}:
         raise AppError(code="validation_error", message="Unknown media kind", status_code=400)
-
-    raw = await upload.read(_MAX_BYTES + 1)
     if not raw:
         raise AppError(code="invalid_image", message="Empty upload", status_code=400)
     if len(raw) > _MAX_BYTES:
