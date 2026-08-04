@@ -81,6 +81,13 @@ class RouteStopOut(BaseModel):
     lat: float | None = None
 
 
+class RouteMediaOut(BaseModel):
+    id: UUID
+    url: str
+    kind: Literal["image", "video"]
+    position: int
+
+
 class RouteListItemOut(BaseModel):
     id: UUID
     region_id: UUID
@@ -112,6 +119,7 @@ class RouteDetailOut(RouteListItemOut):
     accessibility: dict[str, object] | None
     freshness_status: str
     stops: list[RouteStopOut] = Field(default_factory=list)
+    media: list[RouteMediaOut] = Field(default_factory=list)
 
 
 class RouteListOut(BaseModel):

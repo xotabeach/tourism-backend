@@ -19,6 +19,7 @@ from tourism_backend.modules.routes.application.schemas import (
     RouteDetailOut,
     RouteListItemOut,
     RouteListOut,
+    RouteMediaOut,
     RoutePublicationStatus,
     RouteStopOut,
     UserRouteDraftIn,
@@ -306,6 +307,28 @@ async def _route_detail_from_model(
     if public_stops_only:
         stops_stmt = stops_stmt.where(Place.publication_status == "published")
     stops_rows = (await session.execute(stops_stmt)).all()
+    attachments = list(
+        (
+            await session.scalars(
+                select(MediaAttachment)
+                .where(
+                    MediaAttachment.entity_type == "route",
+                    MediaAttachment.entity_id == route.id,
+                    MediaAttachment.status == "active",
+                )
+                .order_by(MediaAttachment.sort_order, MediaAttachment.id)
+            )
+        ).all()
+    )
+    media = [
+        RouteMediaOut(
+            id=attachment.id,
+            url=attachment.public_path,
+            kind="video" if (attachment.content_type or "").startswith("video/") else "image",
+            position=attachment.sort_order,
+        )
+        for attachment in attachments
+    ]
 
     stops: list[RouteStopOut] = [
         RouteStopOut(
@@ -340,6 +363,7 @@ async def _route_detail_from_model(
         accessibility=route.accessibility,
         freshness_status=route.freshness_status,
         stops=stops,
+        media=media,
     )
 
 

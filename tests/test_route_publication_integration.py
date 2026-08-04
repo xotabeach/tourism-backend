@@ -163,6 +163,13 @@ async def test_user_route_stays_private_until_admin_approval(
     )
     assert upload.status_code == 200, upload.text
     assert upload.json()["public_path"].startswith(f"/media/routes/{route_id}/")
+    second_upload = await client.post(
+        f"/api/v1/routes/drafts/{route_id}/media",
+        headers=headers,
+        data={"position": "1"},
+        files={"file": ("route-second.png", _png_bytes(), "image/png")},
+    )
+    assert second_upload.status_code == 200, second_upload.text
 
     submitted = await client.post(f"/api/v1/routes/{route_id}/submit", headers=headers)
     assert submitted.status_code == 200, submitted.text
@@ -180,6 +187,8 @@ async def test_user_route_stays_private_until_admin_approval(
     assert owner_preview.status_code == 200, owner_preview.text
     assert owner_preview.json()["publication_status"] == "pending_review"
     assert len(owner_preview.json()["stops"]) == 2
+    assert [item["position"] for item in owner_preview.json()["media"]] == [0, 1]
+    assert all(item["kind"] == "image" for item in owner_preview.json()["media"])
     foreign_preview = await client.get(
         f"/api/v1/routes/mine/{route_id}",
         headers=other_headers,
@@ -197,6 +206,7 @@ async def test_user_route_stays_private_until_admin_approval(
         published = await client.get(f"/api/v1/routes/{route_id}")
         assert published.status_code == 200, published.text
         assert published.json()["publication_status"] == "published"
+        assert len(published.json()["media"]) == 2
     finally:
         async with app.state.session_factory() as session:
             await session.execute(
