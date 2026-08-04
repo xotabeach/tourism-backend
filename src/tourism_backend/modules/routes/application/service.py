@@ -286,33 +286,26 @@ async def list_routes_for_owner(
     return await _list_from_stmt(session, stmt, limit=limit, offset=offset)
 
 
-async def get_route(session: AsyncSession, route_id: UUID) -> RouteDetailOut:
-    route = await session.scalar(
-        select(Route).where(
-            Route.id == route_id,
-            *_PUBLIC_CATALOG,
-            ~_has_unpublished_stop(),
+async def _route_detail_from_model(
+    session: AsyncSession,
+    route: Route,
+    *,
+    public_stops_only: bool,
+) -> RouteDetailOut:
+    stops_stmt = (
+        select(
+            RouteStop,
+            Place,
+            ST_X(cast(Place.location, Geometry)),
+            ST_Y(cast(Place.location, Geometry)),
         )
+        .join(Place, Place.id == RouteStop.place_id)
+        .where(RouteStop.route_id == route.id)
+        .order_by(RouteStop.position)
     )
-    if route is None:
-        raise AppError(code="route_not_found", message="Route not found", status_code=404)
-
-    stops_rows = (
-        await session.execute(
-            select(
-                RouteStop,
-                Place,
-                ST_X(cast(Place.location, Geometry)),
-                ST_Y(cast(Place.location, Geometry)),
-            )
-            .join(Place, Place.id == RouteStop.place_id)
-            .where(
-                RouteStop.route_id == route.id,
-                Place.publication_status == "published",
-            )
-            .order_by(RouteStop.position)
-        )
-    ).all()
+    if public_stops_only:
+        stops_stmt = stops_stmt.where(Place.publication_status == "published")
+    stops_rows = (await session.execute(stops_stmt)).all()
 
     stops: list[RouteStopOut] = [
         RouteStopOut(
@@ -348,6 +341,38 @@ async def get_route(session: AsyncSession, route_id: UUID) -> RouteDetailOut:
         freshness_status=route.freshness_status,
         stops=stops,
     )
+
+
+async def get_route(session: AsyncSession, route_id: UUID) -> RouteDetailOut:
+    route = await session.scalar(
+        select(Route).where(
+            Route.id == route_id,
+            *_PUBLIC_CATALOG,
+            ~_has_unpublished_stop(),
+        )
+    )
+    if route is None:
+        raise AppError(code="route_not_found", message="Route not found", status_code=404)
+    return await _route_detail_from_model(session, route, public_stops_only=True)
+
+
+async def get_owned_route(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    owner_user_id: UUID,
+) -> RouteDetailOut:
+    route = await session.scalar(
+        select(Route).where(
+            Route.id == route_id,
+            Route.owner_user_id == owner_user_id,
+            Route.source == "user_created",
+            Route.publication_status != "deleted",
+        )
+    )
+    if route is None:
+        raise AppError(code="route_not_found", message="Route not found", status_code=404)
+    return await _route_detail_from_model(session, route, public_stops_only=False)
 
 
 def _difficulty_name(value: int) -> str:

@@ -140,6 +140,19 @@ async def get_my_routes(
     )
 
 
+@router.get("/routes/mine/{route_id}", response_model=RouteDetailOut)
+async def get_my_route(
+    route_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> RouteDetailOut:
+    return await routes_service.get_owned_route(
+        session,
+        route_id=route_id,
+        owner_user_id=user_id,
+    )
+
+
 @router.get("/routes/{route_id}", response_model=RouteDetailOut)
 async def get_route(session: DbSession, route_id: UUID) -> RouteDetailOut:
     return await routes_service.get_route(session, route_id)

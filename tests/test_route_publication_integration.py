@@ -173,6 +173,18 @@ async def test_user_route_stays_private_until_admin_approval(
         item["id"] == route_id and item["publication_status"] == "pending_review"
         for item in own_pending.json()["items"]
     )
+    owner_preview = await client.get(
+        f"/api/v1/routes/mine/{route_id}",
+        headers=headers,
+    )
+    assert owner_preview.status_code == 200, owner_preview.text
+    assert owner_preview.json()["publication_status"] == "pending_review"
+    assert len(owner_preview.json()["stops"]) == 2
+    foreign_preview = await client.get(
+        f"/api/v1/routes/mine/{route_id}",
+        headers=other_headers,
+    )
+    assert foreign_preview.status_code == 404
 
     try:
         async with app.state.session_factory() as session:
