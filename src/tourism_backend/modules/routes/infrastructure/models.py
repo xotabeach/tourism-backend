@@ -42,6 +42,16 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
             "lifecycle_status IN ('draft', 'active', 'archived')",
             name="lifecycle_status",
         ),
+        CheckConstraint(
+            "publication_status IN ('draft', 'pending_review', 'published', 'rejected', 'deleted')",
+            name="publication_status",
+        ),
+        Index(
+            "ix_routes_moderation_queue",
+            "publication_status",
+            "source",
+            "updated_at",
+        ),
     )
 
     region_id: Mapped[UUID] = mapped_column(
@@ -57,6 +67,13 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     visibility: Mapped[str] = mapped_column(String(32), nullable=False)
     lifecycle_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    publication_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="published",
+        server_default="published",
+        index=True,
+    )
     estimated_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     distance_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
     difficulty: Mapped[str | None] = mapped_column(String(32), nullable=True)

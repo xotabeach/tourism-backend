@@ -41,6 +41,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_admin_role,
     format_debug_code,
     format_message_author,
+    format_route_publication_status,
     format_ticket_awaiting,
     format_ticket_kind,
     format_ticket_status,
@@ -62,6 +63,7 @@ from tourism_backend.modules.identity.infrastructure.models import (
 )
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.application.service import resolve_urls
+from tourism_backend.modules.routes.infrastructure.models import Route
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
 
 _AUTHOR_RU = {
@@ -799,6 +801,161 @@ class AdminAuditEventAdmin(ModelView, model=AdminAuditEvent):
     page_size = 100
 
 
+class RouteAdmin(ModelView, model=Route):
+    category = "Маршруты"
+    category_icon = "fa-solid fa-route"
+    name = "Маршрут"
+    name_plural = "Маршруты"
+    icon = "fa-solid fa-map-location-dot"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        Route.publication_status,
+        Route.name,
+        Route.owner_user_id,
+        Route.source,
+        Route.visibility,
+        Route.difficulty,
+        Route.updated_at,
+        Route.created_at,
+    ]
+    column_labels = {
+        Route.id: "ID",
+        Route.publication_status: "Статус",
+        Route.name: "Название",
+        Route.owner_user_id: "Автор",
+        Route.source: "Источник",
+        Route.visibility: "Видимость",
+        Route.lifecycle_status: "Жизненный цикл",
+        Route.short_description: "Краткое описание",
+        Route.description: "Описание",
+        Route.difficulty: "Сложность",
+        Route.transport_mode: "Способ передвижения",
+        Route.estimated_duration_minutes: "Длительность, мин",
+        Route.distance_meters: "Расстояние, м",
+        Route.suitable_for_children: "Подходит детям",
+        Route.pets_allowed: "Можно с животными",
+        Route.updated_at: "Обновлён",
+        Route.created_at: "Создан",
+    }
+    column_formatters = {
+        Route.publication_status: format_route_publication_status,
+    }
+    column_formatters_detail = {
+        Route.publication_status: format_route_publication_status,
+    }
+    column_searchable_list = [Route.name, Route.description]
+    column_sortable_list = [
+        Route.publication_status,
+        Route.updated_at,
+        Route.created_at,
+        Route.name,
+    ]
+    column_default_sort = (Route.updated_at, True)
+    column_filters: ClassVar[list[Any]] = [
+        AllUniqueStringValuesFilter(Route.publication_status),
+        AllUniqueStringValuesFilter(Route.source),
+        AllUniqueStringValuesFilter(Route.visibility),
+        OperationColumnFilter(Route.owner_user_id, title="ID автора"),
+    ]
+    form_columns = [
+        Route.name,
+        Route.short_description,
+        Route.description,
+        Route.estimated_duration_minutes,
+        Route.distance_meters,
+        Route.difficulty,
+        Route.transport_mode,
+        Route.suitable_for_children,
+        Route.pets_allowed,
+    ]
+    can_create = False
+    can_edit = True
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+    async def _set_publication_status(
+        self,
+        request: Request,
+        *,
+        publication_status: str,
+    ) -> Response:
+        actor_id = session_principal_id(request)
+        if actor_id is None:
+            return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
+        raw_pks = request.query_params.get("pks", "")
+        route_ids: list[UUID] = []
+        for raw in raw_pks.split(","):
+            with contextlib.suppress(ValueError):
+                route_ids.append(UUID(raw.strip()))
+        if route_ids:
+            async with self.session_maker(expire_on_commit=False) as session:
+                routes = list(
+                    (await session.scalars(select(Route).where(Route.id.in_(route_ids)))).all()
+                )
+                now = datetime.now(UTC)
+                for route in routes:
+                    if (
+                        publication_status in {"published", "rejected"}
+                        and route.publication_status != "pending_review"
+                    ):
+                        continue
+                    route.publication_status = publication_status
+                    route.updated_at = now
+                    if publication_status == "published":
+                        route.visibility = "public"
+                        route.lifecycle_status = "active"
+                    elif publication_status == "deleted":
+                        route.visibility = "private"
+                        route.lifecycle_status = "archived"
+                    else:
+                        route.visibility = "private"
+                        route.lifecycle_status = "draft"
+                    await record_audit(
+                        session,
+                        actor_id=actor_id,
+                        action=f"admin.route_{publication_status}",
+                        entity_type="route",
+                        entity_id=str(route.id),
+                        ip=request.client.host if request.client else None,
+                    )
+                await session.commit()
+        return RedirectResponse(
+            str(request.url_for("admin:list", identity=self.identity)),
+            status_code=303,
+        )
+
+    @action(
+        name="approve_routes",
+        label="Одобрить и опубликовать",
+        confirmation_message="Опубликовать выбранные маршруты?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def approve_routes(self, request: Request) -> Response:
+        return await self._set_publication_status(request, publication_status="published")
+
+    @action(
+        name="reject_routes",
+        label="Вернуть на доработку",
+        confirmation_message="Вернуть выбранные маршруты авторам?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_routes(self, request: Request) -> Response:
+        return await self._set_publication_status(request, publication_status="rejected")
+
+    @action(
+        name="delete_routes",
+        label="Удалить",
+        confirmation_message="Скрыть и пометить выбранные маршруты удалёнными?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def delete_routes(self, request: Request) -> Response:
+        return await self._set_publication_status(request, publication_status="deleted")
+
+
 def register_views(admin: Any, settings: Settings) -> None:
     show_debug = settings.otp_store_debug_code_enabled
 
@@ -886,6 +1043,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(PhoneChangeChallengeAdmin)
     admin.add_view(SupportTicketAdmin)
     admin.add_view(SupportMessageAdmin)
+    admin.add_view(RouteAdmin)
     admin.add_view(AdminPrincipalAdmin)
     admin.add_view(AdminRoleBindingAdmin)
     admin.add_view(AdminAuditEventAdmin)

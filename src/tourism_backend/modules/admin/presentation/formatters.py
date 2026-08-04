@@ -30,6 +30,14 @@ _ROLE_LABELS = {
     "admin": ("Admin", "ct-badge-admin"),
 }
 
+_ROUTE_STATUS_LABELS = {
+    "draft": ("Черновик", "ct-badge-route-draft"),
+    "pending_review": ("На модерации", "ct-badge-route-pending"),
+    "published": ("Опубликован", "ct-badge-route-published"),
+    "rejected": ("Нужны правки", "ct-badge-route-rejected"),
+    "deleted": ("Удалён", "ct-badge-route-deleted"),
+}
+
 _ALLOWED_CSS = frozenset(
     {
         "ct-badge-open",
@@ -45,6 +53,11 @@ _ALLOWED_CSS = frozenset(
         "ct-badge-admin",
         "ct-badge-awaiting",
         "ct-badge-answered",
+        "ct-badge-route-draft",
+        "ct-badge-route-pending",
+        "ct-badge-route-published",
+        "ct-badge-route-rejected",
+        "ct-badge-route-deleted",
     }
 )
 
@@ -92,6 +105,10 @@ def format_message_author(model: object, attribute: object) -> Markup:
 
 def format_admin_role(model: object, attribute: object) -> Markup:
     return _badge(getattr(model, "role", None), _ROLE_LABELS)
+
+
+def format_route_publication_status(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "publication_status", None), _ROUTE_STATUS_LABELS)
 
 
 def format_debug_code(model: object, attribute: object) -> Markup:
