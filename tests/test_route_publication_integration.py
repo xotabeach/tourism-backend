@@ -120,6 +120,34 @@ async def test_user_route_stays_private_until_admin_approval(
     assert saved.json()["publication_status"] == "draft"
     assert (await client.get(f"/api/v1/routes/{route_id}")).status_code == 404
 
+    own_drafts = await client.get("/api/v1/routes/mine", headers=headers)
+    assert own_drafts.status_code == 200, own_drafts.text
+    assert any(
+        item["id"] == route_id and item["publication_status"] == "draft"
+        for item in own_drafts.json()["items"]
+    )
+    foreign_routes = await client.get("/api/v1/routes/mine", headers=other_headers)
+    assert all(item["id"] != route_id for item in foreign_routes.json()["items"])
+
+    disposable = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json={**payload, "name": "Удаляемый черновик"},
+    )
+    disposable_id = disposable.json()["id"]
+    foreign_discard = await client.delete(
+        f"/api/v1/routes/drafts/{disposable_id}",
+        headers=other_headers,
+    )
+    assert foreign_discard.status_code == 404
+    discarded = await client.delete(
+        f"/api/v1/routes/drafts/{disposable_id}",
+        headers=headers,
+    )
+    assert discarded.status_code == 204
+    after_discard = await client.get("/api/v1/routes/mine", headers=headers)
+    assert all(item["id"] != disposable_id for item in after_discard.json()["items"])
+
     foreign_update = await client.post(
         "/api/v1/routes/drafts",
         headers=other_headers,
@@ -140,6 +168,11 @@ async def test_user_route_stays_private_until_admin_approval(
     assert submitted.status_code == 200, submitted.text
     assert submitted.json()["publication_status"] == "pending_review"
     assert (await client.get(f"/api/v1/routes/{route_id}")).status_code == 404
+    own_pending = await client.get("/api/v1/routes/mine", headers=headers)
+    assert any(
+        item["id"] == route_id and item["publication_status"] == "pending_review"
+        for item in own_pending.json()["items"]
+    )
 
     try:
         async with app.state.session_factory() as session:
@@ -163,4 +196,7 @@ async def test_user_route_stays_private_until_admin_approval(
             route = await session.get(Route, UUID(route_id))
             if route is not None:
                 await session.delete(route)
+            disposable_route = await session.get(Route, UUID(disposable_id))
+            if disposable_route is not None:
+                await session.delete(disposable_route)
             await session.commit()

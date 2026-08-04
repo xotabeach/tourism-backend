@@ -31,6 +31,23 @@ async def save_route_draft(
 
 
 @router.delete(
+    "/routes/drafts/{route_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def discard_route_draft(
+    route_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> Response:
+    await routes_service.discard_user_route_draft(
+        session,
+        route_id=route_id,
+        owner_user_id=user_id,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
     "/routes/drafts/{route_id}/media",
     status_code=status.HTTP_204_NO_CONTENT,
 )
@@ -103,6 +120,21 @@ async def get_routes(
         transport_mode=transport_mode,
         difficulty=difficulty,
         q=q,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/routes/mine", response_model=RouteListOut)
+async def get_my_routes(
+    session: DbSession,
+    user_id: CurrentUserId,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> RouteListOut:
+    return await routes_service.list_routes_for_owner(
+        session,
+        owner_user_id=user_id,
         limit=limit,
         offset=offset,
     )

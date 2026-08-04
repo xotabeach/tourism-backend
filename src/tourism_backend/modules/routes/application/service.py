@@ -271,6 +271,21 @@ async def list_public_routes_for_owner(
     return await _list_from_stmt(session, stmt, limit=limit, offset=offset)
 
 
+async def list_routes_for_owner(
+    session: AsyncSession,
+    *,
+    owner_user_id: UUID,
+    limit: int,
+    offset: int,
+) -> RouteListOut:
+    stmt: Select[tuple[Route]] = select(Route).where(
+        Route.source == "user_created",
+        Route.owner_user_id == owner_user_id,
+        Route.publication_status != "deleted",
+    )
+    return await _list_from_stmt(session, stmt, limit=limit, offset=offset)
+
+
 async def get_route(session: AsyncSession, route_id: UUID) -> RouteDetailOut:
     route = await session.scalar(
         select(Route).where(
@@ -504,6 +519,34 @@ async def submit_user_route(
         publication_status=type_cast(RoutePublicationStatus, route.publication_status),
         updated_at=route.updated_at,
     )
+
+
+async def discard_user_route_draft(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    owner_user_id: UUID,
+) -> None:
+    route = await _owned_editable_route(
+        session,
+        route_id=route_id,
+        owner_user_id=owner_user_id,
+    )
+    now = datetime.now(UTC)
+    route.publication_status = "deleted"
+    route.lifecycle_status = "archived"
+    route.visibility = "private"
+    route.updated_at = now
+    await session.execute(
+        update(MediaAttachment)
+        .where(
+            MediaAttachment.entity_type == "route",
+            MediaAttachment.entity_id == route_id,
+            MediaAttachment.status == "active",
+        )
+        .values(status="archived", updated_at=now)
+    )
+    await session.commit()
 
 
 async def clear_user_route_media(
