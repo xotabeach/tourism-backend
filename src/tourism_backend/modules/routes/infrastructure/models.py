@@ -121,7 +121,6 @@ class RouteStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class RouteReview(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "route_reviews"
     __table_args__ = (
-        UniqueConstraint("route_id", "author_user_id", name="uq_route_reviews_route_author"),
         CheckConstraint("rating >= 1 AND rating <= 5", name="rating_range"),
         CheckConstraint(
             "status IN ('pending_review', 'published', 'rejected', 'deleted')",
@@ -129,6 +128,12 @@ class RouteReview(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ),
         Index("ix_route_reviews_route_status_created", "route_id", "status", "created_at"),
         Index("ix_route_reviews_moderation_queue", "status", "created_at"),
+        Index(
+            "ix_route_reviews_route_author_status",
+            "route_id",
+            "author_user_id",
+            "status",
+        ),
     )
 
     route_id: Mapped[UUID] = mapped_column(

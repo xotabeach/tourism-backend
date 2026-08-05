@@ -1026,7 +1026,8 @@ class RouteAdmin(ModelView, model=Route):
                             kind=notif.kind,
                             title=notif.title,
                             body=notif.body,
-                            route_id=route.id,
+                            target_type="route",
+                            target_id=route.id,
                         )
                 await session.commit()
         return RedirectResponse(

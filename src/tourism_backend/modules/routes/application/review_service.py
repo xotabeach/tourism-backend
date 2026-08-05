@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
@@ -22,6 +22,7 @@ _PUBLIC_CATALOG = (
     Route.lifecycle_status == "active",
     Route.publication_status == "published",
 )
+_REVIEW_DELETE_WINDOW = timedelta(hours=6)
 
 
 async def _ensure_public_route(session: AsyncSession, route_id: UUID) -> Route:
@@ -161,15 +162,21 @@ async def upsert_review(
     author_user_id: UUID,
     payload: RouteReviewCreateIn,
 ) -> RouteReviewOut:
+    """Create a new pending review, or update the author's existing pending one.
+
+    Published / rejected reviews are never overwritten — a new pending row is
+    created instead so authors can leave multiple comments over time.
+    """
     await _ensure_reviewable_route(session, route_id)
-    existing = await session.scalar(
+    pending = await session.scalar(
         select(RouteReview).where(
             RouteReview.route_id == route_id,
             RouteReview.author_user_id == author_user_id,
+            RouteReview.status == "pending_review",
         )
     )
     now = datetime.now(UTC)
-    if existing is None:
+    if pending is None:
         review = RouteReview(
             id=uuid4(),
             route_id=route_id,
@@ -182,16 +189,9 @@ async def upsert_review(
         )
         session.add(review)
     else:
-        if existing.status == "deleted":
-            raise AppError(
-                code="review_deleted",
-                message="Review was removed and cannot be resubmitted",
-                status_code=409,
-            )
-        review = existing
+        review = pending
         review.body = payload.body
         review.rating = payload.rating
-        review.status = "pending_review"
         review.moderator_note = None
         review.moderated_at = None
         review.updated_at = now
@@ -214,6 +214,41 @@ async def upsert_review(
         rank_titles=rank_titles,
         avatars=avatars,
     )
+
+
+async def delete_own_review(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    review_id: UUID,
+    author_user_id: UUID,
+) -> None:
+    """Soft-delete own review within 6 hours of creation."""
+    review = await session.scalar(
+        select(RouteReview).where(
+            RouteReview.id == review_id,
+            RouteReview.route_id == route_id,
+            RouteReview.author_user_id == author_user_id,
+            RouteReview.status != "deleted",
+        )
+    )
+    if review is None:
+        raise AppError(code="review_not_found", message="Review not found", status_code=404)
+
+    now = datetime.now(UTC)
+    created = review.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    if now - created > _REVIEW_DELETE_WINDOW:
+        raise AppError(
+            code="review_delete_window_expired",
+            message="Удалить отзыв можно только в течение 6 часов после публикации",
+            status_code=409,
+        )
+
+    review.status = "deleted"
+    review.updated_at = now
+    await session.commit()
 
 
 async def list_my_reviews(
@@ -304,7 +339,8 @@ async def set_review_status(
                         kind=owner_notif.kind,
                         title=owner_notif.title,
                         body=owner_notif.body,
-                        route_id=route.id,
+                        target_type="route",
+                        target_id=route.id,
                     )
             author_notif = await notifications_service.create_review_moderation_notification(
                 session,
@@ -320,7 +356,8 @@ async def set_review_status(
                 kind=author_notif.kind,
                 title=author_notif.title,
                 body=author_notif.body,
-                route_id=route.id,
+                target_type="route",
+                target_id=route.id,
             )
         elif status == "rejected":
             author_notif = await notifications_service.create_review_moderation_notification(
@@ -337,6 +374,7 @@ async def set_review_status(
                 kind=author_notif.kind,
                 title=author_notif.title,
                 body=author_notif.body,
-                route_id=route.id,
+                target_type="route",
+                target_id=route.id,
             )
     return changed

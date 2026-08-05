@@ -510,3 +510,226 @@ async def test_route_moderation_notifies_owner(live_client: AsyncClient) -> None
         for item in inbox.json()["items"]
         if item["id"] in {published_id, rejected_id}
     )
+
+
+async def _public_route_id() -> str | None:
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        route = await session.scalar(
+            select(Route)
+            .where(
+                Route.visibility == "public",
+                Route.lifecycle_status == "active",
+                Route.publication_status == "published",
+            )
+            .limit(1)
+        )
+        route_id = str(route.id) if route is not None else None
+    await engine.dispose()
+    return route_id
+
+
+@pytest.mark.asyncio
+async def test_second_review_keeps_published_and_creates_pending(
+    live_client: AsyncClient,
+) -> None:
+    route_id = await _public_route_id()
+    if route_id is None:
+        pytest.skip("No public route seeded")
+
+    marker = uuid4().hex[:8]
+    auth = await _login(
+        live_client,
+        phone=f"+7900{uuid4().int % 10_000_000:07d}",
+        name=f"МультиОтзыв {marker}",
+    )
+    headers = {"Authorization": f"Bearer {auth['access_token']}"}
+
+    first = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=headers,
+        json={"body": "Первый отзыв автора на маршрут", "rating": 5},
+    )
+    assert first.status_code == 200, first.text
+    first_id = UUID(first.json()["id"])
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        changed = await set_review_status(
+            session,
+            review_ids=[first_id],
+            status="published",
+        )
+        await session.commit()
+        assert changed == 1
+    await engine.dispose()
+
+    second = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=headers,
+        json={"body": "Второй отзыв без перезаписи первого", "rating": 4},
+    )
+    assert second.status_code == 200, second.text
+    second_id = second.json()["id"]
+    assert second_id != str(first_id)
+    assert second.json()["status"] == "pending_review"
+
+    public = await live_client.get(f"/api/v1/routes/{route_id}/reviews")
+    assert public.status_code == 200
+    assert any(item["id"] == str(first_id) for item in public.json()["items"])
+    assert all(item["id"] != second_id for item in public.json()["items"])
+
+    # Updating while pending keeps the same pending row.
+    again = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=headers,
+        json={"body": "Правка pending без новой строки", "rating": 3},
+    )
+    assert again.status_code == 200
+    assert again.json()["id"] == second_id
+    assert again.json()["body"] == "Правка pending без новой строки"
+
+
+@pytest.mark.asyncio
+async def test_delete_own_review_within_window_and_rejects_foreign(
+    live_client: AsyncClient,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from tourism_backend.modules.routes.infrastructure.models import RouteReview
+
+    route_id = await _public_route_id()
+    if route_id is None:
+        pytest.skip("No public route seeded")
+
+    marker = uuid4().hex[:8]
+    author = await _login(
+        live_client,
+        phone=f"+7900{uuid4().int % 10_000_000:07d}",
+        name=f"УдалОтзыв {marker}",
+    )
+    other = await _login(
+        live_client,
+        phone=f"+7900{uuid4().int % 10_000_000:07d}",
+        name=f"ЧужойУдал {marker}",
+    )
+    author_headers = {"Authorization": f"Bearer {author['access_token']}"}
+    other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+
+    created = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=author_headers,
+        json={"body": "Отзыв который можно удалить", "rating": 5},
+    )
+    assert created.status_code == 200, created.text
+    review_id = created.json()["id"]
+
+    unauth = await live_client.delete(f"/api/v1/routes/{route_id}/reviews/{review_id}")
+    assert unauth.status_code == 401
+
+    foreign = await live_client.delete(
+        f"/api/v1/routes/{route_id}/reviews/{review_id}",
+        headers=other_headers,
+    )
+    assert foreign.status_code == 404
+
+    ok = await live_client.delete(
+        f"/api/v1/routes/{route_id}/reviews/{review_id}",
+        headers=author_headers,
+    )
+    assert ok.status_code == 204
+
+    mine = await live_client.get("/api/v1/me/reviews", headers=author_headers)
+    assert all(item["id"] != review_id for item in mine.json()["items"])
+
+    expired = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=author_headers,
+        json={"body": "Старый отзыв вне окна удаления", "rating": 4},
+    )
+    assert expired.status_code == 200
+    expired_id = UUID(expired.json()["id"])
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        row = await session.get(RouteReview, expired_id)
+        assert row is not None
+        row.created_at = datetime.now(UTC) - timedelta(hours=7)
+        await session.commit()
+    await engine.dispose()
+
+    late = await live_client.delete(
+        f"/api/v1/routes/{route_id}/reviews/{expired_id}",
+        headers=author_headers,
+    )
+    assert late.status_code == 409
+    assert late.json()["error"]["code"] == "review_delete_window_expired"
+    assert "6 часов" in late.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_profile_like_notifies_target_once(live_client: AsyncClient) -> None:
+    marker = uuid4().hex[:8]
+    target = await _login(
+        live_client,
+        phone=f"+7906{uuid4().int % 10_000_000:07d}",
+        name=f"ЛайкЦель {marker}",
+    )
+    liker = await _login(
+        live_client,
+        phone=f"+7905{uuid4().int % 10_000_000:07d}",
+        name=f"Лайкер {marker}",
+    )
+    target_headers = {"Authorization": f"Bearer {target['access_token']}"}
+    liker_headers = {"Authorization": f"Bearer {liker['access_token']}"}
+
+    target_me = await live_client.get("/api/v1/me", headers=target_headers)
+    liker_me = await live_client.get("/api/v1/me", headers=liker_headers)
+    target_id = target_me.json()["id"]
+    liker_id = liker_me.json()["id"]
+
+    before = await live_client.get("/api/v1/me/notifications", headers=target_headers)
+    before_count = before.json()["unread_count"]
+
+    liked = await live_client.put(
+        f"/api/v1/users/{target_id}/like",
+        headers=liker_headers,
+    )
+    assert liked.status_code == 204, liked.text
+
+    inbox = await live_client.get("/api/v1/me/notifications", headers=target_headers)
+    assert inbox.status_code == 200
+    assert inbox.json()["unread_count"] == before_count + 1
+    matches = [
+        n
+        for n in inbox.json()["items"]
+        if n["kind"] == "profile_like" and n["actor_user_id"] == liker_id
+    ]
+    assert len(matches) == 1
+    assert matches[0]["target_type"] == "user"
+    assert matches[0]["target_id"] == liker_id
+
+    liker_inbox = await live_client.get("/api/v1/me/notifications", headers=liker_headers)
+    assert all(n["kind"] != "profile_like" for n in liker_inbox.json()["items"])
+
+    # Idempotent re-like does not create another notification.
+    again = await live_client.put(
+        f"/api/v1/users/{target_id}/like",
+        headers=liker_headers,
+    )
+    assert again.status_code == 204
+    after = await live_client.get("/api/v1/me/notifications", headers=target_headers)
+    assert sum(1 for n in after.json()["items"] if n["kind"] == "profile_like") == sum(
+        1 for n in inbox.json()["items"] if n["kind"] == "profile_like"
+    )
+
+    unlike = await live_client.delete(
+        f"/api/v1/users/{target_id}/like",
+        headers=liker_headers,
+    )
+    assert unlike.status_code == 204
+    after_unlike = await live_client.get("/api/v1/me/notifications", headers=target_headers)
+    assert after_unlike.json()["unread_count"] == after.json()["unread_count"]

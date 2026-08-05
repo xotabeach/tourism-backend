@@ -31,7 +31,8 @@ def _build_notification(
     kind: str,
     title: str,
     body: str,
-    route_id: UUID,
+    target_type: str | None,
+    target_id: UUID | None,
     actor_user_id: UUID | None = None,
 ) -> Notification:
     return Notification(
@@ -41,8 +42,8 @@ def _build_notification(
         kind=kind,
         title=_clip(title, _TITLE_MAX),
         body=_clip(body, _BODY_MAX),
-        target_type="route",
-        target_id=route_id,
+        target_type=target_type,
+        target_id=target_id,
         is_read=False,
         created_at=datetime.now(UTC),
     )
@@ -67,7 +68,8 @@ async def create_route_review_notification(
         kind="route_review",
         title="Новый отзыв",
         body=f"Оставил свой комментарий под вашим маршрутом «{short_route}»",
-        route_id=route_id,
+        target_type="route",
+        target_id=route_id,
     )
     session.add(notification)
     return notification
@@ -98,7 +100,8 @@ async def create_route_moderation_notification(
         kind=kind,
         title=title,
         body=body,
-        route_id=route_id,
+        target_type="route",
+        target_id=route_id,
     )
     session.add(notification)
     return notification
@@ -129,7 +132,30 @@ async def create_review_moderation_notification(
         kind=kind,
         title=title,
         body=body,
-        route_id=route_id,
+        target_type="route",
+        target_id=route_id,
+    )
+    session.add(notification)
+    return notification
+
+
+async def create_profile_like_notification(
+    session: AsyncSession,
+    *,
+    recipient_user_id: UUID,
+    actor_user_id: UUID,
+) -> Notification | None:
+    """Notify profile owner when another user likes (subscribes to) their profile."""
+    if recipient_user_id == actor_user_id:
+        return None
+    notification = _build_notification(
+        user_id=recipient_user_id,
+        actor_user_id=actor_user_id,
+        kind="profile_like",
+        title="Новая подписка",
+        body="Подписался на ваш профиль",
+        target_type="user",
+        target_id=actor_user_id,
     )
     session.add(notification)
     return notification
@@ -143,7 +169,8 @@ async def maybe_push_notification(
     kind: str,
     title: str,
     body: str,
-    route_id: UUID,
+    target_type: str,
+    target_id: UUID,
 ) -> None:
     """Best-effort FCM when user opted into push and tokens exist."""
     user = await session.get(User, user_id)
@@ -159,8 +186,8 @@ async def maybe_push_notification(
         body=body,
         data={
             "kind": kind,
-            "target_type": "route",
-            "target_id": str(route_id),
+            "target_type": target_type,
+            "target_id": str(target_id),
         },
     )
 
@@ -182,7 +209,8 @@ async def maybe_push_route_review(
         kind="route_review",
         title=title,
         body=body,
-        route_id=route_id,
+        target_type="route",
+        target_id=route_id,
     )
 
 

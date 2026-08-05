@@ -9,8 +9,9 @@ NotificationKind = Literal[
     "route_rejected",
     "review_published",
     "review_rejected",
+    "profile_like",
 ]
-NotificationTargetType = Literal["route"]
+NotificationTargetType = Literal["route", "user"]
 
 
 class NotificationOut(BaseModel):

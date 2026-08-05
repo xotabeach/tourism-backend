@@ -8,8 +8,10 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import get_settings
 from tourism_backend.modules.identity.application.travel_points import grant_due_travel_points
 from tourism_backend.modules.identity.infrastructure.models import ProfileLike, User
+from tourism_backend.modules.notifications.application import service as notifications_service
 
 
 async def like_profile(session: AsyncSession, *, actor_id: UUID, target_user_id: UUID) -> None:
@@ -36,7 +38,23 @@ async def like_profile(session: AsyncSession, *, actor_id: UUID, target_user_id:
             awarded_at=None,
         )
     )
+    notif = await notifications_service.create_profile_like_notification(
+        session,
+        recipient_user_id=target_user_id,
+        actor_user_id=actor_id,
+    )
     await session.commit()
+    if notif is not None:
+        await notifications_service.maybe_push_notification(
+            session,
+            get_settings(),
+            user_id=target_user_id,
+            kind=notif.kind,
+            title=notif.title,
+            body=notif.body,
+            target_type="user",
+            target_id=actor_id,
+        )
     await grant_due_travel_points(session)
 
 

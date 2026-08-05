@@ -198,6 +198,21 @@ async def create_route_review(
     )
 
 
+@router.delete("/routes/{route_id}/reviews/{review_id}", status_code=204)
+async def delete_route_review(
+    route_id: UUID,
+    review_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> None:
+    await review_service.delete_own_review(
+        session,
+        route_id=route_id,
+        review_id=review_id,
+        author_user_id=user_id,
+    )
+
+
 @router.get("/me/reviews", response_model=MyRouteReviewListOut)
 async def list_my_reviews(
     session: DbSession,
