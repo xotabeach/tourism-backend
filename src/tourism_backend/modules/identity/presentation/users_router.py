@@ -6,10 +6,35 @@ from fastapi import APIRouter, Query, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, OptionalCurrentUserId
 from tourism_backend.modules.identity.application import profile_likes, public_service
-from tourism_backend.modules.identity.application.public_schemas import PublicUserOut
+from tourism_backend.modules.identity.application.public_schemas import (
+    PublicUserListOut,
+    PublicUserOut,
+)
 from tourism_backend.modules.routes.application.schemas import RouteListOut
 
 router = APIRouter(tags=["users"])
+
+
+@router.get("/users/search", response_model=PublicUserListOut)
+async def search_public_users(
+    session: DbSession,
+    q: str = Query(min_length=2, max_length=120),
+    limit: int = Query(default=8, ge=1, le=20),
+) -> PublicUserListOut:
+    return await public_service.search_public_users(session, query=q, limit=limit)
+
+
+@router.get("/users/subscriptions", response_model=PublicUserListOut)
+async def list_profile_subscriptions(
+    session: DbSession,
+    user_id: CurrentUserId,
+    limit: int = Query(default=50, ge=1, le=100),
+) -> PublicUserListOut:
+    return await public_service.list_profile_subscriptions(
+        session,
+        user_id=user_id,
+        limit=limit,
+    )
 
 
 @router.get("/users/{user_id}", response_model=PublicUserOut)

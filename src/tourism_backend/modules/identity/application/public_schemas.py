@@ -12,3 +12,10 @@ class PublicUserOut(BaseModel):
     cover_url: str | None = None
     travel_points: int = 0
     liked_by_me: bool = False
+
+
+class PublicUserListOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[PublicUserOut]
+    total: int

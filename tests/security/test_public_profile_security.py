@@ -131,6 +131,74 @@ async def test_public_user_not_found(live_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_public_user_search_returns_profile_media_without_pii(
+    live_client: AsyncClient,
+) -> None:
+    marker = uuid4().hex[:8]
+    display_name = f"Искатель {marker}"
+    await _login(
+        live_client,
+        phone=f"+7907{uuid4().int % 10_000_000:07d}",
+        name=display_name,
+    )
+
+    response = await live_client.get(
+        "/api/v1/users/search",
+        params={"q": marker, "limit": 5},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total"] >= 1
+    found = next(item for item in body["items"] if item["display_name"] == display_name)
+    assert set(found) == {
+        "id",
+        "display_name",
+        "avatar_url",
+        "cover_url",
+        "travel_points",
+        "liked_by_me",
+    }
+    assert "phone" not in str(found).lower()
+
+
+@pytest.mark.asyncio
+async def test_profile_subscriptions_return_liked_users_without_pii(
+    live_client: AsyncClient,
+) -> None:
+    marker = uuid4().hex[:8]
+    target_tokens = await _login(
+        live_client,
+        phone=f"+7906{uuid4().int % 10_000_000:07d}",
+        name=f"Автор {marker}",
+    )
+    target_headers = {"Authorization": f"Bearer {target_tokens['access_token']}"}
+    target_me = await live_client.get("/api/v1/me", headers=target_headers)
+    assert target_me.status_code == 200, target_me.text
+    target_id = target_me.json()["id"]
+    reader_tokens = await _login(
+        live_client,
+        phone=f"+7905{uuid4().int % 10_000_000:07d}",
+        name=f"Читатель {marker}",
+    )
+    reader_headers = {"Authorization": f"Bearer {reader_tokens['access_token']}"}
+    liked = await live_client.put(
+        f"/api/v1/users/{target_id}/like",
+        headers=reader_headers,
+    )
+    assert liked.status_code == 204, liked.text
+
+    response = await live_client.get(
+        "/api/v1/users/subscriptions",
+        headers=reader_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    found = next(item for item in body["items"] if item["id"] == target_id)
+    assert found["liked_by_me"] is True
+    assert "phone" not in str(found).lower()
+
+
+@pytest.mark.asyncio
 async def test_routes_catalog_includes_owner_fields_when_present(
     live_client: AsyncClient,
 ) -> None:
