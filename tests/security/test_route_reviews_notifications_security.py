@@ -578,7 +578,8 @@ async def test_second_review_keeps_published_and_creates_pending(
 
     public = await live_client.get(f"/api/v1/routes/{route_id}/reviews")
     assert public.status_code == 200
-    assert any(item["id"] == str(first_id) for item in public.json()["items"])
+    published_item = next(item for item in public.json()["items"] if item["id"] == str(first_id))
+    assert published_item["body"] == "Первый отзыв автора на маршрут"
     assert all(item["id"] != second_id for item in public.json()["items"])
 
     # Updating while pending keeps the same pending row.
@@ -590,6 +591,12 @@ async def test_second_review_keeps_published_and_creates_pending(
     assert again.status_code == 200
     assert again.json()["id"] == second_id
     assert again.json()["body"] == "Правка pending без новой строки"
+
+    # Published row must stay untouched after pending edits.
+    public_after = await live_client.get(f"/api/v1/routes/{route_id}/reviews")
+    still = next(item for item in public_after.json()["items"] if item["id"] == str(first_id))
+    assert still["body"] == "Первый отзыв автора на маршрут"
+    assert still["status"] == "published"
 
 
 @pytest.mark.asyncio

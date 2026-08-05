@@ -168,12 +168,17 @@ async def upsert_review(
     created instead so authors can leave multiple comments over time.
     """
     await _ensure_reviewable_route(session, route_id)
+    # Only reuse an existing pending row. Published/rejected rows are left intact
+    # so a second comment creates a new moderation item.
     pending = await session.scalar(
-        select(RouteReview).where(
+        select(RouteReview)
+        .where(
             RouteReview.route_id == route_id,
             RouteReview.author_user_id == author_user_id,
             RouteReview.status == "pending_review",
         )
+        .order_by(RouteReview.updated_at.desc(), RouteReview.id.desc())
+        .limit(1)
     )
     now = datetime.now(UTC)
     if pending is None:
