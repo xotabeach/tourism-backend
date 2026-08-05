@@ -11,6 +11,7 @@ RoutePublicationStatus = Literal[
     "rejected",
     "deleted",
 ]
+RouteCatalogSort = Literal["default", "popular", "recent"]
 
 
 class UserRouteDraftIn(BaseModel):

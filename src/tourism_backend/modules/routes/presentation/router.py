@@ -7,6 +7,7 @@ from tourism_backend.api.deps import CurrentUserId, DbSession
 from tourism_backend.modules.routes.application import media as route_media
 from tourism_backend.modules.routes.application import service as routes_service
 from tourism_backend.modules.routes.application.schemas import (
+    RouteCatalogSort,
     RouteDetailOut,
     RouteListOut,
     UserRouteDraftIn,
@@ -111,6 +112,7 @@ async def get_routes(
     transport_mode: str | None = Query(default=None, max_length=32),
     difficulty: str | None = Query(default=None, max_length=32),
     q: str | None = Query(default=None, max_length=200),
+    sort: RouteCatalogSort = "default",
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=10_000),
 ) -> RouteListOut:
@@ -120,6 +122,7 @@ async def get_routes(
         transport_mode=transport_mode,
         difficulty=difficulty,
         q=q,
+        sort=sort,
         limit=limit,
         offset=offset,
     )

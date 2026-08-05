@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from tourism_backend.config import Settings
 from tourism_backend.db.redis import create_redis_client
 from tourism_backend.main import create_app
+from tourism_backend.modules.favorites.infrastructure.models import FavoriteRoute
 from tourism_backend.modules.geography.infrastructure.models import Region
+from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 
@@ -102,6 +104,77 @@ async def test_routes_filters_and_unpublished_not_found(live_app: object) -> Non
 
         oversized = await client.get("/api/v1/routes", params={"q": "x" * 201})
         assert oversized.status_code == 422
+
+        invalid_sort = await client.get("/api/v1/routes", params={"sort": "unknown"})
+        assert invalid_sort.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_routes_can_be_sorted_by_popularity(live_app: object) -> None:
+    session_factory = live_app.state.session_factory  # type: ignore[attr-defined]
+    suffix = uuid4().hex
+    less_popular_id = uuid4()
+    popular_id = uuid4()
+    user_id = uuid4()
+    query = f"Popularity {suffix}"
+    async with session_factory() as session:
+        region_id = await session.scalar(select(Region.id).where(Region.slug == "crimea"))
+        assert region_id is not None
+        session.add_all(
+            [
+                Route(
+                    id=less_popular_id,
+                    region_id=region_id,
+                    name=f"{query} A",
+                    slug=f"popularity-a-{suffix}",
+                    source="editorial",
+                    visibility="public",
+                    lifecycle_status="active",
+                    publication_status="published",
+                ),
+                Route(
+                    id=popular_id,
+                    region_id=region_id,
+                    name=f"{query} B",
+                    slug=f"popularity-b-{suffix}",
+                    source="editorial",
+                    visibility="public",
+                    lifecycle_status="active",
+                    publication_status="published",
+                ),
+                User(
+                    id=user_id,
+                    display_name="Popularity tester",
+                    phone_e164=f"+79{uuid4().int % 1_000_000_000:09d}",
+                ),
+            ]
+        )
+        await session.flush()
+        session.add(FavoriteRoute(user_id=user_id, route_id=popular_id))
+        await session.commit()
+
+    try:
+        transport = ASGITransport(app=live_app)  # type: ignore[arg-type]
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/routes",
+                params={"q": query, "sort": "popular", "limit": 2},
+            )
+        assert response.status_code == 200, response.text
+        assert [item["id"] for item in response.json()["items"]] == [
+            str(popular_id),
+            str(less_popular_id),
+        ]
+    finally:
+        async with session_factory() as session:
+            for route_id in (less_popular_id, popular_id):
+                route = await session.get(Route, route_id)
+                if route is not None:
+                    await session.delete(route)
+            user = await session.get(User, user_id)
+            if user is not None:
+                await session.delete(user)
+            await session.commit()
 
 
 @pytest.mark.asyncio

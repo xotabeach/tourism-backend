@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Exists
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.favorites.infrastructure.models import FavoriteRoute
 from tourism_backend.modules.geography.infrastructure.models import Region
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
@@ -16,6 +17,7 @@ from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.infrastructure.models import Place, PlaceImage
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
 from tourism_backend.modules.routes.application.schemas import (
+    RouteCatalogSort,
     RouteDetailOut,
     RouteListItemOut,
     RouteListOut,
@@ -201,14 +203,25 @@ async def _list_from_stmt(
     *,
     limit: int,
     offset: int,
+    sort: RouteCatalogSort = "default",
 ) -> RouteListOut:
     count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
     total = int((await session.execute(count_stmt)).scalar_one())
 
+    favorites_count = (
+        select(func.count())
+        .where(FavoriteRoute.route_id == Route.id)
+        .correlate(Route)
+        .scalar_subquery()
+    )
+    order_by = {
+        "popular": (favorites_count.desc(), Route.updated_at.desc(), Route.id),
+        "recent": (Route.updated_at.desc(), Route.id),
+        "default": (Route.name, Route.id),
+    }[sort]
+
     routes = list(
-        (
-            await session.scalars(stmt.order_by(Route.name, Route.id).limit(limit).offset(offset))
-        ).all()
+        (await session.scalars(stmt.order_by(*order_by).limit(limit).offset(offset))).all()
     )
     route_ids = [route.id for route in routes]
     counts = await _stops_count_map(session, route_ids)
@@ -237,6 +250,7 @@ async def list_routes(
     transport_mode: str | None,
     difficulty: str | None,
     q: str | None,
+    sort: RouteCatalogSort,
     limit: int,
     offset: int,
 ) -> RouteListOut:
@@ -254,7 +268,7 @@ async def list_routes(
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(Route.name.ilike(pattern))
 
-    return await _list_from_stmt(session, stmt, limit=limit, offset=offset)
+    return await _list_from_stmt(session, stmt, limit=limit, offset=offset, sort=sort)
 
 
 async def list_public_routes_for_owner(
