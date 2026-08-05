@@ -207,6 +207,10 @@ async def test_approve_review_notifies_owner_and_inbox_is_private(
     foreign = await live_client.get("/api/v1/me/notifications", headers=author_headers)
     assert foreign.status_code == 200
     assert all(n["id"] != notif_id for n in foreign.json()["items"])
+    assert any(
+        n["kind"] == "review_published" and n["target_id"] == route_id
+        for n in foreign.json()["items"]
+    )
 
     public = await live_client.get(f"/api/v1/routes/{route_id}/reviews")
     assert public.status_code == 200
@@ -231,6 +235,54 @@ async def test_approve_review_notifies_owner_and_inbox_is_private(
 async def test_review_missing_route_is_404(live_client: AsyncClient) -> None:
     missing = await live_client.get(f"/api/v1/routes/{uuid4()}/reviews")
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_review_unpublished_route_is_rejected(live_client: AsyncClient) -> None:
+    auth = await _login(live_client, "+79001110108", "ЧерновикЮзер")
+    headers = {"Authorization": f"Bearer {auth['access_token']}"}
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        route = await session.scalar(
+            select(Route)
+            .where(
+                Route.visibility == "public",
+                Route.lifecycle_status == "active",
+                Route.publication_status == "published",
+            )
+            .limit(1)
+        )
+        assert route is not None
+        route_id = route.id
+        previous = route.publication_status
+        route.publication_status = "pending_review"
+        await session.commit()
+    await engine.dispose()
+
+    try:
+        listed = await live_client.get(f"/api/v1/routes/{route_id}/reviews")
+        assert listed.status_code == 404
+
+        created = await live_client.post(
+            f"/api/v1/routes/{route_id}/reviews",
+            headers=headers,
+            json={"body": "Отзыв на черновик", "rating": 5},
+        )
+        assert created.status_code == 409
+        body = created.json()["error"]
+        assert body["code"] == "route_not_published"
+        assert "неопубликованные" in body["message"].lower()
+    finally:
+        engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+        session_maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with session_maker() as session:
+            restored = await session.get(Route, route_id)
+            assert restored is not None
+            restored.publication_status = previous
+            await session.commit()
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -341,9 +393,9 @@ async def test_mark_all_notifications_read(live_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reject_review_does_not_notify(live_client: AsyncClient) -> None:
+async def test_reject_review_notifies_author_not_owner(live_client: AsyncClient) -> None:
     owner = await _login(live_client, "+79001110107", "РеджектОвнер")
-    author = await _login(live_client, "+79001110108", "РеджектАвтор")
+    author = await _login(live_client, "+79001110118", "РеджектАвтор")
     owner_headers = {"Authorization": f"Bearer {owner['access_token']}"}
     author_headers = {"Authorization": f"Bearer {author['access_token']}"}
     me = await live_client.get("/api/v1/me", headers=owner_headers)
@@ -391,5 +443,70 @@ async def test_reject_review_does_not_notify(live_client: AsyncClient) -> None:
 
     after = await live_client.get("/api/v1/me/notifications", headers=owner_headers)
     assert after.json()["unread_count"] == before_count
+    author_inbox = await live_client.get("/api/v1/me/notifications", headers=author_headers)
+    assert author_inbox.status_code == 200
+    assert any(
+        n["kind"] == "review_rejected" and n["target_id"] == route_id
+        for n in author_inbox.json()["items"]
+    )
     public = await live_client.get(f"/api/v1/routes/{route_id}/reviews")
     assert all(item["id"] != str(review_id) for item in public.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_route_moderation_notifies_owner(live_client: AsyncClient) -> None:
+    from tourism_backend.modules.notifications.application import (
+        service as notifications_service,
+    )
+
+    owner = await _login(live_client, "+79001110119", "МодМаршрутОвнер")
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    me = await live_client.get("/api/v1/me", headers=headers)
+    owner_id = UUID(me.json()["id"])
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        route = await session.scalar(
+            select(Route)
+            .where(
+                Route.visibility == "public",
+                Route.lifecycle_status == "active",
+                Route.publication_status == "published",
+            )
+            .limit(1)
+        )
+        if route is None:
+            await engine.dispose()
+            pytest.skip("No public route seeded")
+        route_id = route.id
+        route_name = route.name
+        published = await notifications_service.create_route_moderation_notification(
+            session,
+            owner_user_id=owner_id,
+            route_id=route_id,
+            route_name=route_name,
+            approved=True,
+        )
+        rejected = await notifications_service.create_route_moderation_notification(
+            session,
+            owner_user_id=owner_id,
+            route_id=route_id,
+            route_name=route_name,
+            approved=False,
+        )
+        await session.commit()
+        published_id = str(published.id)
+        rejected_id = str(rejected.id)
+    await engine.dispose()
+
+    inbox = await live_client.get("/api/v1/me/notifications", headers=headers)
+    assert inbox.status_code == 200
+    kinds = {item["id"]: item["kind"] for item in inbox.json()["items"]}
+    assert kinds[published_id] == "route_published"
+    assert kinds[rejected_id] == "route_rejected"
+    assert all(
+        item["target_type"] == "route" and item["target_id"] == str(route_id)
+        for item in inbox.json()["items"]
+        if item["id"] in {published_id, rejected_id}
+    )

@@ -31,6 +31,24 @@ async def _ensure_public_route(session: AsyncSession, route_id: UUID) -> Route:
     return route
 
 
+async def _ensure_reviewable_route(session: AsyncSession, route_id: UUID) -> Route:
+    """Like public-catalog lookup, but distinguish missing vs unpublished."""
+    route = await session.get(Route, route_id)
+    if route is None:
+        raise AppError(code="route_not_found", message="Route not found", status_code=404)
+    if (
+        route.visibility != "public"
+        or route.lifecycle_status != "active"
+        or route.publication_status != "published"
+    ):
+        raise AppError(
+            code="route_not_published",
+            message="Нельзя оставлять отзывы на неопубликованные маршруты",
+            status_code=409,
+        )
+    return route
+
+
 async def _rank_titles(
     session: AsyncSession,
     users: list[User],
@@ -143,7 +161,7 @@ async def upsert_review(
     author_user_id: UUID,
     payload: RouteReviewCreateIn,
 ) -> RouteReviewOut:
-    await _ensure_public_route(session, route_id)
+    await _ensure_reviewable_route(session, route_id)
     existing = await session.scalar(
         select(RouteReview).where(
             RouteReview.route_id == route_id,
@@ -264,23 +282,61 @@ async def set_review_status(
         review.moderated_at = now
         review.updated_at = now
         changed += 1
-        if status == "published" and previous == "pending_review":
-            route = await session.get(Route, review.route_id)
-            if route is not None and route.owner_user_id is not None:
-                notif = await notifications_service.create_route_review_notification(
+        if previous != "pending_review":
+            continue
+        route = await session.get(Route, review.route_id)
+        if route is None:
+            continue
+        if status == "published":
+            if route.owner_user_id is not None:
+                owner_notif = await notifications_service.create_route_review_notification(
                     session,
                     owner_user_id=route.owner_user_id,
                     actor_user_id=review.author_user_id,
                     route_id=route.id,
                     route_name=route.name,
                 )
-                if notif is not None:
-                    await notifications_service.maybe_push_route_review(
+                if owner_notif is not None:
+                    await notifications_service.maybe_push_notification(
                         session,
                         get_settings(),
-                        owner_user_id=route.owner_user_id,
-                        title=notif.title,
-                        body=notif.body,
+                        user_id=route.owner_user_id,
+                        kind=owner_notif.kind,
+                        title=owner_notif.title,
+                        body=owner_notif.body,
                         route_id=route.id,
                     )
+            author_notif = await notifications_service.create_review_moderation_notification(
+                session,
+                author_user_id=review.author_user_id,
+                route_id=route.id,
+                route_name=route.name,
+                approved=True,
+            )
+            await notifications_service.maybe_push_notification(
+                session,
+                get_settings(),
+                user_id=review.author_user_id,
+                kind=author_notif.kind,
+                title=author_notif.title,
+                body=author_notif.body,
+                route_id=route.id,
+            )
+        elif status == "rejected":
+            author_notif = await notifications_service.create_review_moderation_notification(
+                session,
+                author_user_id=review.author_user_id,
+                route_id=route.id,
+                route_name=route.name,
+                approved=False,
+            )
+            await notifications_service.maybe_push_notification(
+                session,
+                get_settings(),
+                user_id=review.author_user_id,
+                kind=author_notif.kind,
+                title=author_notif.title,
+                body=author_notif.body,
+                route_id=route.id,
+            )
     return changed

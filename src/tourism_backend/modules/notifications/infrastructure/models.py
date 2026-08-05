@@ -12,7 +12,16 @@ from tourism_backend.db.base import Base, UUIDPrimaryKeyMixin
 class Notification(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "notifications"
     __table_args__ = (
-        CheckConstraint("kind IN ('route_review')", name="kind"),
+        CheckConstraint(
+            "kind IN ("
+            "'route_review', "
+            "'route_published', "
+            "'route_rejected', "
+            "'review_published', "
+            "'review_rejected'"
+            ")",
+            name="kind",
+        ),
         CheckConstraint(
             "target_type IS NULL OR target_type IN ('route')",
             name="target_type",

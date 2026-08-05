@@ -25,6 +25,29 @@ def _clip(value: str, limit: int) -> str:
     return cleaned[: max(0, limit - 1)] + "…"
 
 
+def _build_notification(
+    *,
+    user_id: UUID,
+    kind: str,
+    title: str,
+    body: str,
+    route_id: UUID,
+    actor_user_id: UUID | None = None,
+) -> Notification:
+    return Notification(
+        id=uuid4(),
+        user_id=user_id,
+        actor_user_id=actor_user_id,
+        kind=kind,
+        title=_clip(title, _TITLE_MAX),
+        body=_clip(body, _BODY_MAX),
+        target_type="route",
+        target_id=route_id,
+        is_read=False,
+        created_at=datetime.now(UTC),
+    )
+
+
 async def create_route_review_notification(
     session: AsyncSession,
     *,
@@ -37,30 +60,109 @@ async def create_route_review_notification(
     if owner_user_id == actor_user_id:
         return None
 
-    actor = await session.get(User, actor_user_id)
-    actor_name = (actor.display_name if actor is not None else "Путешественник").strip()
-    if not actor_name:
-        actor_name = "Путешественник"
-
     short_route = _clip(route_name, 48)
-    body = _clip(
-        f"Оставил свой комментарий под вашим маршрутом «{short_route}»",
-        _BODY_MAX,
-    )
-    notification = Notification(
-        id=uuid4(),
+    notification = _build_notification(
         user_id=owner_user_id,
         actor_user_id=actor_user_id,
         kind="route_review",
-        title=_clip("Новый отзыв", _TITLE_MAX),
-        body=body,
-        target_type="route",
-        target_id=route_id,
-        is_read=False,
-        created_at=datetime.now(UTC),
+        title="Новый отзыв",
+        body=f"Оставил свой комментарий под вашим маршрутом «{short_route}»",
+        route_id=route_id,
     )
     session.add(notification)
     return notification
+
+
+async def create_route_moderation_notification(
+    session: AsyncSession,
+    *,
+    owner_user_id: UUID,
+    route_id: UUID,
+    route_name: str,
+    approved: bool,
+) -> Notification:
+    """Notify route author after ops approve/reject publication."""
+    short_route = _clip(route_name, 48)
+    if approved:
+        kind = "route_published"
+        title = "Маршрут опубликован"
+        body = f"Ваш маршрут «{short_route}» прошёл модерацию и доступен путешественникам"
+    else:
+        kind = "route_rejected"
+        title = "Маршрут на доработке"
+        body = (
+            f"Маршрут «{short_route}» вернули на доработку. Исправьте замечания и отправьте снова"
+        )
+    notification = _build_notification(
+        user_id=owner_user_id,
+        kind=kind,
+        title=title,
+        body=body,
+        route_id=route_id,
+    )
+    session.add(notification)
+    return notification
+
+
+async def create_review_moderation_notification(
+    session: AsyncSession,
+    *,
+    author_user_id: UUID,
+    route_id: UUID,
+    route_name: str,
+    approved: bool,
+) -> Notification:
+    """Notify review author after ops approve/reject their comment."""
+    short_route = _clip(route_name, 48)
+    if approved:
+        kind = "review_published"
+        title = "Отзыв опубликован"
+        body = f"Ваш отзыв к маршруту «{short_route}» прошёл модерацию"
+    else:
+        kind = "review_rejected"
+        title = "Отзыв отклонён"
+        body = (
+            f"Ваш отзыв к маршруту «{short_route}» не прошёл модерацию. Вы можете отправить новый"
+        )
+    notification = _build_notification(
+        user_id=author_user_id,
+        kind=kind,
+        title=title,
+        body=body,
+        route_id=route_id,
+    )
+    session.add(notification)
+    return notification
+
+
+async def maybe_push_notification(
+    session: AsyncSession,
+    settings: Settings,
+    *,
+    user_id: UUID,
+    kind: str,
+    title: str,
+    body: str,
+    route_id: UUID,
+) -> None:
+    """Best-effort FCM when user opted into push and tokens exist."""
+    user = await session.get(User, user_id)
+    if user is None or not user.notify_push_enabled:
+        return
+    tokens = await device_tokens.list_tokens_for_user(session, user_id=user_id)
+    if not tokens:
+        return
+    await fcm.send_data_message(
+        settings,
+        tokens=[row.token for row in tokens],
+        title=title,
+        body=body,
+        data={
+            "kind": kind,
+            "target_type": "route",
+            "target_id": str(route_id),
+        },
+    )
 
 
 async def maybe_push_route_review(
@@ -72,23 +174,15 @@ async def maybe_push_route_review(
     body: str,
     route_id: UUID,
 ) -> None:
-    """Best-effort FCM when owner opted into push and tokens exist."""
-    owner = await session.get(User, owner_user_id)
-    if owner is None or not owner.notify_push_enabled:
-        return
-    tokens = await device_tokens.list_tokens_for_user(session, user_id=owner_user_id)
-    if not tokens:
-        return
-    await fcm.send_data_message(
+    """Back-compat wrapper for route_review push."""
+    await maybe_push_notification(
+        session,
         settings,
-        tokens=[row.token for row in tokens],
+        user_id=owner_user_id,
+        kind="route_review",
         title=title,
         body=body,
-        data={
-            "kind": "route_review",
-            "target_type": "route",
-            "target_id": str(route_id),
-        },
+        route_id=route_id,
     )
 
 

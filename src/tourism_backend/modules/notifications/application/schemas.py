@@ -3,7 +3,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-NotificationKind = Literal["route_review"]
+NotificationKind = Literal[
+    "route_review",
+    "route_published",
+    "route_rejected",
+    "review_published",
+    "review_rejected",
+]
 NotificationTargetType = Literal["route"]
 
 

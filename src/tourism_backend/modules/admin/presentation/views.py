@@ -17,7 +17,7 @@ from wtforms import FileField, PasswordField  # type: ignore[import-untyped]
 from wtforms.validators import Length, Optional  # type: ignore[import-untyped]
 
 from tourism_backend.api.errors import AppError
-from tourism_backend.config import Settings
+from tourism_backend.config import Settings, get_settings
 from tourism_backend.modules.admin.application.audit import record_audit
 from tourism_backend.modules.admin.application.passwords import hash_password
 from tourism_backend.modules.admin.application.support_ops import operator_reply
@@ -69,6 +69,7 @@ from tourism_backend.modules.identity.infrastructure.models import (
 )
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.application.service import resolve_urls
+from tourism_backend.modules.notifications.application import service as notifications_service
 from tourism_backend.modules.routes.application import review_service
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
@@ -981,9 +982,10 @@ class RouteAdmin(ModelView, model=Route):
                 )
                 now = datetime.now(UTC)
                 for route in routes:
+                    previous = route.publication_status
                     if (
                         publication_status in {"published", "rejected"}
-                        and route.publication_status != "pending_review"
+                        and previous != "pending_review"
                     ):
                         continue
                     route.publication_status = publication_status
@@ -1005,6 +1007,27 @@ class RouteAdmin(ModelView, model=Route):
                         entity_id=str(route.id),
                         ip=request.client.host if request.client else None,
                     )
+                    if (
+                        previous == "pending_review"
+                        and publication_status in {"published", "rejected"}
+                        and route.owner_user_id is not None
+                    ):
+                        notif = await notifications_service.create_route_moderation_notification(
+                            session,
+                            owner_user_id=route.owner_user_id,
+                            route_id=route.id,
+                            route_name=route.name,
+                            approved=publication_status == "published",
+                        )
+                        await notifications_service.maybe_push_notification(
+                            session,
+                            get_settings(),
+                            user_id=route.owner_user_id,
+                            kind=notif.kind,
+                            title=notif.title,
+                            body=notif.body,
+                            route_id=route.id,
+                        )
                 await session.commit()
         return RedirectResponse(
             str(request.url_for("admin:list", identity=self.identity)),
