@@ -12,6 +12,9 @@ from tourism_backend.config import Settings
 
 logger = logging.getLogger(__name__)
 
+# Must match MainActivity / AndroidManifest default_notification_channel_id.
+ANDROID_PUSH_CHANNEL_ID = "crimeatrip_push"
+
 
 def _load_service_account(settings: Settings) -> dict[str, Any] | None:
     raw = (settings.fcm_service_account_json or "").strip()
@@ -20,14 +23,14 @@ def _load_service_account(settings: Settings) -> dict[str, Any] | None:
             with open(settings.fcm_service_account_file, encoding="utf-8") as fh:
                 raw = fh.read()
         except OSError:
-            logger.warning("FCM service account file unreadable")
+            logger.warning("fcm_service_account_file_unreadable")
             return None
     if not raw:
         return None
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("FCM service account JSON invalid")
+        logger.warning("fcm_service_account_json_invalid")
         return None
     if not isinstance(data, dict) or "project_id" not in data:
         return None
@@ -47,6 +50,8 @@ async def send_data_message(
         return 0
     account = _load_service_account(settings)
     if account is None:
+        # In-app inbox still works; system tray needs FCM_SERVICE_ACCOUNT_*.
+        logger.warning("fcm_skipped_no_service_account")
         return 0
 
     # Lazy import: google-auth is optional until FCM is enabled in deploy.
@@ -54,7 +59,7 @@ async def send_data_message(
         from google.auth.transport.requests import Request
         from google.oauth2 import service_account
     except ImportError:
-        logger.warning("google-auth not installed; skip FCM send")
+        logger.warning("fcm_skipped_google_auth_missing")
         return 0
 
     # google-auth stubs omit typed from_service_account_info.
@@ -68,7 +73,7 @@ async def send_data_message(
     url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
     headers = {
         "Authorization": f"Bearer {creds.token}",
-        "Content-Type": "application/json; charset=UTF-8",
+        "Content-Type": "application/json; charset=utf-8",
     }
 
     sent = 0
@@ -79,7 +84,15 @@ async def send_data_message(
                     "token": token,
                     "notification": {"title": title, "body": body},
                     "data": data,
-                    "android": {"priority": "HIGH"},
+                    "android": {
+                        "priority": "HIGH",
+                        "notification": {
+                            "channel_id": ANDROID_PUSH_CHANNEL_ID,
+                            "notification_priority": "PRIORITY_HIGH",
+                            "default_sound": True,
+                            "default_vibrate_timings": True,
+                        },
+                    },
                     "apns": {
                         "payload": {
                             "aps": {"sound": "default", "content-available": 1},
@@ -92,10 +105,14 @@ async def send_data_message(
                 if response.status_code < 300:
                     sent += 1
                 else:
-                    logger.info(
-                        "fcm_send_failed",
-                        extra={"status": response.status_code},
+                    # Do not log the device token; body is enough to diagnose.
+                    logger.warning(
+                        "fcm_send_failed status=%s body=%s",
+                        response.status_code,
+                        response.text[:400],
                     )
-            except httpx.HTTPError:
-                logger.info("fcm_send_error")
+            except httpx.HTTPError as exc:
+                logger.warning("fcm_send_error err=%s", type(exc).__name__)
+    if sent:
+        logger.info("fcm_send_ok count=%s", sent)
     return sent
