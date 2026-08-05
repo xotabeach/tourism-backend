@@ -17,9 +17,7 @@ async def upsert_device_token(
     payload: DeviceTokenIn,
 ) -> None:
     now = datetime.now(UTC)
-    existing = await session.scalar(
-        select(DeviceToken).where(DeviceToken.token == payload.token)
-    )
+    existing = await session.scalar(select(DeviceToken).where(DeviceToken.token == payload.token))
     if existing is None:
         session.add(
             DeviceToken(
@@ -61,9 +59,5 @@ async def list_tokens_for_user(
     user_id: UUID,
 ) -> list[DeviceToken]:
     return list(
-        (
-            await session.scalars(
-                select(DeviceToken).where(DeviceToken.user_id == user_id)
-            )
-        ).all()
+        (await session.scalars(select(DeviceToken).where(DeviceToken.user_id == user_id))).all()
     )

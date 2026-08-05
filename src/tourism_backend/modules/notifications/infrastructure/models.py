@@ -46,9 +46,7 @@ class DeviceToken(Base, UUIDPrimaryKeyMixin):
     """FCM registration token bound to a user (one row per device token)."""
 
     __tablename__ = "device_tokens"
-    __table_args__ = (
-        CheckConstraint("platform IN ('ios', 'android')", name="platform"),
-    )
+    __table_args__ = (CheckConstraint("platform IN ('ios', 'android')", name="platform"),)
 
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
