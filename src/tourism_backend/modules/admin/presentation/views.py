@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import contextlib
-from datetime import UTC, datetime
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
