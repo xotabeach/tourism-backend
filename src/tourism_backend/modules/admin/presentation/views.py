@@ -59,6 +59,7 @@ from tourism_backend.modules.identity.application.schemas import normalize_ru_ph
 from tourism_backend.modules.identity.infrastructure.models import (
     AuthOtpChallenge,
     AuthPhoneChangeChallenge,
+    TravelRank,
     User,
 )
 from tourism_backend.modules.media.application import service as media_service
@@ -109,6 +110,7 @@ class UserAdmin(ModelView, model=User):
         User.display_name,
         User.phone_e164,
         User.travel_points,
+        User.rank_id,
         User.created_at,
         User.updated_at,
         User.notify_push_enabled,
@@ -118,6 +120,7 @@ class UserAdmin(ModelView, model=User):
         User.display_name: "Профиль",
         User.phone_e164: "Телефон",
         User.travel_points: "ТП",
+        User.rank_id: "Звание",
         User.created_at: "Создан",
         User.updated_at: "Обновлён",
         User.notify_push_enabled: "Push",
@@ -139,6 +142,7 @@ class UserAdmin(ModelView, model=User):
         User.updated_at,
         User.display_name,
         User.travel_points,
+        User.rank_id,
         User.phone_e164,
     ]
     column_default_sort = (User.created_at, True)
@@ -337,6 +341,31 @@ def _phone_change_columns(*, show_debug_code: bool) -> list[Any]:
     if show_debug_code:
         cols.insert(3, AuthPhoneChangeChallenge.debug_code)
     return cols
+
+
+class TravelRankAdmin(ModelView, model=TravelRank):
+    category = "Пользователи"
+    name = "Звание"
+    name_plural = "Звания"
+    icon = "fa-solid fa-ranking-star"
+    column_list = [
+        TravelRank.sort_order,
+        TravelRank.title,
+        TravelRank.slug,
+        TravelRank.min_points,
+        TravelRank.next_rank_points,
+    ]
+    column_labels = {
+        TravelRank.sort_order: "Порядок",
+        TravelRank.title: "Название",
+        TravelRank.slug: "Код",
+        TravelRank.min_points: "От ТП",
+        TravelRank.next_rank_points: "Следующее звание, ТП",
+    }
+    column_default_sort = (TravelRank.sort_order, False)
+    can_create = False
+    can_delete = False
+    can_export = False
 
 
 class SupportTicketAdmin(ModelView, model=SupportTicket):
@@ -1039,6 +1068,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         page_size = 50
 
     admin.add_view(UserAdmin)
+    admin.add_view(TravelRankAdmin)
     admin.add_view(OtpChallengeAdmin)
     admin.add_view(PhoneChangeChallengeAdmin)
     admin.add_view(SupportTicketAdmin)

@@ -45,6 +45,24 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default=0,
         server_default="0",
     )
+    rank_id: Mapped[UUID] = mapped_column(
+        ForeignKey("travel_ranks.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+        default=UUID("00000000-0000-0000-0000-000000000101"),
+        server_default="00000000-0000-0000-0000-000000000101",
+    )
+
+
+class TravelRank(Base):
+    __tablename__ = "travel_ranks"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    min_points: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    next_rank_points: Mapped[int] = mapped_column(Integer, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
 
 
 class ProfileLike(Base):

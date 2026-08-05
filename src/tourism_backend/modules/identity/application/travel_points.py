@@ -8,11 +8,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.modules.favorites.infrastructure.models import FavoriteRoute
-from tourism_backend.modules.identity.infrastructure.models import ProfileLike, User
+from tourism_backend.modules.identity.infrastructure.models import ProfileLike, TravelRank, User
 from tourism_backend.modules.routes.infrastructure.models import Route
 
 AWARD_DELAY = timedelta(hours=6)
 AWARD_POINTS = 5
+
+
+async def _sync_rank(session: AsyncSession, user: User) -> None:
+    rank = await session.scalar(
+        select(TravelRank)
+        .where(TravelRank.min_points <= user.travel_points)
+        .order_by(TravelRank.min_points.desc())
+        .limit(1)
+    )
+    if rank is not None:
+        user.rank_id = rank.id
 
 
 async def grant_due_travel_points(session: AsyncSession) -> int:
@@ -32,6 +43,7 @@ async def grant_due_travel_points(session: AsyncSession) -> int:
         if beneficiary is None:
             continue
         beneficiary.travel_points += AWARD_POINTS
+        await _sync_rank(session, beneficiary)
         like.awarded_at = now
         granted += 1
 
@@ -54,6 +66,7 @@ async def grant_due_travel_points(session: AsyncSession) -> int:
         if beneficiary is None:
             continue
         beneficiary.travel_points += AWARD_POINTS
+        await _sync_rank(session, beneficiary)
         fav.author_points_awarded_at = now
         granted += 1
 

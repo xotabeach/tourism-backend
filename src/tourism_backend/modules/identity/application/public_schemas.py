@@ -11,6 +11,10 @@ class PublicUserOut(BaseModel):
     avatar_url: str | None = None
     cover_url: str | None = None
     travel_points: int = 0
+    rank_slug: str = "novice"
+    rank_title: str = "Новичок"
+    next_rank_points: int = 1000
+    leaderboard_place: int = 0
     liked_by_me: bool = False
 
 

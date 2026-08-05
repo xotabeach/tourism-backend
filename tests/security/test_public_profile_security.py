@@ -114,12 +114,21 @@ async def test_public_profile_hides_phone_and_is_readable(
     assert "phone_e164" not in body
     assert isinstance(body["travel_points"], int)
     assert isinstance(body["liked_by_me"], bool)
+    assert body["rank_slug"]
+    assert body["rank_title"]
+    assert isinstance(body["next_rank_points"], int)
+    assert isinstance(body["leaderboard_place"], int)
+    assert body["leaderboard_place"] >= 1
     assert set(body.keys()) == {
         "id",
         "display_name",
         "avatar_url",
         "cover_url",
         "travel_points",
+        "rank_slug",
+        "rank_title",
+        "next_rank_points",
+        "leaderboard_place",
         "liked_by_me",
     }
 
@@ -156,9 +165,87 @@ async def test_public_user_search_returns_profile_media_without_pii(
         "avatar_url",
         "cover_url",
         "travel_points",
+        "rank_slug",
+        "rank_title",
+        "next_rank_points",
+        "leaderboard_place",
         "liked_by_me",
     }
     assert "phone" not in str(found).lower()
+
+
+@pytest.mark.asyncio
+async def test_users_leaderboard_is_public_and_ordered_by_points(
+    live_client: AsyncClient,
+) -> None:
+    marker = uuid4().hex[:6]
+    low = await _login(
+        live_client,
+        phone=f"+7908{uuid4().int % 10_000_000:07d}",
+        name=f"Low {marker}",
+    )
+    high = await _login(
+        live_client,
+        phone=f"+7909{uuid4().int % 10_000_000:07d}",
+        name=f"High {marker}",
+    )
+    low_id = (
+        await live_client.get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {low['access_token']}"},
+        )
+    ).json()["id"]
+    high_id = (
+        await live_client.get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {high['access_token']}"},
+        )
+    ).json()["id"]
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE users SET travel_points = 50 WHERE id = :id"),
+            {"id": low_id},
+        )
+        await conn.execute(
+            text("UPDATE users SET travel_points = 5000 WHERE id = :id"),
+            {"id": high_id},
+        )
+    await engine.dispose()
+
+    response = await live_client.get(
+        "/api/v1/users/leaderboard",
+        params={"limit": 100, "offset": 0},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total"] >= 2
+    ids = [item["id"] for item in body["items"]]
+    assert high_id in ids
+    assert low_id in ids
+    assert ids.index(high_id) < ids.index(low_id)
+    high_row = next(item for item in body["items"] if item["id"] == high_id)
+    assert high_row["rank_slug"] == "explorer"
+    assert high_row["rank_title"] == "Исследователь"
+    assert "phone" not in str(high_row).lower()
+    assert set(high_row) == {
+        "id",
+        "display_name",
+        "avatar_url",
+        "cover_url",
+        "travel_points",
+        "rank_slug",
+        "rank_title",
+        "next_rank_points",
+        "leaderboard_place",
+        "liked_by_me",
+    }
+    oversized = await live_client.get(
+        "/api/v1/users/leaderboard",
+        params={"limit": 101},
+    )
+    assert oversized.status_code == 422
 
 
 @pytest.mark.asyncio

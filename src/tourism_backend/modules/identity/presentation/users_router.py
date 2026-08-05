@@ -24,6 +24,15 @@ async def search_public_users(
     return await public_service.search_public_users(session, query=q, limit=limit)
 
 
+@router.get("/users/leaderboard", response_model=PublicUserListOut)
+async def get_users_leaderboard(
+    session: DbSession,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> PublicUserListOut:
+    return await public_service.list_leaderboard(session, limit=limit, offset=offset)
+
+
 @router.get("/users/subscriptions", response_model=PublicUserListOut)
 async def list_profile_subscriptions(
     session: DbSession,
