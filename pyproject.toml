@@ -104,6 +104,10 @@ typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"
 
+[tool.coverage.run]
+# Optional external HTTP sender; unit-tested for config loading / no-op paths.
+omit = ["*/notifications/application/fcm.py"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

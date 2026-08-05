@@ -231,3 +231,165 @@ async def test_approve_review_notifies_owner_and_inbox_is_private(
 async def test_review_missing_route_is_404(live_client: AsyncClient) -> None:
     missing = await live_client.get(f"/api/v1/routes/{uuid4()}/reviews")
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_device_tokens_require_auth_and_round_trip(live_client: AsyncClient) -> None:
+    token = "fcm-test-token-" + ("x" * 40)
+    unauth = await live_client.post(
+        "/api/v1/me/device-tokens",
+        json={"token": token, "platform": "android"},
+    )
+    assert unauth.status_code == 401
+
+    auth = await _login(live_client, "+79001110104", "ПушЮзер")
+    headers = {"Authorization": f"Bearer {auth['access_token']}"}
+
+    bad = await live_client.post(
+        "/api/v1/me/device-tokens",
+        headers=headers,
+        json={"token": "short", "platform": "android"},
+    )
+    assert bad.status_code == 422
+
+    ok = await live_client.post(
+        "/api/v1/me/device-tokens",
+        headers=headers,
+        json={"token": token, "platform": "ios"},
+    )
+    assert ok.status_code == 204
+
+    # Upsert same token under same user (platform change).
+    again = await live_client.post(
+        "/api/v1/me/device-tokens",
+        headers=headers,
+        json={"token": token, "platform": "android"},
+    )
+    assert again.status_code == 204
+
+    deleted = await live_client.request(
+        "DELETE",
+        "/api/v1/me/device-tokens",
+        headers=headers,
+        json={"token": token},
+    )
+    assert deleted.status_code == 204
+
+    # Deleting again is idempotent.
+    deleted_again = await live_client.request(
+        "DELETE",
+        "/api/v1/me/device-tokens",
+        headers=headers,
+        json={"token": token},
+    )
+    assert deleted_again.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_mark_all_notifications_read(live_client: AsyncClient) -> None:
+    owner = await _login(live_client, "+79001110105", "ИнбоксОвнер")
+    author = await _login(live_client, "+79001110106", "ИнбоксАвтор")
+    owner_headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    author_headers = {"Authorization": f"Bearer {author['access_token']}"}
+    me = await live_client.get("/api/v1/me", headers=owner_headers)
+    owner_id = UUID(me.json()["id"])
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        route = await session.scalar(
+            select(Route)
+            .where(
+                Route.visibility == "public",
+                Route.lifecycle_status == "active",
+                Route.publication_status == "published",
+            )
+            .limit(1)
+        )
+        if route is None:
+            await engine.dispose()
+            pytest.skip("No public route seeded")
+        route.owner_user_id = owner_id
+        await session.commit()
+        route_id = str(route.id)
+
+    created = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=author_headers,
+        json={"body": "Отзыв для read-all", "rating": 4},
+    )
+    assert created.status_code == 200
+    review_id = UUID(created.json()["id"])
+
+    async with session_maker() as session:
+        await set_review_status(session, review_ids=[review_id], status="published")
+        await session.commit()
+    await engine.dispose()
+
+    inbox = await live_client.get("/api/v1/me/notifications", headers=owner_headers)
+    assert inbox.json()["unread_count"] >= 1
+
+    marked = await live_client.post(
+        "/api/v1/me/notifications/read-all",
+        headers=owner_headers,
+    )
+    assert marked.status_code == 200
+    assert marked.json()["updated"] >= 1
+
+    after = await live_client.get("/api/v1/me/notifications", headers=owner_headers)
+    assert after.json()["unread_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reject_review_does_not_notify(live_client: AsyncClient) -> None:
+    owner = await _login(live_client, "+79001110107", "РеджектОвнер")
+    author = await _login(live_client, "+79001110108", "РеджектАвтор")
+    owner_headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    author_headers = {"Authorization": f"Bearer {author['access_token']}"}
+    me = await live_client.get("/api/v1/me", headers=owner_headers)
+    owner_id = UUID(me.json()["id"])
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        route = await session.scalar(
+            select(Route)
+            .where(
+                Route.visibility == "public",
+                Route.lifecycle_status == "active",
+                Route.publication_status == "published",
+            )
+            .limit(1)
+        )
+        if route is None:
+            await engine.dispose()
+            pytest.skip("No public route seeded")
+        route.owner_user_id = owner_id
+        await session.commit()
+        route_id = str(route.id)
+
+    before = await live_client.get("/api/v1/me/notifications", headers=owner_headers)
+    before_count = before.json()["unread_count"]
+
+    created = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=author_headers,
+        json={"body": "Отзыв на отклонение модератором", "rating": 2},
+    )
+    assert created.status_code == 200
+    review_id = UUID(created.json()["id"])
+
+    async with session_maker() as session:
+        changed = await set_review_status(
+            session,
+            review_ids=[review_id],
+            status="rejected",
+        )
+        await session.commit()
+        assert changed == 1
+    await engine.dispose()
+
+    after = await live_client.get("/api/v1/me/notifications", headers=owner_headers)
+    assert after.json()["unread_count"] == before_count
+    public = await live_client.get(f"/api/v1/routes/{route_id}/reviews")
+    assert all(item["id"] != str(review_id) for item in public.json()["items"])
