@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from datetime import UTC, datetime
+from collections.abc import Sequence
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
@@ -433,15 +434,6 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
         SupportTicket.kind: format_ticket_kind,
     }
     column_searchable_list = [SupportTicket.subject]
-
-    async def list(self, request: Request) -> Any:
-        pagination = await super().list(request)
-        request.state.user_names = await _preload_user_names(
-            self.session_maker,
-            [row.user_id for row in pagination.rows],
-        )
-        return pagination
-
     column_sortable_list = [
         SupportTicket.last_message_at,
         SupportTicket.updated_at,
@@ -464,7 +456,15 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
     page_size = 50
     details_template = "sqladmin/support_chat.html"
 
-    async def _load_chat_messages(self, ticket_id: UUID) -> list[dict[str, str]]:
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        request.state.user_names = await _preload_user_names(
+            self.session_maker,
+            [row.user_id for row in pagination.rows],
+        )
+        return pagination
+
+    async def _load_chat_messages(self, ticket_id: UUID) -> Sequence[dict[str, str]]:
         messages: list[dict[str, str]] = []
         async with self.session_maker(expire_on_commit=False) as session:
             result = await session.execute(
@@ -913,24 +913,6 @@ class RouteAdmin(ModelView, model=Route):
         Route.owner_user_id: format_user_fk,
     }
     column_searchable_list = [Route.name, Route.description]
-
-    async def list(self, request: Request) -> Any:
-        pagination = await super().list(request)
-        request.state.user_names = await _preload_user_names(
-            self.session_maker,
-            [row.owner_user_id for row in pagination.rows if row.owner_user_id],
-        )
-        return pagination
-
-    async def get_object_for_details(self, request: Request) -> Any:
-        model = await super().get_object_for_details(request)
-        if model is not None and model.owner_user_id is not None:
-            request.state.user_names = await _preload_user_names(
-                self.session_maker,
-                [model.owner_user_id],
-            )
-        return model
-
     column_sortable_list = [
         Route.publication_status,
         Route.updated_at,
@@ -960,6 +942,23 @@ class RouteAdmin(ModelView, model=Route):
     can_delete = False
     can_export = False
     page_size = 50
+
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        request.state.user_names = await _preload_user_names(
+            self.session_maker,
+            [row.owner_user_id for row in pagination.rows if row.owner_user_id],
+        )
+        return pagination
+
+    async def get_object_for_details(self, request: Request) -> Any:
+        model = await super().get_object_for_details(request)
+        if model is not None and model.owner_user_id is not None:
+            request.state.user_names = await _preload_user_names(
+                self.session_maker,
+                [model.owner_user_id],
+            )
+        return model
 
     async def _set_publication_status(
         self,
