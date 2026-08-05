@@ -116,8 +116,15 @@
       var phone = document.createElement("div");
       phone.className = "ct-user-popover-phone";
       phone.textContent = data.phone_e164 || "—";
+      var link = document.createElement("a");
+      link.className = "ct-entity-link";
+      link.href = "/admin/user/details/" + encodeURIComponent(id);
+      link.textContent = "Открыть пользователя";
+      link.style.display = "inline-block";
+      link.style.marginTop = "0.45rem";
       pop.appendChild(name);
       pop.appendChild(phone);
+      pop.appendChild(link);
     }).catch(function () {
       pop.textContent = "Не удалось загрузить";
     });

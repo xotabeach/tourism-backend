@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -5,9 +6,11 @@ from geoalchemy2 import Geography
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -113,3 +116,33 @@ class RouteStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     visit_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_optional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class RouteReview(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "route_reviews"
+    __table_args__ = (
+        UniqueConstraint("route_id", "author_user_id", name="uq_route_reviews_route_author"),
+        CheckConstraint("rating >= 1 AND rating <= 5", name="rating_range"),
+        CheckConstraint(
+            "status IN ('pending_review', 'published', 'rejected', 'deleted')",
+            name="status",
+        ),
+        Index("ix_route_reviews_route_status_created", "route_id", "status", "created_at"),
+        Index("ix_route_reviews_moderation_queue", "status", "created_at"),
+    )
+
+    route_id: Mapped[UUID] = mapped_column(
+        ForeignKey("routes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    author_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    body: Mapped[str] = mapped_column(String(2000), nullable=False)
+    rating: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending_review")
+    moderator_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    moderated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

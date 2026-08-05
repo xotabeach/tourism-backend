@@ -5,7 +5,14 @@ from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession
 from tourism_backend.modules.routes.application import media as route_media
+from tourism_backend.modules.routes.application import review_service
 from tourism_backend.modules.routes.application import service as routes_service
+from tourism_backend.modules.routes.application.review_schemas import (
+    MyRouteReviewListOut,
+    RouteReviewCreateIn,
+    RouteReviewListOut,
+    RouteReviewOut,
+)
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
     RouteDetailOut,
@@ -159,3 +166,48 @@ async def get_my_route(
 @router.get("/routes/{route_id}", response_model=RouteDetailOut)
 async def get_route(session: DbSession, route_id: UUID) -> RouteDetailOut:
     return await routes_service.get_route(session, route_id)
+
+
+@router.get("/routes/{route_id}/reviews", response_model=RouteReviewListOut)
+async def list_route_reviews(
+    route_id: UUID,
+    session: DbSession,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> RouteReviewListOut:
+    return await review_service.list_published_reviews(
+        session,
+        route_id=route_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/routes/{route_id}/reviews", response_model=RouteReviewOut)
+async def create_route_review(
+    route_id: UUID,
+    payload: RouteReviewCreateIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> RouteReviewOut:
+    return await review_service.upsert_review(
+        session,
+        route_id=route_id,
+        author_user_id=user_id,
+        payload=payload,
+    )
+
+
+@router.get("/me/reviews", response_model=MyRouteReviewListOut)
+async def list_my_reviews(
+    session: DbSession,
+    user_id: CurrentUserId,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> MyRouteReviewListOut:
+    return await review_service.list_my_reviews(
+        session,
+        author_user_id=user_id,
+        limit=limit,
+        offset=offset,
+    )

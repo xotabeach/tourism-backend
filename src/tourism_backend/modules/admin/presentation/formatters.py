@@ -38,6 +38,13 @@ _ROUTE_STATUS_LABELS = {
     "deleted": ("Удалён", "ct-badge-route-deleted"),
 }
 
+_REVIEW_STATUS_LABELS = {
+    "pending_review": ("На модерации", "ct-badge-route-pending"),
+    "published": ("Опубликован", "ct-badge-route-published"),
+    "rejected": ("Отклонён", "ct-badge-route-rejected"),
+    "deleted": ("Удалён", "ct-badge-route-deleted"),
+}
+
 _ALLOWED_CSS = frozenset(
     {
         "ct-badge-open",
@@ -111,6 +118,93 @@ def format_route_publication_status(model: object, attribute: object) -> Markup:
     return _badge(getattr(model, "publication_status", None), _ROUTE_STATUS_LABELS)
 
 
+def format_review_status(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "status", None), _REVIEW_STATUS_LABELS)
+
+
+def _entity_cache(request: Request | None, key: str) -> dict[UUID, str]:
+    cache = getattr(getattr(request, "state", None), key, None)
+    if isinstance(cache, dict):
+        return cache
+    return {}
+
+
+def _admin_details_href(
+    request: Request | None,
+    *,
+    identity: str,
+    pk: str,
+) -> str:
+    if request is None:
+        return f"/admin/{identity}/details/{pk}"
+    try:
+        return str(request.url_for("admin:details", identity=identity, pk=pk))
+    except Exception:  # noqa: BLE001
+        return f"/admin/{identity}/details/{pk}"
+
+
+def format_user_fk(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    """Show display name + link; UUID only as secondary tooltip chip."""
+    attr_name = getattr(attribute, "key", None) or getattr(attribute, "name", None)
+    raw = None
+    if isinstance(attr_name, str):
+        raw = getattr(model, attr_name, None)
+    if raw is None:
+        raw = getattr(model, "user_id", None)
+    if raw is None:
+        raw = getattr(model, "owner_user_id", None)
+    if raw is None:
+        raw = getattr(model, "author_user_id", None)
+    if raw is None:
+        return Markup('<span class="text-secondary">—</span>')
+    uid = UUID(str(raw)) if not isinstance(raw, UUID) else raw
+    names = _entity_cache(request, "user_names")
+    label = escape(names.get(uid) or "Пользователь")
+    href = escape(_admin_details_href(request, identity="user", pk=str(uid)))
+    short = escape(str(uid)[:8])
+    return Markup(
+        '<span class="ct-entity-ref">'
+        '<a class="ct-entity-link" href="{}">{}</a> '
+        '<button type="button" class="ct-user-peek ct-id-soft" data-user-id="{}" '
+        'title="{}">{}…</button>'
+        "</span>"
+    ).format(href, label, escape(str(uid)), escape(str(uid)), short)
+
+
+def format_route_fk(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    raw = getattr(model, "route_id", None)
+    if raw is None:
+        return Markup('<span class="text-secondary">—</span>')
+    rid = UUID(str(raw)) if not isinstance(raw, UUID) else raw
+    names = _entity_cache(request, "route_names")
+    label = escape(names.get(rid) or "Маршрут")
+    href = escape(_admin_details_href(request, identity="route", pk=str(rid)))
+    short = escape(str(rid)[:8])
+    return Markup(
+        '<span class="ct-entity-ref">'
+        '<a class="ct-entity-link" href="{}">{}</a> '
+        '<span class="ct-id-soft" title="{}">{}…</span>'
+        "</span>"
+    ).format(href, label, escape(str(rid)), short)
+
+
+def format_review_body_preview(model: object, attribute: object) -> Markup:
+    body = str(getattr(model, "body", "") or "")
+    preview = body if len(body) <= 80 else body[:79] + "…"
+    return Markup('<span class="ct-review-body" title="{}">{}</span>').format(
+        escape(body),
+        escape(preview),
+    )
+
+
 def format_debug_code(model: object, attribute: object) -> Markup:
     code = getattr(model, "debug_code", None)
     if not code:
@@ -131,17 +225,16 @@ def format_ticket_awaiting(model: object, attribute: object) -> Markup:
     return Markup('<span class="text-secondary">—</span>')
 
 
-def format_user_id_peek(model: object, attribute: object) -> Markup:
-    """UUID chip; hover/click loads name+phone via /admin/api/user-brief."""
+def format_user_id_peek(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    """Name + details link when cached; falls back to UUID peek chip."""
     raw = getattr(model, "user_id", None)
     if raw is None:
         return Markup('<span class="text-secondary">—</span>')
-    uid = str(raw)
-    short = uid[:8]
-    return Markup(
-        '<button type="button" class="ct-user-peek" data-user-id="{}" '
-        'title="Показать пользователя">{}…</button>'
-    ).format(escape(uid), escape(short))
+    return format_user_fk(model, attribute, request)
 
 
 def format_user_avatar_name(

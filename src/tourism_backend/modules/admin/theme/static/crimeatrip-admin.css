@@ -378,6 +378,47 @@ table.model-list tbody tr:has(.ct-ticket-awaiting):hover {
   cursor: pointer;
 }
 
+.ct-entity-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+}
+
+.ct-entity-link {
+  color: var(--ct-ink, #111113);
+  font-weight: 600;
+  text-decoration: none;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-entity-link:hover {
+  color: var(--ct-sea, #1b6b93);
+  text-decoration: underline;
+}
+
+.ct-id-soft {
+  border: 0;
+  background: transparent;
+  color: #8a8d93;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  padding: 0;
+  cursor: pointer;
+}
+
+.ct-review-body {
+  display: inline-block;
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ct-ink-soft, #5c5e66);
+}
+
 .ct-user-popover {
   position: absolute;
   z-index: 1080;

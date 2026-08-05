@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     admin_bootstrap_login: str | None = None
     admin_bootstrap_password: str | None = None
 
+    # FCM HTTP v1 (optional). Leave empty → in-app only, no system push.
+    fcm_service_account_json: str | None = None
+    fcm_service_account_file: str | None = None
+
     @property
     def otp_accept_any_enabled(self) -> bool:
         if self.auth_otp_accept_any is not None:

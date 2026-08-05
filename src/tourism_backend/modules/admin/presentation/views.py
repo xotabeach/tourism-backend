@@ -41,12 +41,16 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_admin_role,
     format_debug_code,
     format_message_author,
+    format_review_body_preview,
+    format_review_status,
+    format_route_fk,
     format_route_publication_status,
     format_ticket_awaiting,
     format_ticket_kind,
     format_ticket_status,
     format_user_avatar_name,
     format_user_cover,
+    format_user_fk,
     format_user_id_peek,
 )
 from tourism_backend.modules.identity.application import media as identity_media
@@ -64,8 +68,28 @@ from tourism_backend.modules.identity.infrastructure.models import (
 )
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.application.service import resolve_urls
-from tourism_backend.modules.routes.infrastructure.models import Route
+from tourism_backend.modules.routes.application import review_service
+from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
+
+
+async def _preload_user_names(session_maker: Any, user_ids: list[UUID]) -> dict[UUID, str]:
+    ids = list({uid for uid in user_ids if uid is not None})
+    if not ids:
+        return {}
+    async with session_maker(expire_on_commit=False) as session:
+        rows = (await session.scalars(select(User).where(User.id.in_(ids)))).all()
+    return {row.id: row.display_name for row in rows}
+
+
+async def _preload_route_names(session_maker: Any, route_ids: list[UUID]) -> dict[UUID, str]:
+    ids = list({rid for rid in route_ids if rid is not None})
+    if not ids:
+        return {}
+    async with session_maker(expire_on_commit=False) as session:
+        rows = (await session.scalars(select(Route).where(Route.id.in_(ids)))).all()
+    return {row.id: row.name for row in rows}
+
 
 _AUTHOR_RU = {
     "user": "Пользователь",
@@ -403,7 +427,21 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
         SupportTicket.user_id: format_user_id_peek,
         SupportTicket.last_human_author: format_ticket_awaiting,
     }
+    column_formatters_detail = {
+        SupportTicket.user_id: format_user_id_peek,
+        SupportTicket.status: format_ticket_status,
+        SupportTicket.kind: format_ticket_kind,
+    }
     column_searchable_list = [SupportTicket.subject]
+
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        request.state.user_names = await _preload_user_names(
+            self.session_maker,
+            [row.user_id for row in pagination.rows],
+        )
+        return pagination
+
     column_sortable_list = [
         SupportTicket.last_message_at,
         SupportTicket.updated_at,
@@ -868,11 +906,31 @@ class RouteAdmin(ModelView, model=Route):
     }
     column_formatters = {
         Route.publication_status: format_route_publication_status,
+        Route.owner_user_id: format_user_fk,
     }
     column_formatters_detail = {
         Route.publication_status: format_route_publication_status,
+        Route.owner_user_id: format_user_fk,
     }
     column_searchable_list = [Route.name, Route.description]
+
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        request.state.user_names = await _preload_user_names(
+            self.session_maker,
+            [row.owner_user_id for row in pagination.rows if row.owner_user_id],
+        )
+        return pagination
+
+    async def get_object_for_details(self, request: Request) -> Any:
+        model = await super().get_object_for_details(request)
+        if model is not None and model.owner_user_id is not None:
+            request.state.user_names = await _preload_user_names(
+                self.session_maker,
+                [model.owner_user_id],
+            )
+        return model
+
     column_sortable_list = [
         Route.publication_status,
         Route.updated_at,
@@ -985,6 +1043,148 @@ class RouteAdmin(ModelView, model=Route):
         return await self._set_publication_status(request, publication_status="deleted")
 
 
+class RouteReviewAdmin(ModelView, model=RouteReview):
+    category = "Маршруты"
+    category_icon = "fa-solid fa-route"
+    name = "Отзыв"
+    name_plural = "Отзывы"
+    icon = "fa-solid fa-comments"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        RouteReview.status,
+        RouteReview.route_id,
+        RouteReview.author_user_id,
+        RouteReview.rating,
+        RouteReview.body,
+        RouteReview.created_at,
+        RouteReview.updated_at,
+    ]
+    column_labels = {
+        RouteReview.id: "ID",
+        RouteReview.status: "Статус",
+        RouteReview.route_id: "Маршрут",
+        RouteReview.author_user_id: "Автор",
+        RouteReview.rating: "Оценка",
+        RouteReview.body: "Текст",
+        RouteReview.moderator_note: "Заметка модератора",
+        RouteReview.moderated_at: "Модерирован",
+        RouteReview.created_at: "Создан",
+        RouteReview.updated_at: "Обновлён",
+    }
+    column_formatters = {
+        RouteReview.status: format_review_status,
+        RouteReview.route_id: format_route_fk,
+        RouteReview.author_user_id: format_user_fk,
+        RouteReview.body: format_review_body_preview,
+    }
+    column_formatters_detail = {
+        RouteReview.status: format_review_status,
+        RouteReview.route_id: format_route_fk,
+        RouteReview.author_user_id: format_user_fk,
+    }
+    column_searchable_list = [RouteReview.body]
+    column_sortable_list = [
+        RouteReview.status,
+        RouteReview.rating,
+        RouteReview.created_at,
+        RouteReview.updated_at,
+    ]
+    column_default_sort = (RouteReview.created_at, True)
+    column_filters: ClassVar[list[Any]] = [
+        AllUniqueStringValuesFilter(RouteReview.status),
+        OperationColumnFilter(RouteReview.route_id, title="ID маршрута"),
+        OperationColumnFilter(RouteReview.author_user_id, title="ID автора"),
+        OperationColumnFilter(RouteReview.rating, title="Оценка"),
+    ]
+    form_columns = [
+        RouteReview.moderator_note,
+    ]
+    form_args = {
+        "moderator_note": {"label": "Заметка модератора"},
+    }
+    can_create = False
+    can_edit = True
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        request.state.user_names = await _preload_user_names(
+            self.session_maker,
+            [row.author_user_id for row in pagination.rows],
+        )
+        request.state.route_names = await _preload_route_names(
+            self.session_maker,
+            [row.route_id for row in pagination.rows],
+        )
+        return pagination
+
+    async def get_object_for_details(self, request: Request) -> Any:
+        model = await super().get_object_for_details(request)
+        if model is not None:
+            request.state.user_names = await _preload_user_names(
+                self.session_maker,
+                [model.author_user_id],
+            )
+            request.state.route_names = await _preload_route_names(
+                self.session_maker,
+                [model.route_id],
+            )
+        return model
+
+    async def _set_status(self, request: Request, *, status_value: str) -> Response:
+        actor_id = session_principal_id(request)
+        if actor_id is None:
+            return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
+        raw_pks = request.query_params.get("pks", "")
+        review_ids: list[UUID] = []
+        for raw in raw_pks.split(","):
+            with contextlib.suppress(ValueError):
+                review_ids.append(UUID(raw.strip()))
+        if review_ids:
+            async with self.session_maker(expire_on_commit=False) as session:
+                await review_service.set_review_status(
+                    session,
+                    review_ids=review_ids,
+                    status=status_value,
+                )
+                for review_id in review_ids:
+                    await record_audit(
+                        session,
+                        actor_id=actor_id,
+                        action=f"admin.review_{status_value}",
+                        entity_type="route_review",
+                        entity_id=str(review_id),
+                        ip=request.client.host if request.client else None,
+                    )
+                await session.commit()
+        return RedirectResponse(
+            str(request.url_for("admin:list", identity=self.identity)),
+            status_code=303,
+        )
+
+    @action(
+        name="approve_reviews",
+        label="Одобрить и опубликовать",
+        confirmation_message="Опубликовать выбранные отзывы?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def approve_reviews(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="published")
+
+    @action(
+        name="reject_reviews",
+        label="Отклонить",
+        confirmation_message="Отклонить выбранные отзывы?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_reviews(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="rejected")
+
+
 def register_views(admin: Any, settings: Settings) -> None:
     show_debug = settings.otp_store_debug_code_enabled
 
@@ -1074,6 +1274,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(SupportTicketAdmin)
     admin.add_view(SupportMessageAdmin)
     admin.add_view(RouteAdmin)
+    admin.add_view(RouteReviewAdmin)
     admin.add_view(AdminPrincipalAdmin)
     admin.add_view(AdminRoleBindingAdmin)
     admin.add_view(AdminAuditEventAdmin)

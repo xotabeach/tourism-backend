@@ -10,6 +10,9 @@ from tourism_backend.modules.favorites.infrastructure import models as favorites
 from tourism_backend.modules.geography.infrastructure import models as geography_models
 from tourism_backend.modules.identity.infrastructure import models as identity_models
 from tourism_backend.modules.media.infrastructure import models as media_models
+from tourism_backend.modules.notifications.infrastructure import (
+    models as notifications_models,
+)
 from tourism_backend.modules.places.infrastructure import models as places_models
 from tourism_backend.modules.routes.infrastructure import models as routes_models
 from tourism_backend.modules.support.infrastructure import models as support_models
@@ -31,6 +34,7 @@ _ = (
     favorites_models,
     support_models,
     media_models,
+    notifications_models,
     admin_models,
 )
 target_metadata = Base.metadata

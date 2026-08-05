@@ -244,7 +244,7 @@ def test_admin_formatters_escape_and_render_media() -> None:
     uid = uuid4()
     peek = str(format_user_id_peek(SimpleNamespace(user_id=uid), None))
     assert str(uid) in peek
-    assert "ct-user-peek" in peek
+    assert "ct-user-peek" in peek or "ct-entity-link" in peek
     assert "—" in str(format_user_id_peek(SimpleNamespace(user_id=None), None))
 
     scope = {
