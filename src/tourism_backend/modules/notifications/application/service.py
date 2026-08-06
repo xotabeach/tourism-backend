@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -13,6 +14,8 @@ from tourism_backend.modules.notifications.application.schemas import (
     NotificationOut,
 )
 from tourism_backend.modules.notifications.infrastructure.models import Notification
+
+logger = logging.getLogger(__name__)
 
 _BODY_MAX = 500
 _TITLE_MAX = 120
@@ -175,9 +178,11 @@ async def maybe_push_notification(
     """Best-effort FCM when user opted into push and tokens exist."""
     user = await session.get(User, user_id)
     if user is None or not user.notify_push_enabled:
+        logger.info("fcm_skipped_push_disabled user=%s", user_id)
         return
     tokens = await device_tokens.list_tokens_for_user(session, user_id=user_id)
     if not tokens:
+        logger.info("fcm_skipped_no_tokens user=%s", user_id)
         return
     await fcm.send_data_message(
         settings,
