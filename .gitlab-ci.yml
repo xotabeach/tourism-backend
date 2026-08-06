@@ -27,8 +27,8 @@ ci-lean-notice:
   stage: lean
   image: alpine:3.21
   script:
-    - echo "Lean CI — style/tests/scanners are local (./scripts/validate.sh)."
-    - echo "Set CI_PIPELINE_MODE=full for the full DevSecOps pipeline."
+    - 'echo "Lean CI — style/tests/scanners are local (./scripts/validate.sh)."'
+    - 'echo "Set CI_PIPELINE_MODE=full for the full DevSecOps pipeline."'
   rules:
     - if: '$CI_PIPELINE_MODE == "full"'
       when: never
