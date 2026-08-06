@@ -1,0 +1,268 @@
+# Full DevSecOps pipeline (quality gates + publish + deploy + scanners).
+# Not used by default during active development — see `.gitlab-ci.yml` (lean).
+# Enable: set GitLab CI/CD variable CI_PIPELINE_MODE=full (project or group).
+# Docs: tourism-platform/docs/ci-and-runners.md
+
+stages:
+  - code-style
+  - run-tests
+  - publish
+  - security-scan
+  - deploy
+  - mirror
+
+variables:
+  APP_ENV: test
+  POSTGRES_DB: tourism
+  POSTGRES_USER: tourism
+  POSTGRES_PASSWORD: local-tourism-password
+  DATABASE_URL: postgresql+asyncpg://tourism:local-tourism-password@postgres:5432/tourism
+  DATABASE_URL_SYNC: postgresql+psycopg://tourism:local-tourism-password@postgres:5432/tourism
+  REDIS_URL: redis://redis:6379/0
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+
+.uv-cache: &uv-cache
+  cache:
+    key:
+      files:
+        - uv.lock
+    paths:
+      - .uv-cache
+
+backend-code-style:
+  stage: code-style
+  image: python:3.13-bookworm
+  <<: *uv-cache
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - uv sync --all-extras --dev
+    - uv run -- ruff check .
+    - uv run -- ruff format --check .
+    - uv run mypy src/tourism_backend
+    - test -f Dockerfile
+
+backend-run-tests:
+  stage: run-tests
+  image: python:3.13-bookworm
+  <<: *uv-cache
+  services:
+    - name: postgis/postgis:16-3.4
+      alias: postgres
+    - name: redis:7-alpine
+      alias: redis
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - |
+      for i in $(seq 1 30); do
+        uv run python -c "import psycopg; psycopg.connect('postgresql://tourism:local-tourism-password@postgres:5432/tourism').close()" && break
+        sleep 2
+      done
+  script:
+    - uv sync --all-extras --dev
+    - uv run alembic upgrade head
+    - uv run python scripts/seed_crimea.py
+    - uv run pytest
+    - uv run alembic history
+
+# Fail-closed security regressions (also covered by full pytest; explicit gate for publish).
+backend-security-tests:
+  stage: run-tests
+  image: python:3.13-bookworm
+  <<: *uv-cache
+  services:
+    - name: postgis/postgis:16-3.4
+      alias: postgres
+    - name: redis:7-alpine
+      alias: redis
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - |
+      for i in $(seq 1 30); do
+        uv run python -c "import psycopg; psycopg.connect('postgresql://tourism:local-tourism-password@postgres:5432/tourism').close()" && break
+        sleep 2
+      done
+  script:
+    - uv sync --all-extras --dev
+    - uv run alembic upgrade head
+    # Seed catalog: several security tests assert against published routes/places.
+    - uv run python scripts/seed_crimea.py
+    # Subset job must not inherit full-suite --cov-fail-under from pyproject.
+    - uv run pytest tests/security -q --no-cov
+  allow_failure: false
+
+# Open-source dependency audit (does not require paid GitLab Dependency Scanning).
+backend-pip-audit:
+  stage: run-tests
+  image: python:3.13-bookworm
+  <<: *uv-cache
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    - curl -LsSf https://astral.sh/uv/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - uv sync --all-extras --dev
+    - uv run pip-audit
+  # Fail the pipeline on known vulnerable deps; document exceptions in
+  # tourism-platform/docs/security/exceptions/ if a temporary waiver is needed.
+  allow_failure: false
+
+backend-gitleaks:
+  stage: run-tests
+  image:
+    name: zricethezav/gitleaks:v8.24.2
+    entrypoint: [""]
+  script:
+    - gitleaks detect --source . --verbose --redact --exit-code 1
+  allow_failure: false
+
+backend-semgrep:
+  stage: run-tests
+  image:
+    name: semgrep/semgrep:1.110.0
+    entrypoint: [""]
+  script:
+    # ERROR severity only — triage lower severities in review; waivers via
+    # tourism-platform/docs/security/exceptions/
+    # Registry fetch can flake on SaaS runners — retry a few times.
+    - |
+      set -e
+      attempt=1
+      while [ "$attempt" -le 3 ]; do
+        if semgrep scan \
+          --config p/python \
+          --config p/owasp-top-ten \
+          --severity ERROR \
+          --error \
+          --metrics=off \
+          --disable-version-check \
+          --exclude=tests \
+          --exclude=.venv; then
+          exit 0
+        fi
+        echo "semgrep attempt ${attempt}/3 failed; retrying..."
+        attempt=$((attempt + 1))
+        sleep $((attempt * 5))
+      done
+      exit 1
+  allow_failure: false
+
+backend-publish:
+  stage: publish
+  image: docker:27-cli
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  needs:
+    - backend-code-style
+    - backend-run-tests
+    - backend-security-tests
+    - backend-pip-audit
+    - backend-gitleaks
+    - backend-semgrep
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build --pull --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+    # Floating env tips: gamma → :stage, main → :production
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "gamma" ]; then
+        docker tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:stage"
+        docker push "$CI_REGISTRY_IMAGE:stage"
+      fi
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        docker tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:production"
+        docker push "$CI_REGISTRY_IMAGE:production"
+      fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "gamma"'
+
+# Scan the published image; deploy waits on a clean HIGH/CRITICAL result.
+backend-trivy:
+  stage: security-scan
+  image:
+    name: aquasec/trivy:0.61.0
+    entrypoint: [""]
+  needs:
+    - backend-publish
+  variables:
+    TRIVY_USERNAME: "$CI_REGISTRY_USER"
+    TRIVY_PASSWORD: "$CI_REGISTRY_PASSWORD"
+  script:
+    - >
+      trivy image
+      --exit-code 1
+      --severity HIGH,CRITICAL
+      --ignore-unfixed
+      "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+  allow_failure: false
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "gamma"'
+
+# Stage CD environment (gamma). Publishes the stage tip; no remote host yet.
+backend-deploy-stage:
+  stage: deploy
+  image: alpine:3.21
+  needs:
+    - backend-publish
+    - backend-trivy
+  script:
+    - |
+      echo "Stage environment ready: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+      echo "Floating tag: $CI_REGISTRY_IMAGE:stage"
+      echo "No remote stage host configured — server deploy is production-only."
+  environment:
+    name: stage
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "gamma"'
+
+# Production CD environment (main). Only this job SSHes to the remote server.
+backend-deploy-production:
+  stage: deploy
+  image: alpine:3.21
+  resource_group: tourism-backend-production
+  needs:
+    - backend-publish
+    - backend-trivy
+  before_script:
+    - apk add --no-cache bash openssh-client curl
+  script:
+    - bash scripts/ci-deploy-production.sh "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+  environment:
+    name: production
+  # Manual: the deploy runs migrations against the live database and there is no
+  # automated rollback yet, so a human confirms the release.
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $DEPLOY_SSH_PRIVATE_KEY && $DEPLOY_SSH_HOST && $DEPLOY_SSH_USER && $DEPLOY_SSH_PORT && $DEPLOY_SSH_KNOWN_HOSTS'
+      when: manual
+      allow_failure: false
+
+# Public GitHub showcase mirror. GitLab remains source of truth.
+github-mirror:
+  stage: mirror
+  image: alpine:3.21
+  before_script:
+    - apk add --no-cache bash git
+  script:
+    - bash scripts/ci-mirror-to-github.sh
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "gamma" && $GITHUB_MIRROR_TOKEN'
+    - if: '$CI_COMMIT_BRANCH == "main" && $GITHUB_MIRROR_TOKEN'
+  needs:
+    - backend-code-style
+    - backend-run-tests
+    - backend-security-tests
+    - backend-pip-audit
+    - backend-gitleaks
+    - backend-semgrep

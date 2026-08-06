@@ -174,11 +174,15 @@ def test_admin_moscow_datetime_formatter() -> None:
         to_moscow,
     )
 
-    utc = datetime(2026, 8, 3, 10, 0, tzinfo=UTC)
+    utc = datetime(2026, 8, 3, 10, 0, 0, 123456, tzinfo=UTC)
     msk = to_moscow(utc)
     assert msk.hour == 13  # UTC+3
-    assert "МСК" in str(format_moscow_datetime(utc))
-    assert "13:00" in format_moscow_plain(utc)
+    assert msk.microsecond == 0
+    rendered = str(format_moscow_datetime(utc))
+    assert "МСК" in rendered
+    assert "2026-08-03 13:00:00" in rendered
+    assert ".123456" not in rendered
+    assert format_moscow_plain(utc) == "2026-08-03 13:00:00 МСК"
 
 
 def test_support_ticket_chat_reply_is_exposed_not_model_create() -> None:
