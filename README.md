@@ -3,18 +3,23 @@
 Private server repository для Crimea Travel Platform: modular monolith на
 Python 3.13 и FastAPI.
 
+Стек целиком (local / test / Gemma 4 home lab):
+`tourism-platform/docs/stack.md`.
+
 ## Назначение
 
-- HTTP API для мобильного клиента и будущих интеграций.
-- Domain modules: `identity`, `users`, `geography`, `places`, `routes`,
-  `route_builder`, `route_execution`, `favorites`, `subscriptions`, `media`.
-- Прикладные миграции PostgreSQL и PostGIS через Alembic.
+- HTTP API (`/api/v1`) для мобильного клиента.
+- Domain modules с API: `identity`, `geography`, `places`, `routes`,
+  `favorites`, `support`, `notifications`, `admin`, `media`.
+- Заглушки (пакеты без router): `route_builder`, `route_execution`,
+  `subscriptions`.
+- Миграции PostgreSQL/PostGIS через Alembic. Ops UI: SQLAdmin `/admin`.
 
 ## Требования
 
 - Python 3.13
 - [uv](https://docs.astral.sh/uv/)
-- Запущенный local stack из `tourism-platform` (`make up`)
+- Local stack из `tourism-platform` (`make up`)
 
 ## Быстрый старт
 
@@ -31,6 +36,7 @@ uv run tourism-backend
 ```
 
 По умолчанию local ports: Postgres `5433`, Redis `6380` (см. `.env.example`).
+Admin: `http://localhost:8000/admin` (bootstrap login из `.env`).
 
 ## Окружения
 
@@ -38,44 +44,46 @@ uv run tourism-backend
 Local/test могут использовать локальные placeholder credentials;
 staging/production откажутся запускаться с ними.
 
-Контейнерный image содержит Alembic, seed и тестовые media, поэтому one-shot
-команды deployment выполняются тем же immutable image:
+Контейнерный image содержит Alembic, seed и тестовые media:
 
 ```bash
 alembic upgrade head
 python scripts/seed_crimea.py
 ```
 
-Проверки:
+Проверки (обязательны при lean GitLab CI):
 
 ```bash
 ./scripts/validate.sh
 ```
 
-Стиль и DX: см. `tourism-platform/docs/development-environment.md`,
+Стиль и DX: `tourism-platform/docs/development-environment.md`,
 `python-code-style.md`, `python-testing-guide.md`.
 
-Bulk import позже:
+Bulk import:
 
 ```bash
 uv run python scripts/seed_crimea.py --file data/extra_places.json --places-only
 ```
 
-## Endpoints
-
-| Endpoint | Назначение |
-| --- | --- |
-| `GET /health/live` | Liveness probe (`/health` — alias) |
-| `GET /health/ready` | Readiness: PostgreSQL + Redis (`/ready` — alias) |
-| `GET /api/v1` | Versioned API root |
-| `GET /api/v1/geography/countries` | Страны |
-| `GET /api/v1/geography/regions` | Регионы (`country_code`) |
-| `GET /api/v1/geography/localities` | Localities (`region_slug`) |
-| `GET /api/v1/categories` | Категории мест |
-| `GET /api/v1/places` | Каталог мест (фильтры region/locality/category/q) |
-| `GET /api/v1/places/{id}` | Карточка места |
+## Endpoints (срез)
 
 OpenAPI: `http://localhost:8000/docs`
+
+| Область | Примеры |
+| --- | --- |
+| Health | `GET /health/live`, `GET /health/ready` |
+| Geography / places | `/api/v1/geography/*`, `/categories`, `/places` |
+| Auth / me | `/auth/otp/*`, `/auth/refresh`, `/me` |
+| Users | `/users/search`, `/users/leaderboard`, `/users/{id}` |
+| Routes | catalog, `/routes/mine`, drafts, submit, reviews |
+| Favorites | `/favorites/places/{id}`, `/favorites/routes/{id}` |
+| Support | `/support/tickets` |
+| Inbox / FCM | `/me/notifications`, `/me/device-tokens` |
+| Admin | `/admin` (cookie session, не Bearer) |
+
+AI planning endpoints ещё нет. Заготовки env: `AI_PROVIDER=mock|gemini|ollama`,
+`OLLAMA_CHAT_MODEL=gemma4:12b` — см. stack.md и home-lab guide.
 
 ## Структура
 
@@ -84,18 +92,18 @@ src/tourism_backend/
 ├── api/                 # HTTP layer, errors, /api/v1
 ├── db/                  # Base, session, Redis
 ├── modules/             # Domain boundaries (no cross-ORM imports)
-├── config.py
-├── logging_config.py    # JSON logs
+├── config.py            # APP_ENV, JWT, admin, optional FCM
+├── logging_config.py
 └── main.py
-alembic/                 # Database migrations
-data/crimea_seed.json    # Representative Crimea seed
-scripts/seed_crimea.py   # Idempotent seed / bulk import
+alembic/
+data/crimea_seed.json
+scripts/seed_crimea.py
 Dockerfile
 ```
 
 ## Связанные репозитории
 
-- [`tourism-platform`](../tourism-platform) — архитектура и local Compose.
+- [`tourism-platform`](../tourism-platform) — архитектура, Compose, deploy.
 - [`tourism-mobile`](../tourism-mobile) — Flutter client.
 
 ## Лицензия
