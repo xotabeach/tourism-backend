@@ -119,6 +119,10 @@ async def test_public_profile_hides_phone_and_is_readable(
     assert isinstance(body["next_rank_points"], int)
     assert isinstance(body["leaderboard_place"], int)
     assert body["leaderboard_place"] >= 1
+    assert isinstance(body["followers_count"], int)
+    assert body["followers_count"] >= 0
+    assert isinstance(body["following_count"], int)
+    assert body["following_count"] >= 0
     assert set(body.keys()) == {
         "id",
         "display_name",
@@ -130,6 +134,8 @@ async def test_public_profile_hides_phone_and_is_readable(
         "next_rank_points",
         "leaderboard_place",
         "liked_by_me",
+        "followers_count",
+        "following_count",
     }
 
 
@@ -170,6 +176,8 @@ async def test_public_user_search_returns_profile_media_without_pii(
         "next_rank_points",
         "leaderboard_place",
         "liked_by_me",
+        "followers_count",
+        "following_count",
     }
     assert "phone" not in str(found).lower()
 
@@ -240,6 +248,8 @@ async def test_users_leaderboard_is_public_and_ordered_by_points(
         "next_rank_points",
         "leaderboard_place",
         "liked_by_me",
+        "followers_count",
+        "following_count",
     }
     oversized = await live_client.get(
         "/api/v1/users/leaderboard",
@@ -284,6 +294,14 @@ async def test_profile_subscriptions_return_liked_users_without_pii(
     assert found["liked_by_me"] is True
     assert "phone" not in str(found).lower()
 
+    target_public = await live_client.get(f"/api/v1/users/{target_id}")
+    assert target_public.status_code == 200, target_public.text
+    assert target_public.json()["followers_count"] >= 1
+    reader_me = await live_client.get("/api/v1/me", headers=reader_headers)
+    reader_id = reader_me.json()["id"]
+    reader_public = await live_client.get(f"/api/v1/users/{reader_id}")
+    assert reader_public.json()["following_count"] >= 1
+
 
 @pytest.mark.asyncio
 async def test_routes_catalog_includes_owner_fields_when_present(
@@ -314,3 +332,59 @@ async def test_public_user_routes_endpoint(live_client: AsyncClient) -> None:
     assert body["total"] >= 0
     for item in body["items"]:
         assert item.get("owner_user_id") == user_id
+
+
+@pytest.mark.asyncio
+async def test_achievements_catalog_is_public_and_bounded(live_client: AsyncClient) -> None:
+    tokens = await _login(
+        live_client,
+        phone=f"+7904{uuid4().int % 10_000_000:07d}",
+        name="Достигатор",
+    )
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    me = await live_client.get("/api/v1/me", headers=headers)
+    user_id = me.json()["id"]
+
+    catalog = await live_client.get(f"/api/v1/users/{user_id}/achievements")
+    assert catalog.status_code == 200, catalog.text
+    body = catalog.json()
+    assert body["total"] >= 15
+    assert 5 <= body["unlocked_count"] <= 15
+    assert body["unlocked_count"] <= body["total"]
+    assert len(body["items"]) == body["total"]
+    for item in body["items"]:
+        assert set(item) == {
+            "id",
+            "slug",
+            "title",
+            "description",
+            "is_unlocked",
+            "unlocked_at",
+        }
+        assert len(item["title"]) <= 120
+        assert len(item["description"]) <= 240
+        if item["is_unlocked"]:
+            assert item["unlocked_at"] is not None
+        else:
+            assert item["unlocked_at"] is None
+
+    missing = await live_client.get(f"/api/v1/users/{uuid4()}/achievements")
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_achievement_unlock_notifies_owner_inbox(live_client: AsyncClient) -> None:
+    tokens = await _login(
+        live_client,
+        phone=f"+7903{uuid4().int % 10_000_000:07d}",
+        name="Новичок",
+    )
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    inbox = await live_client.get("/api/v1/me/notifications", headers=headers)
+    assert inbox.status_code == 200, inbox.text
+    unlocked = [item for item in inbox.json()["items"] if item["kind"] == "achievement_unlocked"]
+    assert len(unlocked) == 1
+    assert unlocked[0]["title"] == "Новое достижение"
+    assert unlocked[0]["target_type"] == "achievement"
+    assert unlocked[0]["target_id"]
+    assert "phone" not in str(unlocked[0]).lower()

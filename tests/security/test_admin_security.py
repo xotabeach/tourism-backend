@@ -378,24 +378,15 @@ async def test_admin_rejects_cross_site_fetch_even_with_matching_host_hint() -> 
 
 
 @pytest.mark.asyncio
-async def test_admin_accepts_same_origin_sec_fetch_without_origin() -> None:
+async def test_admin_accepts_same_origin_sec_fetch_without_origin(
+    admin_client: AsyncClient,
+) -> None:
     """Browsers behind Referrer-Policy: no-referrer may omit Origin/Referer."""
-    settings = Settings(
-        app_env="test",
-        admin_enabled=True,
-        admin_session_secret="test-admin-session-secret-32chars!!",
-        jwt_signing_key="test-jwt-signing-key-at-least-32-chars!!",
+    response = await admin_client.post(
+        "/admin/login",
+        data={"username": "x", "password": "y"},
+        headers={"Sec-Fetch-Site": "same-origin"},
     )
-    app = create_app(settings)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/admin/login",
-            data={"username": "x", "password": "y"},
-            headers={"Sec-Fetch-Site": "same-origin"},
-        )
-    await app.state.redis.aclose()
-    await app.state.engine.dispose()
     # CSRF passed; login itself fails with bad credentials (400 from SQLAdmin).
     assert response.status_code != 403
     assert "CSRF" not in response.text

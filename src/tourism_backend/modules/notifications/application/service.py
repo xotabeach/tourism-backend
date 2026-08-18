@@ -164,6 +164,27 @@ async def create_profile_like_notification(
     return notification
 
 
+async def create_achievement_notification(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    achievement_id: UUID,
+    title: str,
+) -> Notification:
+    """In-app (and later FCM) row when a traveler unlocks a badge."""
+    short_title = _clip(title, 48)
+    notification = _build_notification(
+        user_id=user_id,
+        kind="achievement_unlocked",
+        title="Новое достижение",
+        body=f"Получено достижение «{short_title}»",
+        target_type="achievement",
+        target_id=achievement_id,
+    )
+    session.add(notification)
+    return notification
+
+
 async def maybe_push_notification(
     session: AsyncSession,
     settings: Settings,

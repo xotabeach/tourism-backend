@@ -75,7 +75,7 @@ OpenAPI: `http://localhost:8000/docs`
 | Health | `GET /health/live`, `GET /health/ready` |
 | Geography / places | `/api/v1/geography/*`, `/categories`, `/places` |
 | Auth / me | `/auth/otp/*`, `/auth/refresh`, `/me` |
-| Users | `/users/search`, `/users/leaderboard`, `/users/{id}` |
+| Users | `/users/search`, `/users/leaderboard`, `/users/{id}`, `/users/{id}/achievements` |
 | Routes | catalog, `/routes/mine`, drafts, submit, reviews |
 | Favorites | `/favorites/places/{id}`, `/favorites/routes/{id}` |
 | Support | `/support/tickets` |

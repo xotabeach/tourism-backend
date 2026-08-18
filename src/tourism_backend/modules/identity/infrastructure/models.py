@@ -65,6 +65,31 @@ class TravelRank(Base):
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
 
 
+class Achievement(Base):
+    __tablename__ = "achievements"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(String(240), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+
+
+class UserAchievement(Base):
+    __tablename__ = "user_achievements"
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    achievement_id: Mapped[UUID] = mapped_column(
+        ForeignKey("achievements.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+    unlocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ProfileLike(Base):
     __tablename__ = "profile_likes"
 

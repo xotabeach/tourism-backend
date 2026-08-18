@@ -10,8 +10,9 @@ NotificationKind = Literal[
     "review_published",
     "review_rejected",
     "profile_like",
+    "achievement_unlocked",
 ]
-NotificationTargetType = Literal["route", "user"]
+NotificationTargetType = Literal["route", "user", "achievement"]
 
 
 class NotificationOut(BaseModel):

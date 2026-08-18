@@ -5,7 +5,8 @@ from uuid import UUID
 from fastapi import APIRouter, Query, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, OptionalCurrentUserId
-from tourism_backend.modules.identity.application import profile_likes, public_service
+from tourism_backend.modules.identity.application import achievements, profile_likes, public_service
+from tourism_backend.modules.identity.application.achievement_schemas import AchievementListOut
 from tourism_backend.modules.identity.application.public_schemas import (
     PublicUserListOut,
     PublicUserOut,
@@ -68,6 +69,14 @@ async def get_public_user_routes(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/users/{user_id}/achievements", response_model=AchievementListOut)
+async def get_public_user_achievements(
+    session: DbSession,
+    user_id: UUID,
+) -> AchievementListOut:
+    return await achievements.list_for_user(session, user_id)
 
 
 @router.put("/users/{user_id}/like", status_code=status.HTTP_204_NO_CONTENT)

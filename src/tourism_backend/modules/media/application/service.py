@@ -201,3 +201,34 @@ def upsert_place_file_attachment(
     existing.updated_at = now
     session.flush()
     return existing
+
+
+class ReusableCover:
+    def __init__(self, storage_key: str, public_path: str, content_type: str | None) -> None:
+        self.storage_key = storage_key
+        self.public_path = public_path
+        self.content_type = content_type
+
+
+async def list_reusable_covers(session: AsyncSession, *, limit: int = 40) -> list[ReusableCover]:
+    """Active route/place covers that can be reused as default profile media."""
+    rows = (
+        await session.execute(
+            select(
+                MediaAttachment.storage_key,
+                MediaAttachment.public_path,
+                MediaAttachment.content_type,
+            )
+            .where(
+                MediaAttachment.status == "active",
+                MediaAttachment.role == "cover",
+                MediaAttachment.entity_type.in_(("route", "place")),
+            )
+            .limit(limit)
+        )
+    ).all()
+    return [
+        ReusableCover(storage_key=key, public_path=path, content_type=content_type)
+        for key, path, content_type in rows
+        if key and path
+    ]

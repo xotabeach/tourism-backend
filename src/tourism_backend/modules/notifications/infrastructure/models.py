@@ -19,12 +19,13 @@ class Notification(Base, UUIDPrimaryKeyMixin):
             "'route_rejected', "
             "'review_published', "
             "'review_rejected', "
-            "'profile_like'"
+            "'profile_like', "
+            "'achievement_unlocked'"
             ")",
             name="kind",
         ),
         CheckConstraint(
-            "target_type IS NULL OR target_type IN ('route', 'user')",
+            "target_type IS NULL OR target_type IN ('route', 'user', 'achievement')",
             name="target_type",
         ),
         Index("ix_notifications_inbox", "user_id", "is_read", "created_at"),

@@ -1,6 +1,6 @@
 """Public user profile read models."""
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PublicUserOut(BaseModel):
@@ -16,6 +16,8 @@ class PublicUserOut(BaseModel):
     next_rank_points: int = 1000
     leaderboard_place: int = 0
     liked_by_me: bool = False
+    followers_count: int = Field(default=0, ge=0)
+    following_count: int = Field(default=0, ge=0)
 
 
 class PublicUserListOut(BaseModel):

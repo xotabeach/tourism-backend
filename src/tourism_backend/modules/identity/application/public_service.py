@@ -45,6 +45,8 @@ async def _public_user(
     cover_url: str | None = None,
     liked_by_me: bool = False,
     place: int | None = None,
+    followers_count: int = 0,
+    following_count: int = 0,
 ) -> PublicUserOut:
     rank = await _rank_for_points(session, user.travel_points)
     if rank is not None and user.rank_id != rank.id:
@@ -62,7 +64,33 @@ async def _public_user(
         if place is not None
         else await _leaderboard_place(session, user.travel_points),
         liked_by_me=liked_by_me,
+        followers_count=followers_count,
+        following_count=following_count,
     )
+
+
+async def _follow_counts(
+    session: AsyncSession, user_ids: list[UUID]
+) -> dict[UUID, tuple[int, int]]:
+    if not user_ids:
+        return {}
+    followers_rows = (
+        await session.execute(
+            select(ProfileLike.liked_user_id, func.count())
+            .where(ProfileLike.liked_user_id.in_(user_ids))
+            .group_by(ProfileLike.liked_user_id)
+        )
+    ).all()
+    following_rows = (
+        await session.execute(
+            select(ProfileLike.liker_id, func.count())
+            .where(ProfileLike.liker_id.in_(user_ids))
+            .group_by(ProfileLike.liker_id)
+        )
+    ).all()
+    followers = {user_id: int(count) for user_id, count in followers_rows}
+    following = {user_id: int(count) for user_id, count in following_rows}
+    return {user_id: (followers.get(user_id, 0), following.get(user_id, 0)) for user_id in user_ids}
 
 
 async def search_public_users(
@@ -100,12 +128,15 @@ async def search_public_users(
         entity_ids=ids,
         role="cover",
     )
+    counts = await _follow_counts(session, ids)
     items = [
         await _public_user(
             session,
             user,
             avatar_url=avatars.get(user.id),
             cover_url=covers.get(user.id),
+            followers_count=counts.get(user.id, (0, 0))[0],
+            following_count=counts.get(user.id, (0, 0))[1],
         )
         for user in users
     ]
@@ -138,6 +169,7 @@ async def list_leaderboard(
     covers = await media_service.resolve_urls(
         session, entity_type="user", entity_ids=ids, role="cover"
     )
+    counts = await _follow_counts(session, ids)
     items = [
         await _public_user(
             session,
@@ -145,6 +177,8 @@ async def list_leaderboard(
             avatar_url=avatars.get(user.id),
             cover_url=covers.get(user.id),
             place=offset + index + 1,
+            followers_count=counts.get(user.id, (0, 0))[0],
+            following_count=counts.get(user.id, (0, 0))[1],
         )
         for index, user in enumerate(users)
     ]
@@ -186,6 +220,7 @@ async def list_profile_subscriptions(
         entity_ids=ids,
         role="cover",
     )
+    counts = await _follow_counts(session, ids)
     items = [
         await _public_user(
             session,
@@ -193,6 +228,8 @@ async def list_profile_subscriptions(
             avatar_url=avatars.get(user.id),
             cover_url=covers.get(user.id),
             liked_by_me=True,
+            followers_count=counts.get(user.id, (0, 0))[0],
+            following_count=counts.get(user.id, (0, 0))[1],
         )
         for user in users
     ]
@@ -226,12 +263,16 @@ async def get_public_user(
     liked_by_me = False
     if viewer_id is not None and viewer_id != user_id:
         liked_by_me = (await session.get(ProfileLike, (viewer_id, user_id))) is not None
+    counts = await _follow_counts(session, [user.id])
+    followers, following = counts.get(user.id, (0, 0))
     result = await _public_user(
         session,
         user,
         avatar_url=avatars.get(user.id),
         cover_url=covers.get(user.id),
         liked_by_me=liked_by_me,
+        followers_count=followers,
+        following_count=following,
     )
     await session.commit()
     return result

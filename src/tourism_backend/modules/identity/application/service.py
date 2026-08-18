@@ -7,6 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings
+from tourism_backend.modules.identity.application import (
+    achievements as achievements_service,
+)
+from tourism_backend.modules.identity.application import (
+    default_profile_media,
+)
 from tourism_backend.modules.identity.application.crypto import (
     digest_matches,
     digest_token,
@@ -30,12 +36,14 @@ from tourism_backend.modules.identity.infrastructure.models import (
     User,
 )
 from tourism_backend.modules.media.application import service as media_service
+from tourism_backend.modules.notifications.application import service as notifications_service
 
 _OTP_TTL = timedelta(minutes=10)
 _MAX_OTP_ATTEMPTS = 8
 _RATE_WINDOW_SEC = 600
 _RATE_REQUEST_LIMIT = 8
 _RATE_VERIFY_LIMIT = 20
+_OTP_ISSUE_LOCK_SEC = 15
 
 
 async def _rate_limit(
@@ -56,6 +64,11 @@ async def _rate_limit(
             message="Too many attempts. Try again later.",
             status_code=429,
         )
+
+
+async def _acquire_otp_issue_lock(redis: Redis, key: str) -> bool:
+    acquired = await redis.set(key, "1", nx=True, ex=_OTP_ISSUE_LOCK_SEC)
+    return bool(acquired)
 
 
 async def request_otp(
@@ -79,21 +92,65 @@ async def request_otp(
         bypass=settings.otp_accept_any_enabled,
     )
 
-    # TODO: SMS provider — deliver `code` via the SMS gateway, then stop persisting
-    # debug_code (see AUTH_OTP_STORE_DEBUG_CODE) so only the digest remains.
-    code = new_otp_code()
-    challenge = AuthOtpChallenge(
-        id=uuid4(),
-        phone_e164=payload.phone,
-        display_name=payload.display_name,
-        code_digest=digest_token(code),
-        debug_code=code if settings.otp_store_debug_code_enabled else None,
-        expires_at=datetime.now(UTC) + _OTP_TTL,
-        attempts=0,
-        consumed_at=None,
-        created_at=datetime.now(UTC),
+    lock_key = f"auth:otp:issue:{payload.phone}"
+    if not await _acquire_otp_issue_lock(redis, lock_key):
+        # A concurrent request is already issuing a code for this phone.
+        return
+    try:
+        await _upsert_auth_otp_challenge(session, settings, payload)
+    finally:
+        await redis.delete(lock_key)
+
+
+async def _upsert_auth_otp_challenge(
+    session: AsyncSession,
+    settings: Settings,
+    payload: OtpRequestIn,
+) -> None:
+    """Keep a single live OTP per phone.
+
+    Double-submit from the identity screen (IME Done + button, or a second
+    tap) must not create a second readable debug_code / SMS.
+    """
+    now = datetime.now(UTC)
+    result = await session.execute(
+        select(AuthOtpChallenge)
+        .where(
+            AuthOtpChallenge.phone_e164 == payload.phone,
+            AuthOtpChallenge.consumed_at.is_(None),
+            AuthOtpChallenge.expires_at > now,
+        )
+        .order_by(AuthOtpChallenge.created_at.desc())
+        .limit(1)
     )
-    session.add(challenge)
+    challenge = result.scalar_one_or_none()
+    if challenge is None:
+        # TODO: SMS provider — deliver `code` via the SMS gateway, then stop
+        # persisting debug_code (see AUTH_OTP_STORE_DEBUG_CODE).
+        code = new_otp_code()
+        challenge = AuthOtpChallenge(
+            id=uuid4(),
+            phone_e164=payload.phone,
+            display_name=payload.display_name,
+            code_digest=digest_token(code),
+            debug_code=code if settings.otp_store_debug_code_enabled else None,
+            expires_at=now + _OTP_TTL,
+            attempts=0,
+            consumed_at=None,
+            created_at=now,
+        )
+        session.add(challenge)
+    else:
+        challenge.display_name = payload.display_name
+    await session.execute(
+        update(AuthOtpChallenge)
+        .where(
+            AuthOtpChallenge.phone_e164 == payload.phone,
+            AuthOtpChallenge.consumed_at.is_(None),
+            AuthOtpChallenge.id != challenge.id,
+        )
+        .values(consumed_at=now)
+    )
     await session.commit()
     # Never log or return the OTP code.
 
@@ -200,6 +257,7 @@ async def verify_otp(
         select(User).where(User.phone_e164 == payload.phone).limit(1)
     )
     user = user_result.scalar_one_or_none()
+    is_new = user is None
     if user is None:
         user = User(
             id=uuid4(),
@@ -215,12 +273,32 @@ async def verify_otp(
         user.personal_data_accepted_at = now
 
     await session.flush()
-    return await _issue_tokens(
+    achievement_notif = None
+    if is_new:
+        await default_profile_media.ensure_default_user_media(session, user.id)
+        achievement_notif = await achievements_service.grant_random_starter_achievements(
+            session,
+            user_id=user.id,
+            notify=True,
+        )
+    tokens = await _issue_tokens(
         session,
         user=user,
         settings=settings,
         device_label=payload.device_label,
     )
+    if achievement_notif is not None:
+        await notifications_service.maybe_push_notification(
+            session,
+            settings,
+            user_id=user.id,
+            kind=achievement_notif.kind,
+            title=achievement_notif.title,
+            body=achievement_notif.body,
+            target_type="achievement",
+            target_id=achievement_notif.target_id or user.id,
+        )
+    return tokens
 
 
 async def refresh_tokens(
@@ -398,21 +476,60 @@ async def request_phone_change(
             status_code=409,
         )
 
-    # TODO: SMS provider — deliver `code` via the SMS gateway, then stop persisting
-    # debug_code (see AUTH_OTP_STORE_DEBUG_CODE) so only the digest remains.
-    code = new_otp_code()
-    challenge = AuthPhoneChangeChallenge(
-        id=uuid4(),
-        user_id=user_id,
-        phone_e164=payload.phone,
-        code_digest=digest_token(code),
-        debug_code=code if settings.otp_store_debug_code_enabled else None,
-        expires_at=datetime.now(UTC) + _OTP_TTL,
-        attempts=0,
-        consumed_at=None,
-        created_at=datetime.now(UTC),
+    lock_key = f"auth:phone_change:issue:{user_id}:{payload.phone}"
+    if not await _acquire_otp_issue_lock(redis, lock_key):
+        return
+    try:
+        await _upsert_phone_change_challenge(session, settings, user_id, payload)
+    finally:
+        await redis.delete(lock_key)
+
+
+async def _upsert_phone_change_challenge(
+    session: AsyncSession,
+    settings: Settings,
+    user_id: UUID,
+    payload: PhoneChangeRequestIn,
+) -> None:
+    now = datetime.now(UTC)
+    result = await session.execute(
+        select(AuthPhoneChangeChallenge)
+        .where(
+            AuthPhoneChangeChallenge.user_id == user_id,
+            AuthPhoneChangeChallenge.phone_e164 == payload.phone,
+            AuthPhoneChangeChallenge.consumed_at.is_(None),
+            AuthPhoneChangeChallenge.expires_at > now,
+        )
+        .order_by(AuthPhoneChangeChallenge.created_at.desc())
+        .limit(1)
     )
-    session.add(challenge)
+    challenge = result.scalar_one_or_none()
+    if challenge is None:
+        # TODO: SMS provider — deliver `code` via the SMS gateway, then stop
+        # persisting debug_code (see AUTH_OTP_STORE_DEBUG_CODE).
+        code = new_otp_code()
+        challenge = AuthPhoneChangeChallenge(
+            id=uuid4(),
+            user_id=user_id,
+            phone_e164=payload.phone,
+            code_digest=digest_token(code),
+            debug_code=code if settings.otp_store_debug_code_enabled else None,
+            expires_at=now + _OTP_TTL,
+            attempts=0,
+            consumed_at=None,
+            created_at=now,
+        )
+        session.add(challenge)
+    await session.execute(
+        update(AuthPhoneChangeChallenge)
+        .where(
+            AuthPhoneChangeChallenge.user_id == user_id,
+            AuthPhoneChangeChallenge.phone_e164 == payload.phone,
+            AuthPhoneChangeChallenge.consumed_at.is_(None),
+            AuthPhoneChangeChallenge.id != challenge.id,
+        )
+        .values(consumed_at=now)
+    )
     await session.commit()
 
 

@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from tourism_backend.config import Settings
 from tourism_backend.db.redis import create_redis_client
 from tourism_backend.main import create_app
+from tourism_backend.modules.identity.infrastructure.models import AuthOtpChallenge
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -187,3 +190,33 @@ async def test_favorites_bola_and_unpublished(live_client: AsyncClient) -> None:
 
     unauth = await live_client.get("/api/v1/favorites")
     assert unauth.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_otp_request_keeps_a_single_live_code(live_client: AsyncClient) -> None:
+    phone = f"+7904{uuid4().int % 10_000_000:07d}"
+    payload = {"display_name": "Никита", "phone": phone}
+    first, second = await asyncio.gather(
+        live_client.post("/api/v1/auth/otp/request", json=payload),
+        live_client.post("/api/v1/auth/otp/request", json=payload),
+    )
+    assert first.status_code == 204, first.text
+    assert second.status_code == 204, second.text
+    third = await live_client.post("/api/v1/auth/otp/request", json=payload)
+    assert third.status_code == 204, third.text
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            count = await conn.scalar(
+                select(func.count())
+                .select_from(AuthOtpChallenge)
+                .where(
+                    AuthOtpChallenge.phone_e164 == phone,
+                    AuthOtpChallenge.consumed_at.is_(None),
+                    AuthOtpChallenge.expires_at > datetime.now(UTC),
+                )
+            )
+    finally:
+        await engine.dispose()
+    assert count == 1
