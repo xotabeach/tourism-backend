@@ -131,6 +131,8 @@ if [[ "${IMPORT_OSM_CRIMEA}" == "true" ]]; then
   printf 'Starting server-side OSM Crimea import.\n'
   cd /opt/crimeatrip-test
   docker compose --env-file .env --file compose.yaml run --rm -T --no-deps backend \
+    python scripts/seed_crimea.py --categories-only
+  docker compose --env-file .env --file compose.yaml run --rm -T --no-deps backend \
     python scripts/import_osm_crimea.py \
       --fetch \
       --limit 1000 \

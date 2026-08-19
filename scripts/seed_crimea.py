@@ -4,6 +4,7 @@
 Examples:
   uv run python scripts/seed_crimea.py
   uv run python scripts/seed_crimea.py --file data/crimea_seed.json
+  uv run python scripts/seed_crimea.py --categories-only
   uv run python scripts/seed_crimea.py --file data/extra_places.json --places-only
 """
 
@@ -400,10 +401,16 @@ def load_payload(path: Path) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Seed Crimea geography, places, and routes")
     parser.add_argument("--file", type=Path, default=DEFAULT_SEED)
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--places-only",
         action="store_true",
         help="Only upsert places; require existing region slug=crimea and categories",
+    )
+    mode.add_argument(
+        "--categories-only",
+        action="store_true",
+        help="Only upsert the category dictionary from the seed file",
     )
     args = parser.parse_args()
     payload = load_payload(args.file)
@@ -412,6 +419,11 @@ def main() -> None:
     engine = create_engine(settings.database_url_sync)
 
     with Session(engine) as session:
+        if args.categories_only:
+            categories = upsert_categories(session, payload.get("categories", []))
+            session.commit()
+            print(f"Seed OK: categories_upserted={len(categories)}")
+            return
         if args.places_only:
             region = session.scalar(select(Region).where(Region.slug == "crimea"))
             if region is None:
