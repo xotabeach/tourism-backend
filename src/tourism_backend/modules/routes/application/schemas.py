@@ -12,6 +12,7 @@ RoutePublicationStatus = Literal[
     "deleted",
 ]
 RouteCatalogSort = Literal["default", "popular", "recent"]
+RouteSource = Literal["editorial", "generated", "user_created"]
 
 
 class UserRouteDraftIn(BaseModel):

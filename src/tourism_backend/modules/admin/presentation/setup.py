@@ -56,6 +56,9 @@ def mount_admin(
             StaticFiles(directory=str(_STATIC_DIR)),
             name="theme",
         )
+    # SQLAdmin exposed routes run in its nested Starlette app; keep the same
+    # immutable settings object available there as on the parent FastAPI app.
+    admin.admin.state.settings = settings
     register_views(admin, settings)
     app.state.admin = admin
 

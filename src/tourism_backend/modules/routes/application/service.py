@@ -23,6 +23,7 @@ from tourism_backend.modules.routes.application.schemas import (
     RouteListOut,
     RouteMediaOut,
     RoutePublicationStatus,
+    RouteSource,
     RouteStopOut,
     UserRouteDraftIn,
     UserRouteDraftOut,
@@ -250,6 +251,7 @@ async def list_routes(
     transport_mode: str | None,
     difficulty: str | None,
     q: str | None,
+    source: RouteSource | None,
     sort: RouteCatalogSort,
     limit: int,
     offset: int,
@@ -267,6 +269,8 @@ async def list_routes(
     if q:
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(Route.name.ilike(pattern))
+    if source:
+        stmt = stmt.where(Route.source == source)
 
     return await _list_from_stmt(session, stmt, limit=limit, offset=offset, sort=sort)
 

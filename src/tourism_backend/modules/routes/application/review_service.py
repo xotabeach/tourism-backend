@@ -126,7 +126,10 @@ async def _reply_context(
     by_id = {target.id: target for target in targets}
     result: dict[UUID, RouteReviewReplyOut] = {}
     for review in reviews:
-        target = by_id.get(review.reply_to_review_id)
+        reply_to_review_id = review.reply_to_review_id
+        if reply_to_review_id is None:
+            continue
+        target = by_id.get(reply_to_review_id)
         if target is None:
             continue
         author = authors.get(target.author_user_id)

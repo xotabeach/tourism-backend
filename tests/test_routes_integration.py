@@ -67,7 +67,7 @@ async def test_editorial_routes_catalog_and_detail(live_app: object) -> None:
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         listed = await client.get(
             "/api/v1/routes",
-            params={"region_slug": "crimea", "limit": 20},
+            params={"region_slug": "crimea", "source": "editorial", "limit": 20},
         )
         assert listed.status_code == 200
         body = listed.json()
