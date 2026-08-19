@@ -66,6 +66,25 @@ Bulk import:
 uv run python scripts/seed_crimea.py --file data/extra_places.json --places-only
 ```
 
+OSM/Overpass import foundation (все внешние места создаются только как
+`draft`; dry-run по умолчанию):
+
+```bash
+uv run python scripts/import_osm_crimea.py \
+  --fetch --limit 1000 --output /tmp/crimea-osm-report.json
+uv run python scripts/import_osm_crimea.py --fetch --limit 1000 --apply
+```
+
+Скрипт хранит source identity/payload/license, честный
+`payment_status=unknown|free|paid`, кеширует успешные сетевые батчи и
+идемпотентно обновляет OSM records. Публикация требует отдельного
+boundary/dedup/editorial quality gate.
+
+На production импорт запускается отдельным ручным GitLab job
+`backend-deploy-and-import-crimea-production`. Job сначала разворачивает образ
+текущего коммита и применяет миграции, затем собирает 1000 OSM-кандидатов прямо
+на сервере и сохраняет их только как черновики.
+
 ## Endpoints (срез)
 
 OpenAPI: `http://localhost:8000/docs`
@@ -82,8 +101,9 @@ OpenAPI: `http://localhost:8000/docs`
 | Inbox / FCM | `/me/notifications`, `/me/device-tokens` |
 | Admin | `/admin` (cookie session; review photos, collapsed filters, expert actions) |
 
-AI planning endpoints ещё нет. Заготовки env: `AI_PROVIDER=mock|gemini|ollama`,
-`OLLAMA_CHAT_MODEL=gemma4:12b` — см. stack.md и home-lab guide.
+AI planning endpoints ещё нет. Выбранный Windows home lab: LM Studio + Gemma
+4 26B A4B QAT; provider adapter ещё не подключён. См. stack.md и
+`ai-lm-studio-windows-gemma4.md`.
 
 ## Структура
 

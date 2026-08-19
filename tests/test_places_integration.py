@@ -69,6 +69,10 @@ async def test_geography_and_places_catalog(live_app: object) -> None:
         assert localities.status_code == 200
         assert len(localities.json()) >= 5
 
+        categories = await client.get("/api/v1/categories")
+        assert categories.status_code == 200
+        assert len(categories.json()) >= 15
+
         places = await client.get(
             "/api/v1/places",
             params={"region_slug": "crimea", "limit": 50},
@@ -86,7 +90,36 @@ async def test_geography_and_places_catalog(live_app: object) -> None:
 
         filtered = await client.get(
             "/api/v1/places",
-            params={"region_slug": "crimea", "category": "palace", "q": "дворец"},
+            params={
+                "region_slug": "crimea",
+                "category": "palace",
+                "q": "дворец",
+                "difficulty": "easy",
+                "payment_status": "paid",
+            },
         )
         assert filtered.status_code == 200
         assert filtered.json()["total"] >= 1
+        assert all(item["payment_status"] == "paid" for item in filtered.json()["items"])
+
+        summer_children = await client.get(
+            "/api/v1/places",
+            params={
+                "region_slug": "crimea",
+                "season": "summer",
+                "is_suitable_for_children": True,
+            },
+        )
+        assert summer_children.status_code == 200
+        assert summer_children.json()["total"] >= 1
+
+        empty = await client.get(
+            "/api/v1/places",
+            params={
+                "region_slug": "crimea",
+                "is_suitable_for_pets": True,
+                "temporary_closure_status": "closed",
+            },
+        )
+        assert empty.status_code == 200
+        assert empty.json()["items"] == []

@@ -47,6 +47,15 @@ class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
         UniqueConstraint("region_id", "slug", name="uq_places_region_slug"),
         Index("ix_places_publication_region", "publication_status", "region_id"),
         Index("ix_places_name", "name"),
+        Index("ix_places_payment_status", "payment_status"),
+        Index("ix_places_difficulty", "difficulty"),
+        Index(
+            "uq_places_source_external_id",
+            "source_name",
+            "source_external_id",
+            unique=True,
+            postgresql_where=text("source_name IS NOT NULL AND source_external_id IS NOT NULL"),
+        ),
     )
 
     region_id: Mapped[UUID] = mapped_column(
@@ -72,8 +81,16 @@ class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     seasonality: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     difficulty: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_paid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    payment_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+    )
     price_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_suitable_for_children: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    is_suitable_for_pets: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    recommended_visit_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     safety_warnings: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     temporary_closure_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     temporary_closure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -84,6 +101,15 @@ class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
         nullable=False,
         default="published",
         index=True,
+    )
+    source_external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_license: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    data_quality_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="needs_review",
+        server_default="needs_review",
     )
 
 

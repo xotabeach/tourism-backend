@@ -30,7 +30,15 @@
     {"code": "palace", "slug": "palace", "name": "Дворцы", "sort_order": 40, "icon_key": "palace"},
     {"code": "viewpoint", "slug": "viewpoint", "name": "Смотровые", "sort_order": 50, "icon_key": "viewpoint"},
     {"code": "beach", "slug": "beach", "name": "Пляжи", "sort_order": 60, "icon_key": "beach"},
-    {"code": "park", "slug": "park", "name": "Парки", "sort_order": 70, "icon_key": "park"}
+    {"code": "park", "slug": "park", "name": "Парки", "sort_order": 70, "icon_key": "park"},
+    {"code": "landmark", "slug": "landmark", "name": "Достопримечательности", "sort_order": 80, "icon_key": "landmark"},
+    {"code": "monument", "slug": "monument", "name": "Памятники и история", "sort_order": 90, "icon_key": "monument"},
+    {"code": "cave", "slug": "cave", "name": "Пещеры", "sort_order": 100, "icon_key": "cave"},
+    {"code": "mountain", "slug": "mountain", "name": "Горы", "sort_order": 110, "icon_key": "mountain"},
+    {"code": "waterfall", "slug": "waterfall", "name": "Водопады", "sort_order": 120, "icon_key": "waterfall"},
+    {"code": "religious_site", "slug": "religious-site", "name": "Храмы и монастыри", "sort_order": 130, "icon_key": "religious_site"},
+    {"code": "winery", "slug": "winery", "name": "Винодельни", "sort_order": 140, "icon_key": "winery"},
+    {"code": "trail", "slug": "trail", "name": "Тропы и маршруты", "sort_order": 150, "icon_key": "trail"}
   ],
   "places": [
     {

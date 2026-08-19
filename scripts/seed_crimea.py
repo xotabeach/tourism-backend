@@ -167,14 +167,24 @@ def upsert_places(
         place.address = payload.get("address")
         place.difficulty = payload.get("difficulty")
         place.is_paid = bool(payload.get("is_paid", False))
+        place.payment_status = payload.get(
+            "payment_status",
+            "paid" if place.is_paid else "free",
+        )
         place.price_notes = payload.get("price_notes")
         place.is_suitable_for_children = payload.get("is_suitable_for_children")
+        place.is_suitable_for_pets = payload.get("is_suitable_for_pets")
+        place.recommended_visit_minutes = payload.get("recommended_visit_minutes")
         place.recommended_equipment = payload.get("recommended_equipment")
         place.seasonality = payload.get("seasonality")
         place.safety_warnings = payload.get("safety_warnings")
         place.publication_status = payload.get("publication_status", "published")
         place.freshness_status = "fresh"
         place.source_name = "seed"
+        place.source_external_id = payload.get("source_external_id")
+        place.source_license = payload.get("source_license", "internal")
+        place.source_payload = payload.get("source_payload")
+        place.data_quality_status = payload.get("data_quality_status", "editorial_reviewed")
         place.updated_at = _now()
         session.flush()
 

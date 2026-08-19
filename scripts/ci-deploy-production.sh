@@ -8,6 +8,7 @@
 #     Pin it once with:  ssh-keyscan -p <port> -H <host>
 # Optional:
 #   DEPLOY_HEALTH_URL       — forwarded to the remote script
+#   --import-osm-crimea     — import 1000 OSM candidates as drafts after deploy
 #
 # Registry pull on the host uses CI_REGISTRY_* from the job (not a long-lived
 # server-side docker login).
@@ -17,6 +18,15 @@
 set -Eeuo pipefail
 
 IMAGE="${1:-${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}}"
+IMPORT_OSM_CRIMEA=false
+case "${2:-}" in
+  "") ;;
+  --import-osm-crimea) IMPORT_OSM_CRIMEA=true ;;
+  *)
+    printf 'Error: unsupported option: %s\n' "${2}" >&2
+    exit 2
+    ;;
+esac
 
 : "${DEPLOY_SSH_HOST:?DEPLOY_SSH_HOST is required}"
 : "${DEPLOY_SSH_PORT:?DEPLOY_SSH_PORT is required}"
@@ -105,6 +115,7 @@ ssh "${ssh_opts[@]}" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
    CI_REGISTRY_USER=$(printf '%q' "${CI_REGISTRY_USER}") \
    CI_REGISTRY_PASSWORD=$(printf '%q' "${CI_REGISTRY_PASSWORD}") \
    IMAGE=$(printf '%q' "${IMAGE}") \
+   IMPORT_OSM_CRIMEA=$(printf '%q' "${IMPORT_OSM_CRIMEA}") \
    ${remote_env[*]} \
    bash -s" <<'EOS'
 set -Eeuo pipefail
@@ -113,6 +124,19 @@ printf '%s\n' "${CI_REGISTRY_PASSWORD}" | docker login \
   --password-stdin \
   "${CI_REGISTRY}"
 /opt/crimeatrip-test/deploy-remote.sh "${IMAGE}"
+
+if [[ "${IMPORT_OSM_CRIMEA}" == "true" ]]; then
+  cd /opt/crimeatrip-test
+  docker compose --env-file .env --file compose.yaml run --rm --no-deps backend \
+    python scripts/import_osm_crimea.py \
+      --fetch \
+      --limit 1000 \
+      --apply \
+      --no-cache
+
+  docker compose --env-file .env --file compose.yaml exec -T postgres sh -c \
+    'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT publication_status, data_quality_status, count(*) FROM places WHERE source_name = '\''openstreetmap'\'' GROUP BY publication_status, data_quality_status ORDER BY publication_status, data_quality_status;"'
+fi
 EOS
 
 rm -f "${key_file}"

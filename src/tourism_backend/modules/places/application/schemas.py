@@ -28,7 +28,10 @@ class PlaceListItemOut(BaseModel):
     lat: float
     difficulty: str | None
     is_paid: bool
+    payment_status: str
     is_suitable_for_children: bool | None
+    is_suitable_for_pets: bool | None
+    recommended_visit_minutes: int | None
     publication_status: str
     categories: list[CategoryOut] = Field(default_factory=list)
     cover_image_url: str | None = None
@@ -57,6 +60,9 @@ class PlaceDetailOut(PlaceListItemOut):
     temporary_closure_status: str | None
     temporary_closure_reason: str | None
     freshness_status: str
+    source_name: str | None
+    source_license: str | None
+    data_quality_status: str
     primary_entrance: PlaceEntranceOut | None = None
 
 

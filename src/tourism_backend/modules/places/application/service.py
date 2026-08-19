@@ -112,6 +112,12 @@ async def list_places(
     locality_slug: str | None,
     category: str | None,
     q: str | None,
+    difficulty: str | None,
+    payment_status: str | None,
+    is_suitable_for_children: bool | None,
+    is_suitable_for_pets: bool | None,
+    season: str | None,
+    temporary_closure_status: str | None,
     limit: int,
     offset: int,
 ) -> PlaceListOut:
@@ -131,6 +137,18 @@ async def list_places(
     if q:
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(Place.name.ilike(pattern))
+    if difficulty:
+        stmt = stmt.where(Place.difficulty == difficulty)
+    if payment_status:
+        stmt = stmt.where(Place.payment_status == payment_status)
+    if is_suitable_for_children is not None:
+        stmt = stmt.where(Place.is_suitable_for_children.is_(is_suitable_for_children))
+    if is_suitable_for_pets is not None:
+        stmt = stmt.where(Place.is_suitable_for_pets.is_(is_suitable_for_pets))
+    if season:
+        stmt = stmt.where(Place.seasonality.contains([season]))
+    if temporary_closure_status:
+        stmt = stmt.where(Place.temporary_closure_status == temporary_closure_status)
 
     count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
     total = int((await session.execute(count_stmt)).scalar_one())
@@ -160,7 +178,10 @@ async def list_places(
                 lat=lat,
                 difficulty=place.difficulty,
                 is_paid=place.is_paid,
+                payment_status=place.payment_status,
                 is_suitable_for_children=place.is_suitable_for_children,
+                is_suitable_for_pets=place.is_suitable_for_pets,
+                recommended_visit_minutes=place.recommended_visit_minutes,
                 publication_status=place.publication_status,
                 categories=categories.get(place.id, []),
                 cover_image_url=covers.get(place.id),
@@ -216,7 +237,10 @@ async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
         lat=lat,
         difficulty=place.difficulty,
         is_paid=place.is_paid,
+        payment_status=place.payment_status,
         is_suitable_for_children=place.is_suitable_for_children,
+        is_suitable_for_pets=place.is_suitable_for_pets,
+        recommended_visit_minutes=place.recommended_visit_minutes,
         publication_status=place.publication_status,
         categories=categories,
         cover_image_url=covers.get(place.id),
@@ -232,5 +256,8 @@ async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
         temporary_closure_status=place.temporary_closure_status,
         temporary_closure_reason=place.temporary_closure_reason,
         freshness_status=place.freshness_status,
+        source_name=place.source_name,
+        source_license=place.source_license,
+        data_quality_status=place.data_quality_status,
         primary_entrance=primary_entrance,
     )

@@ -25,6 +25,15 @@ async def get_places(
     locality_slug: str | None = Query(default=None, max_length=128),
     category: str | None = Query(default=None, max_length=128),
     q: str | None = Query(default=None, max_length=200),
+    difficulty: str | None = Query(default=None, pattern="^(easy|moderate|hard)$"),
+    payment_status: str | None = Query(default=None, pattern="^(unknown|free|paid)$"),
+    is_suitable_for_children: bool | None = Query(default=None),
+    is_suitable_for_pets: bool | None = Query(default=None),
+    season: str | None = Query(
+        default=None,
+        pattern="^(winter|spring|summer|autumn|all_year)$",
+    ),
+    temporary_closure_status: str | None = Query(default=None, max_length=32),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=10_000),
 ) -> PlaceListOut:
@@ -34,6 +43,12 @@ async def get_places(
         locality_slug=locality_slug,
         category=category,
         q=q,
+        difficulty=difficulty,
+        payment_status=payment_status,
+        is_suitable_for_children=is_suitable_for_children,
+        is_suitable_for_pets=is_suitable_for_pets,
+        season=season,
+        temporary_closure_status=temporary_closure_status,
         limit=limit,
         offset=offset,
     )
