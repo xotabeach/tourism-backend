@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -16,6 +19,7 @@ from tourism_backend.db.redis import create_redis_client
 from tourism_backend.main import create_app
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.notifications.infrastructure.models import Notification
+from tourism_backend.modules.routes.application import review_media
 from tourism_backend.modules.routes.application.review_service import set_review_status
 from tourism_backend.modules.routes.infrastructure.models import Route
 
@@ -675,6 +679,75 @@ async def test_delete_own_review_within_window_and_rejects_foreign(
     assert late.status_code == 409
     assert late.json()["error"]["code"] == "review_delete_window_expired"
     assert "6 часов" in late.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_review_photo_upload_listing_and_owner_only_delete(
+    live_client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review_media, "_MEDIA_ROOT", tmp_path)
+    route_id = await _public_route_id()
+    if route_id is None:
+        pytest.skip("No public route seeded")
+
+    marker = uuid4().hex[:8]
+    author = await _login(
+        live_client,
+        phone=f"+7902{uuid4().int % 10_000_000:07d}",
+        name=f"ФотоАвтор {marker}",
+    )
+    other = await _login(
+        live_client,
+        phone=f"+7903{uuid4().int % 10_000_000:07d}",
+        name=f"ФотоЧужой {marker}",
+    )
+    author_headers = {"Authorization": f"Bearer {author['access_token']}"}
+    other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+    created = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=author_headers,
+        json={"body": "Отзыв с безопасным фото", "rating": 5},
+    )
+    assert created.status_code == 200, created.text
+    review_id = created.json()["id"]
+
+    payload = io.BytesIO()
+    Image.new("RGB", (80, 60), color=(30, 100, 140)).save(payload, format="PNG")
+    upload_url = f"/api/v1/routes/{route_id}/reviews/{review_id}/media"
+    unauth = await live_client.post(
+        upload_url,
+        data={"position": "0"},
+        files={"file": ("photo.png", payload.getvalue(), "image/png")},
+    )
+    assert unauth.status_code == 401
+
+    uploaded = await live_client.post(
+        upload_url,
+        headers=author_headers,
+        data={"position": "0"},
+        files={"file": ("photo.png", payload.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    photo = uploaded.json()
+    assert photo["url"].startswith(f"/media/reviews/{review_id}/")
+    assert photo["width"] == 80
+    assert photo["height"] == 60
+
+    mine = await live_client.get("/api/v1/me/reviews", headers=author_headers)
+    item = next(row for row in mine.json()["items"] if row["id"] == review_id)
+    assert item["media"] == [photo]
+
+    delete_url = f"{upload_url}/{photo['id']}"
+    foreign = await live_client.delete(delete_url, headers=other_headers)
+    assert foreign.status_code == 404
+    deleted = await live_client.delete(delete_url, headers=author_headers)
+    assert deleted.status_code == 204
+
+    mine_after = await live_client.get("/api/v1/me/reviews", headers=author_headers)
+    item_after = next(row for row in mine_after.json()["items"] if row["id"] == review_id)
+    assert item_after["media"] == []
 
 
 @pytest.mark.asyncio

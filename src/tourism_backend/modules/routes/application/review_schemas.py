@@ -21,6 +21,16 @@ class RouteReviewCreateIn(BaseModel):
         return cleaned
 
 
+class RouteReviewMediaOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    url: str
+    width: int | None
+    height: int | None
+    sort_order: int
+
+
 class RouteReviewOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -34,6 +44,7 @@ class RouteReviewOut(BaseModel):
     rating: int
     status: ReviewStatus
     created_at: datetime
+    media: list[RouteReviewMediaOut] = Field(default_factory=list)
 
 
 class RouteReviewListOut(BaseModel):

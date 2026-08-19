@@ -1,18 +1,24 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import get_settings
 from tourism_backend.modules.identity.infrastructure.models import TravelRank, User
 from tourism_backend.modules.media.application import service as media_service
+from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.notifications.application import service as notifications_service
+from tourism_backend.modules.routes.application.review_media import (
+    SavedReviewImage,
+    delete_review_image,
+)
 from tourism_backend.modules.routes.application.review_schemas import (
     MyRouteReviewListOut,
     RouteReviewCreateIn,
     RouteReviewListOut,
+    RouteReviewMediaOut,
     RouteReviewOut,
 )
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
@@ -23,6 +29,7 @@ _PUBLIC_CATALOG = (
     Route.publication_status == "published",
 )
 _REVIEW_DELETE_WINDOW = timedelta(hours=6)
+_MAX_REVIEW_IMAGES = 6
 
 
 async def _ensure_public_route(session: AsyncSession, route_id: UUID) -> Route:
@@ -77,6 +84,7 @@ async def _review_out(
     users: dict[UUID, User],
     rank_titles: dict[UUID, str],
     avatars: dict[UUID, str],
+    media: dict[UUID, list[RouteReviewMediaOut]],
 ) -> RouteReviewOut:
     author = users.get(review.author_user_id)
     return RouteReviewOut(
@@ -90,7 +98,78 @@ async def _review_out(
         rating=int(review.rating),
         status=review.status,  # type: ignore[arg-type]
         created_at=review.created_at,
+        media=media.get(review.id, []),
     )
+
+
+async def _review_media(
+    session: AsyncSession,
+    review_ids: list[UUID],
+) -> dict[UUID, list[RouteReviewMediaOut]]:
+    if not review_ids:
+        return {}
+    rows = list(
+        (
+            await session.scalars(
+                select(MediaAttachment)
+                .where(
+                    MediaAttachment.entity_type == "review",
+                    MediaAttachment.entity_id.in_(review_ids),
+                    MediaAttachment.role == "gallery",
+                    MediaAttachment.status == "active",
+                )
+                .order_by(
+                    MediaAttachment.entity_id,
+                    MediaAttachment.sort_order,
+                    MediaAttachment.created_at,
+                    MediaAttachment.id,
+                )
+            )
+        ).all()
+    )
+    result: dict[UUID, list[RouteReviewMediaOut]] = {}
+    for item in rows:
+        result.setdefault(item.entity_id, []).append(
+            RouteReviewMediaOut(
+                id=str(item.id),
+                url=item.public_path,
+                width=item.width,
+                height=item.height,
+                sort_order=item.sort_order,
+            )
+        )
+    return result
+
+
+async def ensure_own_editable_review(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    review_id: UUID,
+    author_user_id: UUID,
+    expired_code: str = "review_edit_window_expired",
+    expired_message: str = "Изменять фото отзыва можно только в течение 6 часов",
+) -> RouteReview:
+    review = await session.scalar(
+        select(RouteReview).where(
+            RouteReview.id == review_id,
+            RouteReview.route_id == route_id,
+            RouteReview.author_user_id == author_user_id,
+            RouteReview.status != "deleted",
+        )
+    )
+    if review is None:
+        raise AppError(code="review_not_found", message="Review not found", status_code=404)
+    created = review.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    if datetime.now(UTC) - created > _REVIEW_DELETE_WINDOW:
+        raise AppError(
+            code=expired_code,
+            message=expired_message,
+            status_code=409,
+        )
+    return review
 
 
 async def list_published_reviews(
@@ -136,6 +215,7 @@ async def list_published_reviews(
         entity_ids=author_ids,
         role="avatar",
     )
+    review_media = await _review_media(session, [row.id for row in rows])
     items = [
         await _review_out(
             session,
@@ -143,6 +223,7 @@ async def list_published_reviews(
             users=users,
             rank_titles=rank_titles,
             avatars=avatars,
+            media=review_media,
         )
         for row in rows
     ]
@@ -212,13 +293,123 @@ async def upsert_review(
         entity_ids=[author_user_id],
         role="avatar",
     )
+    review_media = await _review_media(session, [review.id])
     return await _review_out(
         session,
         review,
         users=users,
         rank_titles=rank_titles,
         avatars=avatars,
+        media=review_media,
     )
+
+
+async def add_review_image(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    review_id: UUID,
+    author_user_id: UUID,
+    position: int,
+    saved: SavedReviewImage,
+) -> RouteReviewMediaOut:
+    await ensure_own_editable_review(
+        session,
+        route_id=route_id,
+        review_id=review_id,
+        author_user_id=author_user_id,
+    )
+    active = (
+        MediaAttachment.entity_type == "review",
+        MediaAttachment.entity_id == review_id,
+        MediaAttachment.role == "gallery",
+        MediaAttachment.status == "active",
+    )
+    duplicate = await session.scalar(
+        select(MediaAttachment).where(
+            *active,
+            MediaAttachment.checksum_sha256 == saved.checksum_sha256,
+        )
+    )
+    if duplicate is not None:
+        delete_review_image(saved.storage_key, review_id=review_id)
+        return RouteReviewMediaOut(
+            id=str(duplicate.id),
+            url=duplicate.public_path,
+            width=duplicate.width,
+            height=duplicate.height,
+            sort_order=duplicate.sort_order,
+        )
+    count = int(
+        await session.scalar(select(func.count()).select_from(MediaAttachment).where(*active)) or 0
+    )
+    if count >= _MAX_REVIEW_IMAGES:
+        delete_review_image(saved.storage_key, review_id=review_id)
+        raise AppError(
+            code="review_media_limit",
+            message=f"К отзыву можно прикрепить не больше {_MAX_REVIEW_IMAGES} фото",
+            status_code=409,
+        )
+    now = datetime.now(UTC)
+    attachment = MediaAttachment(
+        id=uuid4(),
+        entity_type="review",
+        entity_id=review_id,
+        role="gallery",
+        storage_key=saved.storage_key,
+        public_path=saved.public_path,
+        content_type=saved.content_type,
+        byte_size=saved.byte_size,
+        width=saved.width,
+        height=saved.height,
+        checksum_sha256=saved.checksum_sha256,
+        status="active",
+        uploaded_by_user_id=author_user_id,
+        sort_order=position,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(attachment)
+    await session.commit()
+    return RouteReviewMediaOut(
+        id=str(attachment.id),
+        url=attachment.public_path,
+        width=attachment.width,
+        height=attachment.height,
+        sort_order=attachment.sort_order,
+    )
+
+
+async def delete_review_image_attachment(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    review_id: UUID,
+    media_id: UUID,
+    author_user_id: UUID,
+) -> None:
+    await ensure_own_editable_review(
+        session,
+        route_id=route_id,
+        review_id=review_id,
+        author_user_id=author_user_id,
+    )
+    attachment = await session.scalar(
+        select(MediaAttachment).where(
+            MediaAttachment.id == media_id,
+            MediaAttachment.entity_type == "review",
+            MediaAttachment.entity_id == review_id,
+            MediaAttachment.role == "gallery",
+            MediaAttachment.status == "active",
+            MediaAttachment.uploaded_by_user_id == author_user_id,
+        )
+    )
+    if attachment is None:
+        raise AppError(code="review_media_not_found", message="Photo not found", status_code=404)
+    attachment.status = "archived"
+    attachment.updated_at = datetime.now(UTC)
+    await session.commit()
+    delete_review_image(attachment.storage_key, review_id=review_id)
 
 
 async def delete_own_review(
@@ -229,31 +420,41 @@ async def delete_own_review(
     author_user_id: UUID,
 ) -> None:
     """Soft-delete own review within 6 hours of creation."""
-    review = await session.scalar(
-        select(RouteReview).where(
-            RouteReview.id == review_id,
-            RouteReview.route_id == route_id,
-            RouteReview.author_user_id == author_user_id,
-            RouteReview.status != "deleted",
-        )
+    review = await ensure_own_editable_review(
+        session,
+        route_id=route_id,
+        review_id=review_id,
+        author_user_id=author_user_id,
+        expired_code="review_delete_window_expired",
+        expired_message="Удалить отзыв можно только в течение 6 часов после публикации",
     )
-    if review is None:
-        raise AppError(code="review_not_found", message="Review not found", status_code=404)
-
     now = datetime.now(UTC)
-    created = review.created_at
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=UTC)
-    if now - created > _REVIEW_DELETE_WINDOW:
-        raise AppError(
-            code="review_delete_window_expired",
-            message="Удалить отзыв можно только в течение 6 часов после публикации",
-            status_code=409,
-        )
 
     review.status = "deleted"
     review.updated_at = now
+    attachments = list(
+        (
+            await session.scalars(
+                select(MediaAttachment).where(
+                    MediaAttachment.entity_type == "review",
+                    MediaAttachment.entity_id == review_id,
+                    MediaAttachment.status == "active",
+                )
+            )
+        ).all()
+    )
+    await session.execute(
+        update(MediaAttachment)
+        .where(
+            MediaAttachment.entity_type == "review",
+            MediaAttachment.entity_id == review_id,
+            MediaAttachment.status == "active",
+        )
+        .values(status="archived", updated_at=now)
+    )
     await session.commit()
+    for attachment in attachments:
+        delete_review_image(attachment.storage_key, review_id=review_id)
 
 
 async def list_my_reviews(
@@ -286,6 +487,7 @@ async def list_my_reviews(
         entity_ids=[author_user_id],
         role="avatar",
     )
+    review_media = await _review_media(session, [row.id for row in rows])
     items = [
         await _review_out(
             session,
@@ -293,6 +495,7 @@ async def list_my_reviews(
             users=users,
             rank_titles=rank_titles,
             avatars=avatars,
+            media=review_media,
         )
         for row in rows
     ]

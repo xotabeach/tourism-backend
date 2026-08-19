@@ -1,7 +1,15 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tourism_backend.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -98,6 +106,7 @@ class UserAchievement(Base):
 
 class ProfileLike(Base):
     __tablename__ = "profile_likes"
+    __table_args__ = (CheckConstraint("liker_id <> liked_user_id", name="not_self"),)
 
     liker_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -110,6 +119,30 @@ class ProfileLike(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     awarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserExpertStatusEvent(Base, UUIDPrimaryKeyMixin):
+    """Append-only audit trail for expert status changes.
+
+    ``users.is_expert`` remains the fast, canonical current value. This table
+    answers who changed it and when without introducing a second source of
+    truth for profile reads.
+    """
+
+    __tablename__ = "user_expert_status_events"
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    is_expert: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    changed_by_principal_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("admin_principals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AuthPhoneChangeChallenge(Base, UUIDPrimaryKeyMixin):

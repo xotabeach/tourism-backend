@@ -5,12 +5,13 @@ from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession
 from tourism_backend.modules.routes.application import media as route_media
-from tourism_backend.modules.routes.application import review_service
+from tourism_backend.modules.routes.application import review_media, review_service
 from tourism_backend.modules.routes.application import service as routes_service
 from tourism_backend.modules.routes.application.review_schemas import (
     MyRouteReviewListOut,
     RouteReviewCreateIn,
     RouteReviewListOut,
+    RouteReviewMediaOut,
     RouteReviewOut,
 )
 from tourism_backend.modules.routes.application.schemas import (
@@ -209,6 +210,60 @@ async def delete_route_review(
         session,
         route_id=route_id,
         review_id=review_id,
+        author_user_id=user_id,
+    )
+
+
+@router.post(
+    "/routes/{route_id}/reviews/{review_id}/media",
+    response_model=RouteReviewMediaOut,
+)
+async def upload_route_review_image(
+    route_id: UUID,
+    review_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    file: Annotated[UploadFile, File()],
+    position: Annotated[int, Form(ge=0, le=5)],
+) -> RouteReviewMediaOut:
+    # Authorize before reading or persisting attacker-controlled bytes.
+    await review_service.ensure_own_editable_review(
+        session,
+        route_id=route_id,
+        review_id=review_id,
+        author_user_id=user_id,
+    )
+    saved = await review_media.save_review_image(file, review_id=review_id)
+    try:
+        return await review_service.add_review_image(
+            session,
+            route_id=route_id,
+            review_id=review_id,
+            author_user_id=user_id,
+            position=position,
+            saved=saved,
+        )
+    except Exception:
+        review_media.delete_review_image(saved.storage_key, review_id=review_id)
+        raise
+
+
+@router.delete(
+    "/routes/{route_id}/reviews/{review_id}/media/{media_id}",
+    status_code=204,
+)
+async def delete_route_review_image(
+    route_id: UUID,
+    review_id: UUID,
+    media_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> None:
+    await review_service.delete_review_image_attachment(
+        session,
+        route_id=route_id,
+        review_id=review_id,
+        media_id=media_id,
         author_user_id=user_id,
     )
 

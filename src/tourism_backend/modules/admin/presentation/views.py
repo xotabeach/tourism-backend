@@ -66,6 +66,7 @@ from tourism_backend.modules.identity.infrastructure.models import (
     AuthPhoneChangeChallenge,
     TravelRank,
     User,
+    UserExpertStatusEvent,
 )
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.application.service import resolve_urls
@@ -306,13 +307,25 @@ class UserAdmin(ModelView, model=User):
                     message="Phone already in use",
                     status_code=409,
                 )
+            previous_is_expert = user.is_expert
+            next_is_expert = bool(data.get("is_expert"))
             user.display_name = display_name
             user.phone_e164 = phone
             user.notify_push_enabled = bool(data.get("notify_push_enabled"))
             user.notify_sms_enabled = bool(data.get("notify_sms_enabled"))
             user.notify_haptics_enabled = bool(data.get("notify_haptics_enabled"))
-            user.is_expert = bool(data.get("is_expert"))
+            user.is_expert = next_is_expert
             user.updated_at = datetime.now(UTC)
+            if previous_is_expert != next_is_expert:
+                session.add(
+                    UserExpertStatusEvent(
+                        id=uuid4(),
+                        user_id=user.id,
+                        is_expert=next_is_expert,
+                        changed_by_principal_id=actor_id,
+                        changed_at=user.updated_at,
+                    )
+                )
 
             for kind, payload in (("avatar", avatar_bytes), ("cover", cover_bytes)):
                 if payload is None:
@@ -876,6 +889,39 @@ class AdminAuditEventAdmin(ModelView, model=AdminAuditEvent):
     page_size = 100
 
 
+class UserExpertStatusEventAdmin(ModelView, model=UserExpertStatusEvent):
+    category = "Пользователи"
+    category_icon = "fa-solid fa-user-group"
+    name = "История эксперта"
+    name_plural = "История экспертов"
+    icon = "fa-solid fa-certificate"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        UserExpertStatusEvent.user_id,
+        UserExpertStatusEvent.is_expert,
+        UserExpertStatusEvent.changed_at,
+        UserExpertStatusEvent.changed_by_principal_id,
+    ]
+    column_labels = {
+        UserExpertStatusEvent.user_id: "Пользователь",
+        UserExpertStatusEvent.is_expert: "Эксперт",
+        UserExpertStatusEvent.changed_at: "Изменено",
+        UserExpertStatusEvent.changed_by_principal_id: "Администратор",
+    }
+    column_formatters = {
+        UserExpertStatusEvent.user_id: format_user_id_peek,
+    }
+    column_default_sort = (UserExpertStatusEvent.changed_at, True)
+    column_filters = [
+        OperationColumnFilter(UserExpertStatusEvent.user_id, title="ID пользователя"),
+        OperationColumnFilter(UserExpertStatusEvent.is_expert, title="Эксперт"),
+    ]
+    can_create = False
+    can_edit = False
+    can_delete = False
+    page_size = 100
+
+
 class RouteAdmin(ModelView, model=Route):
     category = "Маршруты"
     category_icon = "fa-solid fa-route"
@@ -1298,6 +1344,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         page_size = 50
 
     admin.add_view(UserAdmin)
+    admin.add_view(UserExpertStatusEventAdmin)
     admin.add_view(TravelRankAdmin)
     admin.add_view(OtpChallengeAdmin)
     admin.add_view(PhoneChangeChallengeAdmin)
