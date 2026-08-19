@@ -227,7 +227,7 @@ async def upload_route_review_image(
     position: Annotated[int, Form(ge=0, le=5)],
 ) -> RouteReviewMediaOut:
     # Authorize before reading or persisting attacker-controlled bytes.
-    await review_service.ensure_own_editable_review(
+    await review_service.ensure_own_mutable_review_media(
         session,
         route_id=route_id,
         review_id=review_id,

@@ -209,6 +209,28 @@ async def ensure_own_editable_review(
     return review
 
 
+async def ensure_own_mutable_review_media(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    review_id: UUID,
+    author_user_id: UUID,
+) -> RouteReview:
+    review = await ensure_own_editable_review(
+        session,
+        route_id=route_id,
+        review_id=review_id,
+        author_user_id=author_user_id,
+    )
+    if review.status != "pending_review":
+        raise AppError(
+            code="review_media_locked",
+            message="Фотографии опубликованного отзыва нельзя изменять",
+            status_code=409,
+        )
+    return review
+
+
 async def list_published_reviews(
     session: AsyncSession,
     *,
@@ -376,7 +398,7 @@ async def add_review_image(
     position: int,
     saved: SavedReviewImage,
 ) -> RouteReviewMediaOut:
-    await ensure_own_editable_review(
+    await ensure_own_mutable_review_media(
         session,
         route_id=route_id,
         review_id=review_id,
@@ -451,16 +473,12 @@ async def delete_review_image_attachment(
     media_id: UUID,
     author_user_id: UUID,
 ) -> None:
-    review = await session.scalar(
-        select(RouteReview).where(
-            RouteReview.id == review_id,
-            RouteReview.route_id == route_id,
-            RouteReview.author_user_id == author_user_id,
-            RouteReview.status != "deleted",
-        )
+    await ensure_own_mutable_review_media(
+        session,
+        route_id=route_id,
+        review_id=review_id,
+        author_user_id=author_user_id,
     )
-    if review is None:
-        raise AppError(code="review_not_found", message="Review not found", status_code=404)
     attachment = await session.scalar(
         select(MediaAttachment).where(
             MediaAttachment.id == media_id,

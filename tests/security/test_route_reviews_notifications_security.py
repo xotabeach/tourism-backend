@@ -840,6 +840,42 @@ async def test_review_photo_upload_listing_and_owner_only_delete(
     item_after = next(row for row in mine_after.json()["items"] if row["id"] == review_id)
     assert item_after["media"] == []
 
+    uploaded_again = await live_client.post(
+        upload_url,
+        headers=author_headers,
+        data={"position": "0"},
+        files={"file": ("photo.png", payload.getvalue(), "image/png")},
+    )
+    assert uploaded_again.status_code == 200, uploaded_again.text
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        assert (
+            await set_review_status(
+                session,
+                review_ids=[UUID(review_id)],
+                status="published",
+            )
+            == 1
+        )
+        await session.commit()
+    await engine.dispose()
+
+    locked_delete = await live_client.delete(
+        f"{upload_url}/{uploaded_again.json()['id']}",
+        headers=author_headers,
+    )
+    assert locked_delete.status_code == 409
+    assert locked_delete.json()["error"]["code"] == "review_media_locked"
+    locked_upload = await live_client.post(
+        upload_url,
+        headers=author_headers,
+        data={"position": "1"},
+        files={"file": ("photo.png", payload.getvalue(), "image/png")},
+    )
+    assert locked_upload.status_code == 409
+    assert locked_upload.json()["error"]["code"] == "review_media_locked"
+
 
 @pytest.mark.asyncio
 async def test_profile_like_notifies_target_once(live_client: AsyncClient) -> None:

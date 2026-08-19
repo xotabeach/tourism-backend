@@ -76,11 +76,11 @@ OpenAPI: `http://localhost:8000/docs`
 | Geography / places | `/api/v1/geography/*`, `/categories`, `/places` |
 | Auth / me | `/auth/otp/*`, `/auth/refresh`, `/me` |
 | Users | `/users/search`, `/users/leaderboard`, `/users/{id}`, `/users/{id}/achievements` |
-| Routes | catalog, `/routes/mine`, drafts, submit, reviews |
+| Routes | catalog, `/routes/mine`, drafts, submit, reviews + reply context + review media |
 | Favorites | `/favorites/places/{id}`, `/favorites/routes/{id}` |
 | Support | `/support/tickets` |
 | Inbox / FCM | `/me/notifications`, `/me/device-tokens` |
-| Admin | `/admin` (cookie session, не Bearer) |
+| Admin | `/admin` (cookie session; review photos, collapsed filters, expert actions) |
 
 AI planning endpoints ещё нет. Заготовки env: `AI_PROVIDER=mock|gemini|ollama`,
 `OLLAMA_CHAT_MODEL=gemma4:12b` — см. stack.md и home-lab guide.
