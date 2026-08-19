@@ -123,11 +123,14 @@ printf '%s\n' "${CI_REGISTRY_PASSWORD}" | docker login \
   -u "${CI_REGISTRY_USER}" \
   --password-stdin \
   "${CI_REGISTRY}"
-/opt/crimeatrip-test/deploy-remote.sh "${IMAGE}"
+# The helper starts Compose commands that may read stdin. Keep it away from
+# this bash heredoc, otherwise it can consume the import commands below.
+/opt/crimeatrip-test/deploy-remote.sh "${IMAGE}" </dev/null
 
 if [[ "${IMPORT_OSM_CRIMEA}" == "true" ]]; then
+  printf 'Starting server-side OSM Crimea import.\n'
   cd /opt/crimeatrip-test
-  docker compose --env-file .env --file compose.yaml run --rm --no-deps backend \
+  docker compose --env-file .env --file compose.yaml run --rm -T --no-deps backend \
     python scripts/import_osm_crimea.py \
       --fetch \
       --limit 1000 \
