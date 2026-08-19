@@ -102,9 +102,18 @@ OpenAPI: `http://localhost:8000/docs`
 | Inbox / FCM | `/me/notifications`, `/me/device-tokens` |
 | Admin | `/admin` (cookie session; review photos, collapsed filters, expert actions) |
 
-AI planning endpoints ещё нет. Выбранный Windows home lab: LM Studio + Gemma
-4 26B A4B QAT; provider adapter ещё не подключён. См. stack.md и
-`ai-lm-studio-windows-gemma4.md`.
+AI planning endpoints ещё нет. OpenAI-compatible LM Studio transport и
+безопасный smoke probe уже подключены; пользовательская генерация остаётся
+выключенной до deterministic Route Builder и domain validation. Проверка:
+
+```bash
+LM_STUDIO_BASE_URL=http://100.x.y.z:1234/v1 \
+LM_STUDIO_MODEL='<точный id из /v1/models>' \
+LM_STUDIO_API_KEY='<локальный token>' \
+uv run python scripts/check_lm_studio.py
+```
+
+Токен не коммитить. См. stack.md и `ai-lm-studio-windows-gemma4.md`.
 
 ## Структура
 

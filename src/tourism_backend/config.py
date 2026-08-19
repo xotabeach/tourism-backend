@@ -1,7 +1,7 @@
 from enum import StrEnum
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOCAL_PLACEHOLDER_MARKERS = (
@@ -25,6 +25,13 @@ class AppEnvironment(StrEnum):
     TEST = "test"
     STAGING = "staging"
     PRODUCTION = "production"
+
+
+class AIProvider(StrEnum):
+    MOCK = "mock"
+    GEMINI = "gemini"
+    OLLAMA = "ollama"
+    LMSTUDIO = "lmstudio"
 
 
 class Settings(BaseSettings):
@@ -69,6 +76,19 @@ class Settings(BaseSettings):
     fcm_service_account_json: str | None = None
     fcm_service_account_file: str | None = None
 
+    # Phase 8B provider transport. Disabled until the deterministic builder
+    # and domain validation pipeline are ready.
+    ai_planning_enabled: bool = False
+    ai_provider: AIProvider = AIProvider.MOCK
+    ai_model: str | None = None
+    ai_request_timeout_seconds: float = Field(default=60, ge=1, le=300)
+    ai_max_repair_attempts: int = Field(default=1, ge=0, le=2)
+    ai_prompt_version: str = "v1"
+    lm_studio_base_url: str | None = None
+    lm_studio_model: str | None = None
+    lm_studio_api_key: SecretStr | None = None
+    rag_enabled: bool = False
+
     @property
     def otp_accept_any_enabled(self) -> bool:
         if self.auth_otp_accept_any is not None:
@@ -84,6 +104,15 @@ class Settings(BaseSettings):
 
 def validate_settings(settings: Settings) -> None:
     """Refuse local-only auth shortcuts and placeholder credentials."""
+    if settings.ai_planning_enabled and settings.ai_provider is AIProvider.LMSTUDIO:
+        if not settings.lm_studio_base_url or not settings.lm_studio_model:
+            raise RuntimeError(
+                "LM_STUDIO_BASE_URL and LM_STUDIO_MODEL are required when "
+                "AI_PROVIDER=lmstudio and AI_PLANNING_ENABLED=true"
+            )
+        if not settings.lm_studio_base_url.startswith(("http://", "https://")):
+            raise RuntimeError("LM_STUDIO_BASE_URL must use http:// or https://")
+
     if settings.app_env in {AppEnvironment.STAGING, AppEnvironment.PRODUCTION}:
         if settings.otp_accept_any_enabled:
             msg = (
