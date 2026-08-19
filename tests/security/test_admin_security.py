@@ -21,6 +21,7 @@ from tourism_backend.modules.admin.application.support_ops import operator_reply
 from tourism_backend.modules.admin.infrastructure.models import AdminAuditEvent
 from tourism_backend.modules.admin.presentation.views import register_views
 from tourism_backend.modules.identity.infrastructure.models import AuthOtpChallenge
+from tourism_backend.modules.notifications.infrastructure.models import Notification
 from tourism_backend.modules.support.infrastructure.models import SupportTicket
 
 DATABASE_URL = os.getenv(
@@ -599,6 +600,19 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
             )
         ).scalar_one()
         assert audit.entity_id == ticket_id
+        notification = (
+            await session.execute(
+                select(Notification)
+                .where(
+                    Notification.kind == "support_reply",
+                    Notification.target_id == UUID(ticket_id),
+                )
+                .order_by(Notification.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+        assert notification.target_type == "support_ticket"
+        assert notification.is_read is False
 
         ticket = await session.get(SupportTicket, UUID(ticket_id))
         assert ticket is not None

@@ -39,6 +39,12 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default=True,
         server_default="true",
     )
+    is_expert: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
     travel_points: Mapped[int] = mapped_column(
         Integer,
         nullable=False,

@@ -23,6 +23,8 @@ from tourism_backend.modules.identity.application.schemas import (
     MeOut,
     MePatchIn,
     OtpRequestIn,
+    OtpStartIn,
+    OtpStartOut,
     OtpVerifyIn,
     PhoneChangeRequestIn,
     PhoneChangeVerifyIn,
@@ -69,6 +71,44 @@ async def _rate_limit(
 async def _acquire_otp_issue_lock(redis: Redis, key: str) -> bool:
     acquired = await redis.set(key, "1", nx=True, ex=_OTP_ISSUE_LOCK_SEC)
     return bool(acquired)
+
+
+async def start_otp(
+    session: AsyncSession,
+    redis: Redis,
+    settings: Settings,
+    payload: OtpStartIn,
+    *,
+    client_ip: str,
+) -> OtpStartOut:
+    user = await session.scalar(select(User).where(User.phone_e164 == payload.phone).limit(1))
+    if user is None and payload.display_name is None:
+        return OtpStartOut(
+            registration_required=True,
+            consents_required=True,
+            otp_sent=False,
+        )
+
+    display_name = user.display_name if user is not None else payload.display_name
+    if display_name is None:  # Defensive: narrowed by the branch above.
+        raise AppError(
+            code="display_name_required", message="Display name is required", status_code=400
+        )
+    await request_otp(
+        session,
+        redis,
+        settings,
+        OtpRequestIn(phone=payload.phone, display_name=display_name),
+        client_ip=client_ip,
+    )
+    consents_required = (
+        user is None or user.privacy_accepted_at is None or user.personal_data_accepted_at is None
+    )
+    return OtpStartOut(
+        registration_required=False,
+        consents_required=consents_required,
+        otp_sent=True,
+    )
 
 
 async def request_otp(
@@ -207,7 +247,15 @@ async def verify_otp(
         bypass=settings.otp_accept_any_enabled,
     )
 
-    if not payload.privacy_accepted or not payload.personal_data_accepted:
+    existing_user = await session.scalar(
+        select(User).where(User.phone_e164 == payload.phone).limit(1)
+    )
+    consents_missing = (
+        existing_user is None
+        or existing_user.privacy_accepted_at is None
+        or existing_user.personal_data_accepted_at is None
+    )
+    if consents_missing and (not payload.privacy_accepted or not payload.personal_data_accepted):
         raise AppError(
             code="consents_required",
             message="Privacy and personal data consents are required",
@@ -253,10 +301,7 @@ async def verify_otp(
     challenge.consumed_at = datetime.now(UTC)
     now = datetime.now(UTC)
 
-    user_result = await session.execute(
-        select(User).where(User.phone_e164 == payload.phone).limit(1)
-    )
-    user = user_result.scalar_one_or_none()
+    user = existing_user
     is_new = user is None
     if user is None:
         user = User(
@@ -268,9 +313,10 @@ async def verify_otp(
         )
         session.add(user)
     else:
-        user.display_name = challenge.display_name
-        user.privacy_accepted_at = now
-        user.personal_data_accepted_at = now
+        if payload.privacy_accepted:
+            user.privacy_accepted_at = user.privacy_accepted_at or now
+        if payload.personal_data_accepted:
+            user.personal_data_accepted_at = user.personal_data_accepted_at or now
 
     await session.flush()
     achievement_notif = None

@@ -6,7 +6,9 @@ from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import Settings
 from tourism_backend.modules.admin.application.audit import record_audit
+from tourism_backend.modules.notifications.application import service as notifications_service
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
 
 _MAX_BODY = 4000
@@ -19,6 +21,7 @@ async def operator_reply(
     body: str,
     actor_id: UUID,
     ip: str | None = None,
+    settings: Settings | None = None,
 ) -> SupportMessage:
     cleaned = body.strip()
     if not cleaned:
@@ -48,6 +51,12 @@ async def operator_reply(
     ticket.last_message_at = now
     ticket.last_human_author = "operator"
     session.add(message)
+    notification = await notifications_service.create_support_reply_notification(
+        session,
+        user_id=ticket.user_id,
+        ticket_id=ticket.id,
+        body=cleaned,
+    )
     await record_audit(
         session,
         actor_id=actor_id,
@@ -57,5 +66,17 @@ async def operator_reply(
         metadata={"message_id": str(message.id)},
         ip=ip,
     )
+    await session.flush()
+    if settings is not None:
+        await notifications_service.maybe_push_notification(
+            session,
+            settings,
+            user_id=ticket.user_id,
+            kind=notification.kind,
+            title=notification.title,
+            body=notification.body,
+            target_type="support_ticket",
+            target_id=ticket.id,
+        )
     await session.commit()
     return message

@@ -10,6 +10,8 @@ from tourism_backend.modules.identity.application.schemas import (
     MeOut,
     MePatchIn,
     OtpRequestIn,
+    OtpStartIn,
+    OtpStartOut,
     OtpVerifyIn,
     PhoneChangeRequestIn,
     PhoneChangeVerifyIn,
@@ -27,6 +29,23 @@ def _client_ip(request: Request) -> str:
     if request.client and request.client.host:
         return request.client.host[:64]
     return "unknown"
+
+
+@router.post("/auth/otp/start", response_model=OtpStartOut)
+async def otp_start(
+    payload: OtpStartIn,
+    request: Request,
+    session: DbSession,
+    redis: RedisClient,
+    settings: SettingsDep,
+) -> OtpStartOut:
+    return await identity_service.start_otp(
+        session,
+        redis,
+        settings,
+        payload,
+        client_ip=_client_ip(request),
+    )
 
 
 @router.post("/auth/otp/request", status_code=status.HTTP_204_NO_CONTENT)

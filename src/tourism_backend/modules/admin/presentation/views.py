@@ -140,6 +140,7 @@ class UserAdmin(ModelView, model=User):
         User.created_at,
         User.updated_at,
         User.notify_push_enabled,
+        User.is_expert,
     ]
     column_labels = {
         User.id: "Баннер",
@@ -150,6 +151,7 @@ class UserAdmin(ModelView, model=User):
         User.created_at: "Создан",
         User.updated_at: "Обновлён",
         User.notify_push_enabled: "Push",
+        User.is_expert: "Эксперт",
         User.notify_sms_enabled: "SMS",
         User.notify_haptics_enabled: "Тактильность",
     }
@@ -183,6 +185,7 @@ class UserAdmin(ModelView, model=User):
         User.notify_push_enabled,
         User.notify_sms_enabled,
         User.notify_haptics_enabled,
+        User.is_expert,
     ]
     form_args = {
         "display_name": {
@@ -193,6 +196,7 @@ class UserAdmin(ModelView, model=User):
         "notify_push_enabled": {"label": "Push"},
         "notify_sms_enabled": {"label": "SMS"},
         "notify_haptics_enabled": {"label": "Тактильность"},
+        "is_expert": {"label": "Эксперт"},
     }
     can_create = False
     can_edit = True
@@ -307,6 +311,7 @@ class UserAdmin(ModelView, model=User):
             user.notify_push_enabled = bool(data.get("notify_push_enabled"))
             user.notify_sms_enabled = bool(data.get("notify_sms_enabled"))
             user.notify_haptics_enabled = bool(data.get("notify_haptics_enabled"))
+            user.is_expert = bool(data.get("is_expert"))
             user.updated_at = datetime.now(UTC)
 
             for kind, payload in (("avatar", avatar_bytes), ("cover", cover_bytes)):
@@ -575,6 +580,7 @@ class SupportTicketAdmin(ModelView, model=SupportTicket):
                     body=body,
                     actor_id=actor_id,
                     ip=client_ip,
+                    settings=request.app.state.settings,
                 )
         except AppError:
             # Stay in the chat thread; operator can retry after fixing body/status.
@@ -652,6 +658,7 @@ class SupportMessageAdmin(ModelView, model=SupportMessage):
                 body=body,
                 actor_id=actor_id,
                 ip=client_ip,
+                settings=request.app.state.settings,
             )
         # Return to ticket chat thread after reply.
         request.state._sqladmin_after_change_response = RedirectResponse(

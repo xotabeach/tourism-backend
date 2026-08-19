@@ -45,6 +45,40 @@ class OtpRequestIn(BaseModel):
         return phone
 
 
+class OtpStartIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str = Field(min_length=10, max_length=32)
+    display_name: str | None = Field(
+        default=None,
+        min_length=DISPLAY_NAME_MIN_LENGTH,
+        max_length=DISPLAY_NAME_MAX_LENGTH,
+    )
+
+    @field_validator("phone")
+    @classmethod
+    def _normalize_phone(cls, value: str) -> str:
+        phone = normalize_ru_phone(value)
+        if not _PHONE_RE.match(phone):
+            raise ValueError("phone must match +7XXXXXXXXXX")
+        return phone
+
+    @field_validator("display_name")
+    @classmethod
+    def _trim_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_display_name(value)
+
+
+class OtpStartOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    registration_required: bool
+    consents_required: bool
+    otp_sent: bool
+
+
 class OtpVerifyIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

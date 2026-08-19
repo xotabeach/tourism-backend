@@ -185,6 +185,25 @@ async def create_achievement_notification(
     return notification
 
 
+async def create_support_reply_notification(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    ticket_id: UUID,
+    body: str,
+) -> Notification:
+    notification = _build_notification(
+        user_id=user_id,
+        kind="support_reply",
+        title="Ответ поддержки",
+        body=_clip(body, 180),
+        target_type="support_ticket",
+        target_id=ticket_id,
+    )
+    session.add(notification)
+    return notification
+
+
 async def maybe_push_notification(
     session: AsyncSession,
     settings: Settings,

@@ -64,6 +64,7 @@ async def _public_user(
         if place is not None
         else await _leaderboard_place(session, user.travel_points),
         liked_by_me=liked_by_me,
+        is_expert=user.is_expert,
         followers_count=followers_count,
         following_count=following_count,
     )

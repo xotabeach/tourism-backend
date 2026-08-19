@@ -119,6 +119,64 @@ async def test_otp_flow_and_me(live_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_phone_first_registration_then_login_without_repeated_consents(
+    live_client: AsyncClient,
+) -> None:
+    phone = f"+7908{uuid4().int % 10_000_000:07d}"
+
+    first = await live_client.post("/api/v1/auth/otp/start", json={"phone": phone})
+    assert first.status_code == 200, first.text
+    assert first.json() == {
+        "registration_required": True,
+        "consents_required": True,
+        "otp_sent": False,
+    }
+
+    registration = await live_client.post(
+        "/api/v1/auth/otp/start",
+        json={"phone": phone, "display_name": "Новый путник"},
+    )
+    assert registration.status_code == 200, registration.text
+    assert registration.json()["otp_sent"] is True
+    assert registration.json()["consents_required"] is True
+    created = await live_client.post(
+        "/api/v1/auth/otp/verify",
+        json={
+            "phone": phone,
+            "code": "1234",
+            "privacy_accepted": True,
+            "personal_data_accepted": True,
+        },
+    )
+    assert created.status_code == 200, created.text
+
+    login = await live_client.post(
+        "/api/v1/auth/otp/start",
+        json={"phone": phone, "display_name": "Не менять имя"},
+    )
+    assert login.status_code == 200, login.text
+    assert login.json() == {
+        "registration_required": False,
+        "consents_required": False,
+        "otp_sent": True,
+    }
+    signed_in = await live_client.post(
+        "/api/v1/auth/otp/verify",
+        json={
+            "phone": phone,
+            "code": "1234",
+            "privacy_accepted": False,
+            "personal_data_accepted": False,
+        },
+    )
+    assert signed_in.status_code == 200, signed_in.text
+    headers = {"Authorization": f"Bearer {signed_in.json()['access_token']}"}
+    me = await live_client.get("/api/v1/me", headers=headers)
+    assert me.status_code == 200
+    assert me.json()["display_name"] == "Новый путник"
+
+
+@pytest.mark.asyncio
 async def test_refresh_rotation_and_reuse_detection(live_client: AsyncClient) -> None:
     phone = f"+7901{uuid4().int % 10_000_000:07d}"
     tokens = await _login(live_client, phone=phone)

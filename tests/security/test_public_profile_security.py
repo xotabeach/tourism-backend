@@ -114,6 +114,7 @@ async def test_public_profile_hides_phone_and_is_readable(
     assert "phone_e164" not in body
     assert isinstance(body["travel_points"], int)
     assert isinstance(body["liked_by_me"], bool)
+    assert isinstance(body["is_expert"], bool)
     assert body["rank_slug"]
     assert body["rank_title"]
     assert isinstance(body["next_rank_points"], int)
@@ -134,6 +135,7 @@ async def test_public_profile_hides_phone_and_is_readable(
         "next_rank_points",
         "leaderboard_place",
         "liked_by_me",
+        "is_expert",
         "followers_count",
         "following_count",
     }
@@ -176,6 +178,7 @@ async def test_public_user_search_returns_profile_media_without_pii(
         "next_rank_points",
         "leaderboard_place",
         "liked_by_me",
+        "is_expert",
         "followers_count",
         "following_count",
     }
@@ -248,6 +251,7 @@ async def test_users_leaderboard_is_public_and_ordered_by_points(
         "next_rank_points",
         "leaderboard_place",
         "liked_by_me",
+        "is_expert",
         "followers_count",
         "following_count",
     }
