@@ -13,6 +13,8 @@ NotificationKind = Literal[
     "achievement_unlocked",
     "support_reply",
     "review_reply",
+    "expert_granted",
+    "expert_revoked",
 ]
 NotificationTargetType = Literal["route", "user", "achievement", "support_ticket"]
 

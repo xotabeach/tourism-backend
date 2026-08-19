@@ -188,6 +188,29 @@ async def create_profile_like_notification(
     return notification
 
 
+async def create_expert_status_notification(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    is_expert: bool,
+) -> Notification:
+    """Notify a user when ops grants or revokes expert status."""
+    notification = _build_notification(
+        user_id=user_id,
+        kind="expert_granted" if is_expert else "expert_revoked",
+        title="Вы стали экспертом" if is_expert else "Статус эксперта снят",
+        body=(
+            "Ваш профиль получил статус эксперта КРЫМТРИП"
+            if is_expert
+            else "Ваш профиль больше не отмечен как эксперт КРЫМТРИП"
+        ),
+        target_type="user",
+        target_id=user_id,
+    )
+    session.add(notification)
+    return notification
+
+
 async def create_achievement_notification(
     session: AsyncSession,
     *,

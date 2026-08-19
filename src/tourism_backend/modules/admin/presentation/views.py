@@ -241,6 +241,29 @@ class UserAdmin(ModelView, model=User):
     can_export = False
     page_size = 50
 
+    async def _notify_expert_status(
+        self,
+        session: Any,
+        *,
+        user_id: UUID,
+        is_expert: bool,
+    ) -> None:
+        notification = await notifications_service.create_expert_status_notification(
+            session,
+            user_id=user_id,
+            is_expert=is_expert,
+        )
+        await notifications_service.maybe_push_notification(
+            session,
+            get_settings(),
+            user_id=user_id,
+            kind=notification.kind,
+            title=notification.title,
+            body=notification.body,
+            target_type="user",
+            target_id=user_id,
+        )
+
     async def _set_expert_status(self, request: Request, *, is_expert: bool) -> Response:
         actor_id = session_principal_id(request)
         if actor_id is None:
@@ -268,6 +291,11 @@ class UserAdmin(ModelView, model=User):
                             changed_by_principal_id=actor_id,
                             changed_at=changed_at,
                         )
+                    )
+                    await self._notify_expert_status(
+                        session,
+                        user_id=user.id,
+                        is_expert=is_expert,
                     )
                     await record_audit(
                         session,
@@ -425,6 +453,11 @@ class UserAdmin(ModelView, model=User):
                         changed_by_principal_id=actor_id,
                         changed_at=user.updated_at,
                     )
+                )
+                await self._notify_expert_status(
+                    session,
+                    user_id=user.id,
+                    is_expert=next_is_expert,
                 )
 
             for kind, payload in (("avatar", avatar_bytes), ("cover", cover_bytes)):

@@ -20,9 +20,11 @@ class Notification(Base, UUIDPrimaryKeyMixin):
             "'review_published', "
             "'review_rejected', "
             "'profile_like', "
-            "'achievement_unlocked'"
-            ", 'support_reply'"
-            ", 'review_reply'"
+            "'achievement_unlocked', "
+            "'support_reply', "
+            "'review_reply', "
+            "'expert_granted', "
+            "'expert_revoked'"
             ")",
             name="kind",
         ),

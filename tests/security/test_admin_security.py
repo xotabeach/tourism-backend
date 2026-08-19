@@ -174,6 +174,36 @@ def test_review_admin_renders_only_safe_same_origin_photos() -> None:
     assert "../" not in rendered
 
 
+@pytest.mark.asyncio
+async def test_expert_status_notifications_have_inbox_and_push_safe_payloads() -> None:
+    from types import SimpleNamespace
+
+    from tourism_backend.modules.notifications.application import (
+        service as notifications_service,
+    )
+
+    added: list[Notification] = []
+    session = SimpleNamespace(add=added.append)
+    user_id = uuid4()
+    granted = await notifications_service.create_expert_status_notification(
+        session,
+        user_id=user_id,
+        is_expert=True,
+    )
+    revoked = await notifications_service.create_expert_status_notification(
+        session,
+        user_id=user_id,
+        is_expert=False,
+    )
+
+    assert added == [granted, revoked]
+    assert granted.kind == "expert_granted"
+    assert granted.title == "Вы стали экспертом"
+    assert revoked.kind == "expert_revoked"
+    assert granted.target_type == revoked.target_type == "user"
+    assert granted.target_id == revoked.target_id == user_id
+
+
 def test_support_ticket_admin_sorts_and_flags_awaiting_reply() -> None:
     from tourism_backend.modules.admin.presentation.filters import AwaitingOperatorReplyFilter
     from tourism_backend.modules.admin.presentation.formatters import format_ticket_awaiting
