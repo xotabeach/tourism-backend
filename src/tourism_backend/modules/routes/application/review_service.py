@@ -20,6 +20,7 @@ from tourism_backend.modules.routes.application.review_schemas import (
     RouteReviewListOut,
     RouteReviewMediaOut,
     RouteReviewOut,
+    RouteReviewReplyOut,
 )
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 
@@ -85,6 +86,7 @@ async def _review_out(
     rank_titles: dict[UUID, str],
     avatars: dict[UUID, str],
     media: dict[UUID, list[RouteReviewMediaOut]],
+    replies: dict[UUID, RouteReviewReplyOut],
 ) -> RouteReviewOut:
     author = users.get(review.author_user_id)
     return RouteReviewOut(
@@ -99,7 +101,42 @@ async def _review_out(
         status=review.status,  # type: ignore[arg-type]
         created_at=review.created_at,
         media=media.get(review.id, []),
+        reply_to=replies.get(review.id),
     )
+
+
+async def _reply_context(
+    session: AsyncSession,
+    reviews: list[RouteReview],
+) -> dict[UUID, RouteReviewReplyOut]:
+    """Resolve reply previews in two bounded queries, avoiding per-card lookups."""
+    target_ids = list(
+        {review.reply_to_review_id for review in reviews if review.reply_to_review_id is not None}
+    )
+    if not target_ids:
+        return {}
+    targets = list(
+        (await session.scalars(select(RouteReview).where(RouteReview.id.in_(target_ids)))).all()
+    )
+    author_ids = list({target.author_user_id for target in targets})
+    authors = {
+        user.id: user
+        for user in (await session.scalars(select(User).where(User.id.in_(author_ids)))).all()
+    }
+    by_id = {target.id: target for target in targets}
+    result: dict[UUID, RouteReviewReplyOut] = {}
+    for review in reviews:
+        target = by_id.get(review.reply_to_review_id)
+        if target is None:
+            continue
+        author = authors.get(target.author_user_id)
+        result[review.id] = RouteReviewReplyOut(
+            review_id=str(target.id),
+            author_user_id=str(target.author_user_id),
+            author_display_name=(author.display_name if author is not None else "Путешественник"),
+            body=target.body,
+        )
+    return result
 
 
 async def _review_media(
@@ -187,7 +224,12 @@ async def list_published_reviews(
     total = int(
         await session.scalar(select(func.count()).select_from(RouteReview).where(*published)) or 0
     )
-    avg = await session.scalar(select(func.avg(RouteReview.rating)).where(*published))
+    root_ratings = (*published, RouteReview.reply_to_review_id.is_(None))
+    rating_count = int(
+        await session.scalar(select(func.count()).select_from(RouteReview).where(*root_ratings))
+        or 0
+    )
+    avg = await session.scalar(select(func.avg(RouteReview.rating)).where(*root_ratings))
     rows = list(
         (
             await session.scalars(
@@ -216,6 +258,7 @@ async def list_published_reviews(
         role="avatar",
     )
     review_media = await _review_media(session, [row.id for row in rows])
+    replies = await _reply_context(session, rows)
     items = [
         await _review_out(
             session,
@@ -224,15 +267,16 @@ async def list_published_reviews(
             rank_titles=rank_titles,
             avatars=avatars,
             media=review_media,
+            replies=replies,
         )
         for row in rows
     ]
-    average = round(float(avg), 1) if avg is not None and total > 0 else None
+    average = round(float(avg), 1) if avg is not None and rating_count > 0 else None
     return RouteReviewListOut(
         items=items,
         total=total,
         average_rating=average,
-        rating_count=total,
+        rating_count=rating_count,
     )
 
 
@@ -249,6 +293,21 @@ async def upsert_review(
     created instead so authors can leave multiple comments over time.
     """
     await _ensure_reviewable_route(session, route_id)
+    reply_target: RouteReview | None = None
+    if payload.reply_to_review_id is not None:
+        reply_target = await session.scalar(
+            select(RouteReview).where(
+                RouteReview.id == payload.reply_to_review_id,
+                RouteReview.route_id == route_id,
+                RouteReview.status == "published",
+            )
+        )
+        if reply_target is None:
+            raise AppError(
+                code="review_reply_target_not_found",
+                message="Отзыв, на который вы отвечаете, больше недоступен",
+                status_code=404,
+            )
     # Only reuse an existing pending row. Published/rejected rows are left intact
     # so a second comment creates a new moderation item.
     pending = await session.scalar(
@@ -257,6 +316,7 @@ async def upsert_review(
             RouteReview.route_id == route_id,
             RouteReview.author_user_id == author_user_id,
             RouteReview.status == "pending_review",
+            RouteReview.reply_to_review_id == payload.reply_to_review_id,
         )
         .order_by(RouteReview.updated_at.desc(), RouteReview.id.desc())
         .limit(1)
@@ -270,6 +330,7 @@ async def upsert_review(
             body=payload.body,
             rating=payload.rating,
             status="pending_review",
+            reply_to_review_id=(reply_target.id if reply_target is not None else None),
             created_at=now,
             updated_at=now,
         )
@@ -294,6 +355,7 @@ async def upsert_review(
         role="avatar",
     )
     review_media = await _review_media(session, [review.id])
+    replies = await _reply_context(session, [review])
     return await _review_out(
         session,
         review,
@@ -301,6 +363,7 @@ async def upsert_review(
         rank_titles=rank_titles,
         avatars=avatars,
         media=review_media,
+        replies=replies,
     )
 
 
@@ -388,12 +451,16 @@ async def delete_review_image_attachment(
     media_id: UUID,
     author_user_id: UUID,
 ) -> None:
-    await ensure_own_editable_review(
-        session,
-        route_id=route_id,
-        review_id=review_id,
-        author_user_id=author_user_id,
+    review = await session.scalar(
+        select(RouteReview).where(
+            RouteReview.id == review_id,
+            RouteReview.route_id == route_id,
+            RouteReview.author_user_id == author_user_id,
+            RouteReview.status != "deleted",
+        )
     )
+    if review is None:
+        raise AppError(code="review_not_found", message="Review not found", status_code=404)
     attachment = await session.scalar(
         select(MediaAttachment).where(
             MediaAttachment.id == media_id,
@@ -488,6 +555,7 @@ async def list_my_reviews(
         role="avatar",
     )
     review_media = await _review_media(session, [row.id for row in rows])
+    replies = await _reply_context(session, rows)
     items = [
         await _review_out(
             session,
@@ -496,6 +564,7 @@ async def list_my_reviews(
             rank_titles=rank_titles,
             avatars=avatars,
             media=review_media,
+            replies=replies,
         )
         for row in rows
     ]
@@ -531,6 +600,27 @@ async def set_review_status(
         if route is None:
             continue
         if status == "published":
+            if review.reply_to_review_id is not None:
+                reply_target = await session.get(RouteReview, review.reply_to_review_id)
+                if reply_target is not None:
+                    reply_notif = await notifications_service.create_review_reply_notification(
+                        session,
+                        recipient_user_id=reply_target.author_user_id,
+                        actor_user_id=review.author_user_id,
+                        route_id=route.id,
+                        route_name=route.name,
+                    )
+                    if reply_notif is not None:
+                        await notifications_service.maybe_push_notification(
+                            session,
+                            get_settings(),
+                            user_id=reply_target.author_user_id,
+                            kind=reply_notif.kind,
+                            title=reply_notif.title,
+                            body=reply_notif.body,
+                            target_type="route",
+                            target_id=route.id,
+                        )
             if route.owner_user_id is not None:
                 owner_notif = await notifications_service.create_route_review_notification(
                     session,

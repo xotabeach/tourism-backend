@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -11,6 +12,7 @@ class RouteReviewCreateIn(BaseModel):
 
     body: str = Field(min_length=1, max_length=2000)
     rating: int = Field(ge=1, le=5)
+    reply_to_review_id: UUID | None = None
 
     @field_validator("body")
     @classmethod
@@ -31,6 +33,15 @@ class RouteReviewMediaOut(BaseModel):
     sort_order: int
 
 
+class RouteReviewReplyOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: str
+    author_user_id: str
+    author_display_name: str
+    body: str
+
+
 class RouteReviewOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -45,6 +56,7 @@ class RouteReviewOut(BaseModel):
     status: ReviewStatus
     created_at: datetime
     media: list[RouteReviewMediaOut] = Field(default_factory=list)
+    reply_to: RouteReviewReplyOut | None = None
 
 
 class RouteReviewListOut(BaseModel):

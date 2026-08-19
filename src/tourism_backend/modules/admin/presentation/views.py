@@ -41,8 +41,10 @@ from tourism_backend.modules.admin.presentation.filters import (
 from tourism_backend.modules.admin.presentation.formatters import (
     format_admin_role,
     format_debug_code,
+    format_expert_status,
     format_message_author,
     format_review_body_preview,
+    format_review_media_gallery,
     format_review_status,
     format_route_fk,
     format_route_publication_status,
@@ -70,6 +72,7 @@ from tourism_backend.modules.identity.infrastructure.models import (
 )
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.application.service import resolve_urls
+from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.notifications.application import service as notifications_service
 from tourism_backend.modules.routes.application import review_service
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
@@ -92,6 +95,38 @@ async def _preload_route_names(session_maker: Any, route_ids: list[UUID]) -> dic
     async with session_maker(expire_on_commit=False) as session:
         rows = (await session.scalars(select(Route).where(Route.id.in_(ids)))).all()
     return {row.id: row.name for row in rows}
+
+
+async def _preload_review_media(
+    session_maker: Any,
+    review_ids: list[UUID],
+) -> dict[UUID, list[str]]:
+    ids = list({review_id for review_id in review_ids if review_id is not None})
+    if not ids:
+        return {}
+    async with session_maker(expire_on_commit=False) as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(MediaAttachment)
+                    .where(
+                        MediaAttachment.entity_type == "review",
+                        MediaAttachment.entity_id.in_(ids),
+                        MediaAttachment.role == "gallery",
+                        MediaAttachment.status == "active",
+                    )
+                    .order_by(
+                        MediaAttachment.entity_id,
+                        MediaAttachment.sort_order,
+                        MediaAttachment.created_at,
+                    )
+                )
+            ).all()
+        )
+    result: dict[UUID, list[str]] = {}
+    for row in rows:
+        result.setdefault(row.entity_id, []).append(row.public_path)
+    return result
 
 
 _AUTHOR_RU = {
@@ -160,6 +195,7 @@ class UserAdmin(ModelView, model=User):
         User.id: format_user_cover,
         User.display_name: format_user_avatar_name,
         User.notify_push_enabled: lambda m, _a: "Да" if m.notify_push_enabled else "Нет",
+        User.is_expert: format_expert_status,
     }
     column_formatters_detail = {
         User.id: format_user_cover,
@@ -204,6 +240,70 @@ class UserAdmin(ModelView, model=User):
     can_delete = False
     can_export = False
     page_size = 50
+
+    async def _set_expert_status(self, request: Request, *, is_expert: bool) -> Response:
+        actor_id = session_principal_id(request)
+        if actor_id is None:
+            return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
+        user_ids: list[UUID] = []
+        for raw in request.query_params.get("pks", "").split(","):
+            with contextlib.suppress(ValueError):
+                user_ids.append(UUID(raw.strip()))
+        if user_ids:
+            async with self.session_maker(expire_on_commit=False) as session:
+                users = list(
+                    (await session.scalars(select(User).where(User.id.in_(user_ids)))).all()
+                )
+                changed_at = datetime.now(UTC)
+                for user in users:
+                    if user.is_expert == is_expert:
+                        continue
+                    user.is_expert = is_expert
+                    user.updated_at = changed_at
+                    session.add(
+                        UserExpertStatusEvent(
+                            id=uuid4(),
+                            user_id=user.id,
+                            is_expert=is_expert,
+                            changed_by_principal_id=actor_id,
+                            changed_at=changed_at,
+                        )
+                    )
+                    await record_audit(
+                        session,
+                        actor_id=actor_id,
+                        action=(
+                            "admin.user_grant_expert" if is_expert else "admin.user_revoke_expert"
+                        ),
+                        entity_type="user",
+                        entity_id=str(user.id),
+                        ip=request.client.host if request.client else None,
+                    )
+                await session.commit()
+        return RedirectResponse(
+            str(request.url_for("admin:list", identity=self.identity)),
+            status_code=303,
+        )
+
+    @action(
+        name="grant_expert",
+        label="Выдать статус эксперта",
+        confirmation_message="Выдать выбранным пользователям статус эксперта?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def grant_expert(self, request: Request) -> Response:
+        return await self._set_expert_status(request, is_expert=True)
+
+    @action(
+        name="revoke_expert",
+        label="Снять статус эксперта",
+        confirmation_message="Снять у выбранных пользователей статус эксперта?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def revoke_expert(self, request: Request) -> Response:
+        return await self._set_expert_status(request, is_expert=False)
 
     async def scaffold_form(self, rules: Any = None) -> Any:
         form_cls = await super().scaffold_form(rules)
@@ -1127,6 +1227,7 @@ class RouteReviewAdmin(ModelView, model=RouteReview):
     icon = "fa-solid fa-comments"
     column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
     column_list = [
+        RouteReview.id,
         RouteReview.status,
         RouteReview.route_id,
         RouteReview.author_user_id,
@@ -1136,7 +1237,7 @@ class RouteReviewAdmin(ModelView, model=RouteReview):
         RouteReview.updated_at,
     ]
     column_labels = {
-        RouteReview.id: "ID",
+        RouteReview.id: "Фото",
         RouteReview.status: "Статус",
         RouteReview.route_id: "Маршрут",
         RouteReview.author_user_id: "Автор",
@@ -1148,12 +1249,14 @@ class RouteReviewAdmin(ModelView, model=RouteReview):
         RouteReview.updated_at: "Обновлён",
     }
     column_formatters = {
+        RouteReview.id: format_review_media_gallery,
         RouteReview.status: format_review_status,
         RouteReview.route_id: format_route_fk,
         RouteReview.author_user_id: format_user_fk,
         RouteReview.body: format_review_body_preview,
     }
     column_formatters_detail = {
+        RouteReview.id: format_review_media_gallery,
         RouteReview.status: format_review_status,
         RouteReview.route_id: format_route_fk,
         RouteReview.author_user_id: format_user_fk,
@@ -1194,6 +1297,10 @@ class RouteReviewAdmin(ModelView, model=RouteReview):
             self.session_maker,
             [row.route_id for row in pagination.rows],
         )
+        request.state.review_media = await _preload_review_media(
+            self.session_maker,
+            [row.id for row in pagination.rows],
+        )
         return pagination
 
     async def get_object_for_details(self, request: Request) -> Any:
@@ -1206,6 +1313,10 @@ class RouteReviewAdmin(ModelView, model=RouteReview):
             request.state.route_names = await _preload_route_names(
                 self.session_maker,
                 [model.route_id],
+            )
+            request.state.review_media = await _preload_review_media(
+                self.session_maker,
+                [model.id],
             )
         return model
 

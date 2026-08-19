@@ -146,6 +146,11 @@ class RouteReview(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
+    reply_to_review_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("route_reviews.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     body: Mapped[str] = mapped_column(String(2000), nullable=False)
     rating: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending_review")

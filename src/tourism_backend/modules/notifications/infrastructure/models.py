@@ -22,6 +22,7 @@ class Notification(Base, UUIDPrimaryKeyMixin):
             "'profile_like', "
             "'achievement_unlocked'"
             ", 'support_reply'"
+            ", 'review_reply'"
             ")",
             name="kind",
         ),

@@ -139,6 +139,39 @@ def test_user_admin_allows_edit_and_shows_media_formatters() -> None:
     assert User.id in UserAdmin.column_formatters
     assert User.travel_points not in UserAdmin.form_columns
     assert User.travel_points in UserAdmin.column_list
+    assert User.is_expert in UserAdmin.form_columns
+    assert UserAdmin.grant_expert._action is True
+    assert UserAdmin.revoke_expert._action is True
+
+
+def test_review_admin_renders_only_safe_same_origin_photos() -> None:
+    from types import SimpleNamespace
+
+    from tourism_backend.modules.admin.presentation.formatters import (
+        format_review_media_gallery,
+    )
+    from tourism_backend.modules.admin.presentation.views import RouteReviewAdmin
+    from tourism_backend.modules.routes.infrastructure.models import RouteReview
+
+    review_id = uuid4()
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            review_media={
+                review_id: [
+                    "/media/reviews/safe/photo.webp",
+                    "javascript:alert(1)",
+                    "/media/../secret",
+                ]
+            }
+        )
+    )
+    rendered = str(
+        format_review_media_gallery(SimpleNamespace(id=review_id), RouteReview.id, request)
+    )
+    assert RouteReview.id in RouteReviewAdmin.column_formatters
+    assert "/media/reviews/safe/photo.webp" in rendered
+    assert "javascript:" not in rendered
+    assert "../" not in rendered
 
 
 def test_support_ticket_admin_sorts_and_flags_awaiting_reply() -> None:

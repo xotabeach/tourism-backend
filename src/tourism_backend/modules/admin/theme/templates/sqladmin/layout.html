@@ -86,6 +86,12 @@
   </div>
 </div>
 <div id="ct-user-popover" class="ct-user-popover" hidden></div>
+<dialog id="ct-review-lightbox" class="ct-review-lightbox" aria-label="Просмотр фото отзыва">
+  <button type="button" class="ct-review-lightbox-close" aria-label="Закрыть просмотр">
+    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+  </button>
+  <img alt="Фото из отзыва">
+</dialog>
 <script>
 (function () {
   var pop = document.getElementById("ct-user-popover");
@@ -129,6 +135,48 @@
       pop.textContent = "Не удалось загрузить";
     });
   });
+})();
+(function () {
+  var sidebarColumn = document.querySelector(".filter-sidebar-col");
+  if (sidebarColumn) {
+    sidebarColumn.hidden = true;
+    var toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "btn btn-outline-primary ct-filter-toggle";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.innerHTML = '<i class="fa-solid fa-filter" aria-hidden="true"></i><span>Фильтры</span>';
+    var row = sidebarColumn.parentElement;
+    if (row) row.insertBefore(toggle, row.firstChild);
+    toggle.addEventListener("click", function () {
+      var willOpen = sidebarColumn.hidden;
+      sidebarColumn.hidden = !willOpen;
+      toggle.setAttribute("aria-expanded", String(willOpen));
+      toggle.querySelector("span").textContent = willOpen ? "Скрыть фильтры" : "Фильтры";
+    });
+  }
+
+  var lightbox = document.getElementById("ct-review-lightbox");
+  if (!lightbox) return;
+  var image = lightbox.querySelector("img");
+  function isSafeMediaPath(value) {
+    return typeof value === "string" && value.indexOf("/media/") === 0 &&
+      value.indexOf("..") === -1 && value.indexOf("\\") === -1;
+  }
+  document.addEventListener("click", function (event) {
+    var thumb = event.target.closest("[data-ct-review-image]");
+    if (!thumb) return;
+    var src = thumb.getAttribute("data-ct-review-image");
+    if (!isSafeMediaPath(src)) return;
+    image.src = src;
+    lightbox.showModal();
+  });
+  lightbox.querySelector(".ct-review-lightbox-close").addEventListener("click", function () {
+    lightbox.close();
+  });
+  lightbox.addEventListener("click", function (event) {
+    if (event.target === lightbox) lightbox.close();
+  });
+  lightbox.addEventListener("close", function () { image.removeAttribute("src"); });
 })();
 </script>
 {% endblock %}

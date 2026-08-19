@@ -205,6 +205,34 @@ def format_review_body_preview(model: object, attribute: object) -> Markup:
     )
 
 
+def format_review_media_gallery(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    review_id = getattr(model, "id", None)
+    cache = getattr(getattr(request, "state", None), "review_media", None)
+    urls = cache.get(review_id, []) if isinstance(cache, dict) else []
+    safe_urls = [safe for raw in urls if (safe := _safe_media_url(raw)) is not None]
+    if not safe_urls:
+        return Markup('<span class="text-secondary">Нет фото</span>')
+    buttons = Markup("").join(
+        Markup(
+            '<button type="button" class="ct-review-media-thumb" '
+            'data-ct-review-image="{}" aria-label="Открыть фото отзыва">'
+            '<img src="{}" alt="" loading="lazy" decoding="async"></button>'
+        ).format(escape(url), escape(url))
+        for url in safe_urls
+    )
+    return Markup('<span class="ct-review-media-grid">{}</span>').format(buttons)
+
+
+def format_expert_status(model: object, attribute: object) -> Markup:
+    if bool(getattr(model, "is_expert", False)):
+        return Markup('<span class="ct-badge ct-badge-route-published">Эксперт</span>')
+    return Markup('<span class="text-secondary">Нет</span>')
+
+
 def format_debug_code(model: object, attribute: object) -> Markup:
     code = getattr(model, "debug_code", None)
     if not code:

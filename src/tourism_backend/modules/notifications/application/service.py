@@ -78,6 +78,30 @@ async def create_route_review_notification(
     return notification
 
 
+async def create_review_reply_notification(
+    session: AsyncSession,
+    *,
+    recipient_user_id: UUID,
+    actor_user_id: UUID,
+    route_id: UUID,
+    route_name: str,
+) -> Notification | None:
+    """Notify the original comment author after a reply is published."""
+    if recipient_user_id == actor_user_id:
+        return None
+    notification = _build_notification(
+        user_id=recipient_user_id,
+        actor_user_id=actor_user_id,
+        kind="review_reply",
+        title="Ответ на ваш отзыв",
+        body=f"Ответил вам в маршруте «{_clip(route_name, 48)}»",
+        target_type="route",
+        target_id=route_id,
+    )
+    session.add(notification)
+    return notification
+
+
 async def create_route_moderation_notification(
     session: AsyncSession,
     *,

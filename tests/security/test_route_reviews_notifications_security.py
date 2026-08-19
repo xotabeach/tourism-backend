@@ -604,6 +604,97 @@ async def test_second_review_keeps_published_and_creates_pending(
 
 
 @pytest.mark.asyncio
+async def test_review_reply_keeps_quote_and_notifies_target_after_moderation(
+    live_client: AsyncClient,
+) -> None:
+    route_id = await _public_route_id()
+    if route_id is None:
+        pytest.skip("No public route seeded")
+    marker = uuid4().hex[:8]
+    target = await _login(
+        live_client,
+        phone=f"+7910{uuid4().int % 10_000_000:07d}",
+        name=f"Адресат {marker}",
+    )
+    responder = await _login(
+        live_client,
+        phone=f"+7911{uuid4().int % 10_000_000:07d}",
+        name=f"Ответчик {marker}",
+    )
+    target_headers = {"Authorization": f"Bearer {target['access_token']}"}
+    responder_headers = {"Authorization": f"Bearer {responder['access_token']}"}
+
+    original = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=target_headers,
+        json={"body": "Исходный отзыв для ответа", "rating": 5},
+    )
+    assert original.status_code == 200, original.text
+    original_id = UUID(original.json()["id"])
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        assert (
+            await set_review_status(
+                session,
+                review_ids=[original_id],
+                status="published",
+            )
+            == 1
+        )
+        await session.commit()
+
+    reply = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=responder_headers,
+        json={
+            "body": "Ответ с сохранённым контекстом",
+            "rating": 5,
+            "reply_to_review_id": str(original_id),
+        },
+    )
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["reply_to"]["review_id"] == str(original_id)
+    assert reply.json()["reply_to"]["body"] == "Исходный отзыв для ответа"
+
+    invalid = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=responder_headers,
+        json={
+            "body": "Ответ в никуда",
+            "rating": 4,
+            "reply_to_review_id": str(uuid4()),
+        },
+    )
+    assert invalid.status_code == 404
+    assert invalid.json()["error"]["code"] == "review_reply_target_not_found"
+
+    async with session_maker() as session:
+        assert (
+            await set_review_status(
+                session,
+                review_ids=[UUID(reply.json()["id"])],
+                status="published",
+            )
+            == 1
+        )
+        await session.commit()
+    await engine.dispose()
+
+    public = await live_client.get(f"/api/v1/routes/{route_id}/reviews")
+    published_reply = next(
+        item for item in public.json()["items"] if item["id"] == reply.json()["id"]
+    )
+    assert published_reply["reply_to"]["author_display_name"] == f"Адресат {marker}"
+
+    inbox = await live_client.get("/api/v1/me/notifications", headers=target_headers)
+    assert any(
+        item["kind"] == "review_reply" and item["target_id"] == route_id
+        for item in inbox.json()["items"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_delete_own_review_within_window_and_rejects_foreign(
     live_client: AsyncClient,
 ) -> None:
