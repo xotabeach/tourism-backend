@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Idempotent: ensure N public user_created routes per users row.
+"""DEPRECATED mock filler: N public user_created routes per user.
 
-Examples:
-  uv run python scripts/seed_user_routes.py
+Do not run on production. Match QA catalog lives in
+`scripts/seed_match_catalog_routes.py` (source_name=seed_match_catalog).
+
+Legacy invocation only:
+  uv run python scripts/seed_user_routes.py --force-legacy
 """
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -221,6 +225,11 @@ def upsert_user_routes(session: Session) -> int:
 
 
 def main() -> None:
+    if "--force-legacy" not in sys.argv:
+        raise SystemExit(
+            "seed_user_routes.py is deprecated (created mock user routes). "
+            "Use scripts/seed_match_catalog_routes.py, or pass --force-legacy."
+        )
     settings = get_settings()
     engine = create_engine(settings.database_url_sync)
     with Session(engine) as session:

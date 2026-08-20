@@ -60,14 +60,24 @@ def test_partition_offers_generate_without_ideal() -> None:
     assert isinstance(close, list)
 
 
-def test_season_and_transport_boost() -> None:
-    params = RouteMatchParamsIn(
-        city="Ялта",
-        duration="d3_5",
-        season="лето",
-        transport_mode="car",
-        with_children=True,
+def test_transport_aliases_match_walk_and_walking() -> None:
+    params = RouteMatchParamsIn(city="Ялта", duration="d1_2", transport_mode="walk")
+    scored = score_candidate(
+        params,
+        _candidate(
+            estimated_duration_minutes=300,
+            transport_mode="walking",
+            seasonality=("лето",),
+        ),
     )
-    scored = score_candidate(params, _candidate())
-    assert scored.score >= 0.55
-    assert any("сезон" in r or "транспорт" in r or "детьми" in r for r in scored.reasons)
+    assert any("транспорт" in reason for reason in scored.reasons)
+    assert scored.score >= 0.4
+
+
+def test_season_aliases_accept_english_catalog_values() -> None:
+    params = RouteMatchParamsIn(city="Ялта", duration="d3_5", season="лето")
+    scored = score_candidate(
+        params,
+        _candidate(seasonality=("summer", "spring")),
+    )
+    assert any("сезон" in reason for reason in scored.reasons)

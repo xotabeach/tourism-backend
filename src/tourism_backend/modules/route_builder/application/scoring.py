@@ -164,17 +164,43 @@ def _pace_score(pace: PaceOption, difficulty: str | None) -> tuple[float, str | 
     return 0.35, None
 
 
+_TRANSPORT_CANONICAL: dict[str, str] = {
+    "walk": "walk",
+    "walking": "walk",
+    "car": "car",
+    "public": "public",
+    "public_transport": "public",
+    "mixed": "mixed",
+}
+
+
+def _normalize_transport(value: str | None) -> str | None:
+    if not value:
+        return None
+    return _TRANSPORT_CANONICAL.get(value.casefold().strip(), value.casefold().strip())
+
+
 def _transport_score(
     requested: str | None,
     actual: str | None,
 ) -> tuple[float, str | None]:
     if not requested:
         return 0.5, None
-    if not actual:
+    req = _normalize_transport(requested)
+    act = _normalize_transport(actual)
+    if not act:
         return 0.4, None
-    if requested == actual or (requested == "mixed"):
-        return 1.0, f"транспорт: {actual}"
+    if req == act or req == "mixed":
+        return 1.0, f"транспорт: {act}"
     return 0.2, None
+
+
+_SEASON_ALIASES: dict[str, tuple[str, ...]] = {
+    "весна": ("весна", "spring"),
+    "лето": ("лето", "summer"),
+    "осень": ("осень", "autumn", "fall"),
+    "зима": ("зима", "winter"),
+}
 
 
 def _season_score(season: str | None, seasonality: tuple[str, ...]) -> tuple[float, str | None]:
@@ -183,7 +209,11 @@ def _season_score(season: str | None, seasonality: tuple[str, ...]) -> tuple[flo
     if not seasonality:
         return 0.4, None
     needle = season.casefold()
-    if any(needle in item.casefold() or item.casefold() in needle for item in seasonality):
+    aliases = _SEASON_ALIASES.get(needle, (needle,))
+    catalog = tuple(item.casefold() for item in seasonality)
+    if any(
+        alias in item or item in alias or alias == item for alias in aliases for item in catalog
+    ):
         return 1.0, f"сезон: {season}"
     return 0.2, None
 
