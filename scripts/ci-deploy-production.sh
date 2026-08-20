@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# GitLab CI helper: SSH into the production host and run deploy-remote.sh.
-# Runs only from the production deploy job on branch main.
+# SSH helper shared by GitLab CI and the trusted local production deploy.
 #
 # Required protected CI variables:
 #   DEPLOY_SSH_HOST, DEPLOY_SSH_PORT, DEPLOY_SSH_USER, DEPLOY_SSH_PRIVATE_KEY
@@ -84,13 +83,16 @@ materialize_secret_file() {
   chmod 600 "${dest}"
 }
 
-install -d -m 700 ~/.ssh
-key_file="$(mktemp)"
+deploy_tmp_dir="$(mktemp -d)"
+key_file="${deploy_tmp_dir}/deploy_key"
+known_hosts_file="${deploy_tmp_dir}/known_hosts"
+trap 'rm -f -- "${key_file}" "${known_hosts_file}"; rmdir -- "${deploy_tmp_dir}"' EXIT
+touch "${key_file}"
 chmod 600 "${key_file}"
 materialize_openssh_key "${DEPLOY_SSH_PRIVATE_KEY}" "${key_file}"
 
-materialize_secret_file "${DEPLOY_SSH_KNOWN_HOSTS}" ~/.ssh/known_hosts
-chmod 644 ~/.ssh/known_hosts
+materialize_secret_file "${DEPLOY_SSH_KNOWN_HOSTS}" "${known_hosts_file}"
+chmod 600 "${known_hosts_file}"
 
 ssh_opts=(
   -i "${key_file}"
@@ -98,6 +100,7 @@ ssh_opts=(
   -o IdentitiesOnly=yes
   -o BatchMode=yes
   -o StrictHostKeyChecking=yes
+  -o UserKnownHostsFile="${known_hosts_file}"
 )
 
 remote_env=()
@@ -144,5 +147,4 @@ if [[ "${IMPORT_OSM_CRIMEA}" == "true" ]]; then
 fi
 EOS
 
-rm -f "${key_file}"
 printf 'Production deploy finished.\n'

@@ -80,11 +80,18 @@ uv run python scripts/import_osm_crimea.py --fetch --limit 1000 --apply
 идемпотентно обновляет OSM records. Публикация требует отдельного
 boundary/dedup/editorial quality gate.
 
-На production импорт запускается отдельным ручным GitLab job
-`backend-deploy-and-import-crimea-production`. Job сначала разворачивает образ
-текущего коммита, применяет миграции и обновляет справочник категорий, затем
-собирает 1000 OSM-кандидатов прямо на сервере и сохраняет их только как
-черновики.
+В режиме экономии GitLab minutes push pipeline отключён. Production собирается
+и разворачивается с доверенного рабочего компьютера отдельной командой:
+
+```bash
+./scripts/deploy-production-local.sh
+```
+
+Скрипт требует registry/SSH variables из локального окружения, собирает
+`linux/amd64`, публикует immutable SHA + `production`, затем запускает миграции
+на сервере через pinned host key. Импорт 1000 OSM-кандидатов остаётся явной
+опцией `--import-osm-crimea`. В GitLab сохранён только ручной registry build,
+запускаемый через **Run pipeline**; автоматических pipeline на push нет.
 
 ## Endpoints (срез)
 
@@ -93,10 +100,10 @@ OpenAPI: `http://localhost:8000/docs`
 | Область | Примеры |
 | --- | --- |
 | Health | `GET /health/live`, `GET /health/ready` |
-| Geography / places | `/api/v1/geography/*`, `/categories`, `/places` |
+| Geography / places | `/api/v1/geography/*`, `/categories`, `/places`, отдельные place reviews + media |
 | Auth / me | `/auth/otp/*`, `/auth/refresh`, `/me` |
 | Users | `/users/search`, `/users/leaderboard`, `/users/{id}`, `/users/{id}/achievements` |
-| Routes | catalog, `/routes/mine`, drafts, submit, reviews + reply context + review media |
+| Routes | catalog (в т.ч. `place_id`), `/routes/mine`, drafts, submit, reviews + reply context + media |
 | Favorites | `/favorites/places/{id}`, `/favorites/routes/{id}` |
 | Support | `/support/tickets` |
 | Inbox / FCM | `/me/notifications`, `/me/device-tokens` |

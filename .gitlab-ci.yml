@@ -1,41 +1,17 @@
-# Lean CI for active development (saves GitLab shared-runner minutes).
-# Quality gates (ruff/mypy/pytest/pip-audit/security) run locally:
-#   ./scripts/validate.sh
-# Full DevSecOps pipeline: `.gitlab-ci.full.yml`
-# Enable full: CI/CD variable CI_PIPELINE_MODE=full
-# Docs: tourism-platform/docs/ci-and-runners.md
-
-include:
-  - local: ".gitlab-ci.full.yml"
-    rules:
-      - if: '$CI_PIPELINE_MODE == "full"'
+# Emergency low-minutes mode (August 2026).
+# Pushes do not create pipelines. Build/deploy runs from a developer machine:
+#   ./scripts/deploy-production-local.sh
+# A registry-only build can still be started explicitly from GitLab → Run pipeline.
 
 workflow:
   rules:
-    - if: '$CI_PIPELINE_MODE == "full"'
-    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "gamma"'
-    - if: '$CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
     - when: never
 
 stages:
-  - lean
   - publish
-  - deploy
-  - mirror
 
-ci-lean-notice:
-  stage: lean
-  image: alpine:3.21
-  script:
-    - 'echo "Lean CI — style/tests/scanners are local (./scripts/validate.sh)."'
-    - 'echo "Set CI_PIPELINE_MODE=full for the full DevSecOps pipeline."'
-  rules:
-    - if: '$CI_PIPELINE_MODE == "full"'
-      when: never
-    - when: on_success
-
-# Image publish only (no style/test/scanner jobs in lean mode).
-backend-publish:
+backend-publish-manual:
   stage: publish
   image: docker:27-cli
   services:
@@ -45,88 +21,9 @@ backend-publish:
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
-    - docker build --pull --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
+    - docker build --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" --tag "$CI_REGISTRY_IMAGE:production" .
     - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-    - |
-      if [ "$CI_COMMIT_BRANCH" = "gamma" ]; then
-        docker tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:stage"
-        docker push "$CI_REGISTRY_IMAGE:stage"
-      fi
-    - |
-      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
-        docker tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:production"
-        docker push "$CI_REGISTRY_IMAGE:production"
-      fi
+    - docker push "$CI_REGISTRY_IMAGE:production"
   rules:
-    - if: '$CI_PIPELINE_MODE == "full"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "gamma"'
-
-backend-deploy-stage:
-  stage: deploy
-  image: alpine:3.21
-  needs:
-    - backend-publish
-  script:
-    - |
-      echo "Stage tip: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA (-> :stage)"
-      echo "No remote stage host — production deploy is manual on main."
-  environment:
-    name: stage
-  rules:
-    - if: '$CI_PIPELINE_MODE == "full"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "gamma"'
-
-backend-deploy-production:
-  stage: deploy
-  image: alpine:3.21
-  resource_group: tourism-backend-production
-  needs:
-    - backend-publish
-  before_script:
-    - apk add --no-cache bash openssh-client curl
-  script:
-    - bash scripts/ci-deploy-production.sh "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-  environment:
-    name: production
-  rules:
-    - if: '$CI_PIPELINE_MODE == "full"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $DEPLOY_SSH_PRIVATE_KEY && $DEPLOY_SSH_HOST && $DEPLOY_SSH_USER && $DEPLOY_SSH_PORT && $DEPLOY_SSH_KNOWN_HOSTS'
-      when: manual
+    - when: manual
       allow_failure: false
-
-backend-deploy-and-import-crimea-production:
-  stage: deploy
-  image: alpine:3.21
-  resource_group: tourism-backend-production
-  needs:
-    - backend-publish
-  before_script:
-    - apk add --no-cache bash openssh-client curl
-  script:
-    - bash scripts/ci-deploy-production.sh "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" --import-osm-crimea
-  environment:
-    name: production
-  rules:
-    - if: '$CI_PIPELINE_MODE == "full"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "main" && $DEPLOY_SSH_PRIVATE_KEY && $DEPLOY_SSH_HOST && $DEPLOY_SSH_USER && $DEPLOY_SSH_PORT && $DEPLOY_SSH_KNOWN_HOSTS'
-      when: manual
-      allow_failure: false
-
-github-mirror:
-  stage: mirror
-  image: alpine:3.21
-  before_script:
-    - apk add --no-cache bash git
-  script:
-    - bash scripts/ci-mirror-to-github.sh
-  rules:
-    - if: '$CI_PIPELINE_MODE == "full"'
-      when: never
-    - if: '$CI_COMMIT_BRANCH == "gamma" && $GITHUB_MIRROR_TOKEN'
-    - if: '$CI_COMMIT_BRANCH == "main" && $GITHUB_MIRROR_TOKEN'
-  needs:
-    - ci-lean-notice
