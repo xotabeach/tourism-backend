@@ -319,6 +319,7 @@ async def test_routes_catalog_includes_owner_fields_when_present(
         assert "owner_user_id" in item
         assert "author_avatar_url" in item
         assert "author_label" in item
+        assert isinstance(item["author_is_expert"], bool)
 
 
 @pytest.mark.asyncio

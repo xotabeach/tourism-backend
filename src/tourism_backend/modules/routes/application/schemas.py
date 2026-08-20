@@ -113,6 +113,7 @@ class RouteListItemOut(BaseModel):
     cover_image_url: str | None = None
     owner_user_id: UUID | None = None
     author_avatar_url: str | None = None
+    author_is_expert: bool = False
 
 
 class RouteDetailOut(RouteListItemOut):

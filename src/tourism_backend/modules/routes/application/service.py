@@ -135,8 +135,8 @@ async def _cover_urls_for_routes(
 async def _author_fields_for_routes(
     session: AsyncSession,
     routes: list[Route],
-) -> dict[UUID, tuple[UUID | None, str | None, str | None]]:
-    """Map route.id -> (owner_user_id, author_label, author_avatar_url)."""
+) -> dict[UUID, tuple[UUID | None, str | None, str | None, bool]]:
+    """Map route.id -> owner identity fields used by every route card."""
     owner_ids = [route.owner_user_id for route in routes if route.owner_user_id is not None]
     users: dict[UUID, User] = {}
     if owner_ids:
@@ -148,7 +148,7 @@ async def _author_fields_for_routes(
         entity_ids=list(users.keys()),
         role="avatar",
     )
-    result: dict[UUID, tuple[UUID | None, str | None, str | None]] = {}
+    result: dict[UUID, tuple[UUID | None, str | None, str | None, bool]] = {}
     for route in routes:
         owner_id = route.owner_user_id
         label: str | None
@@ -156,10 +156,12 @@ async def _author_fields_for_routes(
         if owner_id is not None and owner_id in users:
             label = users[owner_id].display_name
             avatar = avatars.get(owner_id)
+            is_expert = users[owner_id].is_expert
         else:
             label = route.author_label
             avatar = None
-        result[route.id] = (owner_id, label, avatar)
+            is_expert = False
+        result[route.id] = (owner_id, label, avatar, is_expert)
     return result
 
 
@@ -171,6 +173,7 @@ def _to_list_item(
     owner_user_id: UUID | None = None,
     author_label: str | None = None,
     author_avatar_url: str | None = None,
+    author_is_expert: bool = False,
 ) -> RouteListItemOut:
     return RouteListItemOut(
         id=route.id,
@@ -195,6 +198,7 @@ def _to_list_item(
         cover_image_url=cover_image_url,
         owner_user_id=owner_user_id,
         author_avatar_url=author_avatar_url,
+        author_is_expert=author_is_expert,
     )
 
 
@@ -230,7 +234,7 @@ async def _list_from_stmt(
     authors = await _author_fields_for_routes(session, routes)
     items = []
     for route in routes:
-        owner_id, label, avatar = authors[route.id]
+        owner_id, label, avatar, is_expert = authors[route.id]
         items.append(
             _to_list_item(
                 route,
@@ -239,6 +243,7 @@ async def _list_from_stmt(
                 owner_user_id=owner_id,
                 author_label=label,
                 author_avatar_url=avatar,
+                author_is_expert=is_expert,
             )
         )
     return RouteListOut(items=items, total=total, limit=limit, offset=offset)
@@ -365,7 +370,7 @@ async def _route_detail_from_model(
     ]
     covers = await _cover_urls_for_routes(session, [route.id])
     authors = await _author_fields_for_routes(session, [route])
-    owner_id, label, avatar = authors[route.id]
+    owner_id, label, avatar, is_expert = authors[route.id]
     base = _to_list_item(
         route,
         len(stops),
@@ -373,6 +378,7 @@ async def _route_detail_from_model(
         owner_user_id=owner_id,
         author_label=label,
         author_avatar_url=avatar,
+        author_is_expert=is_expert,
     )
     return RouteDetailOut(
         **base.model_dump(),
