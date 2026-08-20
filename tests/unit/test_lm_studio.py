@@ -30,6 +30,7 @@ async def test_lm_studio_probe_checks_model_and_completion() -> None:
         body = json.loads(request.content)
         assert body["model"] == "gemma-test"
         assert body["stream"] is False
+        assert body["reasoning_effort"] == "none"
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": '{"status":"ok"}'}}]},

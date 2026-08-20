@@ -73,6 +73,9 @@ class LMStudioProvider:
                     "temperature": 0,
                     "max_tokens": 80,
                     "stream": False,
+                    # Gemma 4 otherwise fills the budget with reasoning_content
+                    # and returns empty message.content (finish_reason=length).
+                    "reasoning_effort": "none",
                 },
             )
             response.raise_for_status()
