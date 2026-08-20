@@ -48,6 +48,7 @@ class PlaceEntranceOut(BaseModel):
 
 
 class PlaceDetailOut(PlaceListItemOut):
+    image_urls: list[str] = Field(default_factory=list)
     description: str | None
     address: str | None
     contact_phone: str | None

@@ -62,6 +62,30 @@ async def _cover_urls_for_places(
     }
 
 
+async def _image_urls_for_place(session: AsyncSession, place_id: UUID) -> list[str]:
+    """Return the active place gallery with the cover image first."""
+    from tourism_backend.modules.media.infrastructure.models import MediaAttachment
+
+    attachment_url = func.coalesce(MediaAttachment.public_path, PlaceImage.source_url)
+    stmt = (
+        select(attachment_url)
+        .select_from(PlaceImage)
+        .outerjoin(
+            MediaAttachment,
+            (MediaAttachment.id == PlaceImage.media_asset_id)
+            & (MediaAttachment.status == "active"),
+        )
+        .where(
+            PlaceImage.place_id == place_id,
+            PlaceImage.status == "active",
+            PlaceImage.kind == "photo",
+            attachment_url.is_not(None),
+        )
+        .order_by(PlaceImage.is_cover.desc(), PlaceImage.sort_order, PlaceImage.id)
+    )
+    return [url for url in (await session.scalars(stmt)).all() if url]
+
+
 async def _categories_for_places(
     session: AsyncSession,
     place_ids: list[UUID],
@@ -198,6 +222,7 @@ async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
     lng, lat = await _coords_for_place(session, place.id)
     categories = (await _categories_for_places(session, [place.id])).get(place.id, [])
     covers = await _cover_urls_for_places(session, [place.id])
+    image_urls = await _image_urls_for_place(session, place.id)
 
     entrance_row = await session.scalar(
         select(PlaceEntrance).where(
@@ -244,6 +269,7 @@ async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
         publication_status=place.publication_status,
         categories=categories,
         cover_image_url=covers.get(place.id),
+        image_urls=image_urls,
         description=place.description,
         address=place.address,
         contact_phone=place.contact_phone,

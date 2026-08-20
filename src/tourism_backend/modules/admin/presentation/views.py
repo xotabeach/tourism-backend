@@ -43,6 +43,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_debug_code,
     format_expert_status,
     format_message_author,
+    format_place_fk,
     format_review_body_preview,
     format_review_media_gallery,
     format_review_status,
@@ -74,6 +75,8 @@ from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.application.service import resolve_urls
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.notifications.application import service as notifications_service
+from tourism_backend.modules.places.application import review_service as place_review_service
+from tourism_backend.modules.places.infrastructure.models import Place, PlaceReview
 from tourism_backend.modules.routes.application import review_service
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
@@ -97,9 +100,20 @@ async def _preload_route_names(session_maker: Any, route_ids: list[UUID]) -> dic
     return {row.id: row.name for row in rows}
 
 
+async def _preload_place_names(session_maker: Any, place_ids: list[UUID]) -> dict[UUID, str]:
+    ids = list({place_id for place_id in place_ids if place_id is not None})
+    if not ids:
+        return {}
+    async with session_maker(expire_on_commit=False) as session:
+        rows = (await session.scalars(select(Place).where(Place.id.in_(ids)))).all()
+    return {row.id: row.name for row in rows}
+
+
 async def _preload_review_media(
     session_maker: Any,
     review_ids: list[UUID],
+    *,
+    entity_type: str = "review",
 ) -> dict[UUID, list[str]]:
     ids = list({review_id for review_id in review_ids if review_id is not None})
     if not ids:
@@ -110,7 +124,7 @@ async def _preload_review_media(
                 await session.scalars(
                     select(MediaAttachment)
                     .where(
-                        MediaAttachment.entity_type == "review",
+                        MediaAttachment.entity_type == entity_type,
                         MediaAttachment.entity_id.in_(ids),
                         MediaAttachment.role == "gallery",
                         MediaAttachment.status == "active",
@@ -1253,10 +1267,10 @@ class RouteAdmin(ModelView, model=Route):
 
 
 class RouteReviewAdmin(ModelView, model=RouteReview):
-    category = "Маршруты"
-    category_icon = "fa-solid fa-route"
+    category = "Отзывы"
+    category_icon = "fa-solid fa-comments"
     name = "Отзыв"
-    name_plural = "Отзывы"
+    name_plural = "Отзывы маршрутов"
     icon = "fa-solid fa-comments"
     column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
     column_list = [
@@ -1405,6 +1419,147 @@ class RouteReviewAdmin(ModelView, model=RouteReview):
         return await self._set_status(request, status_value="rejected")
 
 
+class PlaceReviewAdmin(ModelView, model=PlaceReview):
+    category = "Отзывы"
+    category_icon = "fa-solid fa-comments"
+    name = "Отзыв локации"
+    name_plural = "Отзывы локаций"
+    icon = "fa-solid fa-location-dot"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        PlaceReview.id,
+        PlaceReview.status,
+        PlaceReview.place_id,
+        PlaceReview.author_user_id,
+        PlaceReview.rating,
+        PlaceReview.body,
+        PlaceReview.created_at,
+    ]
+    column_labels = {
+        PlaceReview.id: "Фото",
+        PlaceReview.status: "Статус",
+        PlaceReview.place_id: "Локация",
+        PlaceReview.author_user_id: "Автор",
+        PlaceReview.rating: "Оценка",
+        PlaceReview.body: "Текст",
+        PlaceReview.moderator_note: "Заметка модератора",
+        PlaceReview.moderated_at: "Модерирован",
+        PlaceReview.created_at: "Создан",
+    }
+    column_formatters = {
+        PlaceReview.id: format_review_media_gallery,
+        PlaceReview.status: format_review_status,
+        PlaceReview.place_id: format_place_fk,
+        PlaceReview.author_user_id: format_user_fk,
+        PlaceReview.body: format_review_body_preview,
+    }
+    column_formatters_detail = column_formatters
+    column_searchable_list = [PlaceReview.body]
+    column_sortable_list = [
+        PlaceReview.status,
+        PlaceReview.rating,
+        PlaceReview.created_at,
+    ]
+    column_default_sort = (PlaceReview.created_at, True)
+    column_filters: ClassVar[list[Any]] = [
+        AllUniqueStringValuesFilter(PlaceReview.status),
+        OperationColumnFilter(PlaceReview.place_id, title="ID локации"),
+        OperationColumnFilter(PlaceReview.author_user_id, title="ID автора"),
+        OperationColumnFilter(PlaceReview.rating, title="Оценка"),
+    ]
+    form_columns = [PlaceReview.moderator_note]
+    can_create = False
+    can_edit = True
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        request.state.user_names = await _preload_user_names(
+            self.session_maker,
+            [row.author_user_id for row in pagination.rows],
+        )
+        request.state.place_names = await _preload_place_names(
+            self.session_maker,
+            [row.place_id for row in pagination.rows],
+        )
+        request.state.review_media = await _preload_review_media(
+            self.session_maker,
+            [row.id for row in pagination.rows],
+            entity_type="place_review",
+        )
+        return pagination
+
+    async def get_object_for_details(self, request: Request) -> Any:
+        model = await super().get_object_for_details(request)
+        if model is not None:
+            request.state.user_names = await _preload_user_names(
+                self.session_maker,
+                [model.author_user_id],
+            )
+            request.state.place_names = await _preload_place_names(
+                self.session_maker,
+                [model.place_id],
+            )
+            request.state.review_media = await _preload_review_media(
+                self.session_maker,
+                [model.id],
+                entity_type="place_review",
+            )
+        return model
+
+    async def _set_status(self, request: Request, *, status_value: str) -> Response:
+        actor_id = session_principal_id(request)
+        if actor_id is None:
+            return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
+        review_ids: list[UUID] = []
+        for raw in request.query_params.get("pks", "").split(","):
+            with contextlib.suppress(ValueError):
+                review_ids.append(UUID(raw.strip()))
+        if review_ids:
+            async with self.session_maker(expire_on_commit=False) as session:
+                await place_review_service.set_review_status(
+                    session,
+                    review_ids=review_ids,
+                    status=status_value,
+                )
+                for review_id in review_ids:
+                    await record_audit(
+                        session,
+                        actor_id=actor_id,
+                        action=f"admin.place_review_{status_value}",
+                        entity_type="place_review",
+                        entity_id=str(review_id),
+                        ip=request.client.host if request.client else None,
+                    )
+                await session.commit()
+        return RedirectResponse(
+            str(request.url_for("admin:list", identity=self.identity)),
+            status_code=303,
+        )
+
+    @action(
+        name="approve_place_reviews",
+        label="Одобрить и опубликовать",
+        confirmation_message="Опубликовать выбранные отзывы локаций?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def approve_reviews(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="published")
+
+    @action(
+        name="reject_place_reviews",
+        label="Отклонить",
+        confirmation_message="Отклонить выбранные отзывы локаций?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_reviews(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="rejected")
+
+
 def register_views(admin: Any, settings: Settings) -> None:
     show_debug = settings.otp_store_debug_code_enabled
 
@@ -1496,6 +1651,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(SupportMessageAdmin)
     admin.add_view(RouteAdmin)
     admin.add_view(RouteReviewAdmin)
+    admin.add_view(PlaceReviewAdmin)
     admin.add_view(AdminPrincipalAdmin)
     admin.add_view(AdminRoleBindingAdmin)
     admin.add_view(AdminAuditEventAdmin)

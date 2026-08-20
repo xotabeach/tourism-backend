@@ -5,11 +5,13 @@ from uuid import UUID
 from geoalchemy2 import Geography
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     Time,
@@ -204,3 +206,43 @@ class PlaceImage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_cover: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+
+
+class PlaceReview(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "place_reviews"
+    __table_args__ = (
+        CheckConstraint("rating >= 1 AND rating <= 5", name="rating_range"),
+        CheckConstraint(
+            "status IN ('pending_review', 'published', 'rejected', 'deleted')",
+            name="status",
+        ),
+        Index("ix_place_reviews_place_status_created", "place_id", "status", "created_at"),
+        Index("ix_place_reviews_moderation_queue", "status", "created_at"),
+        Index(
+            "ix_place_reviews_place_author_status",
+            "place_id",
+            "author_user_id",
+            "status",
+        ),
+    )
+
+    place_id: Mapped[UUID] = mapped_column(
+        ForeignKey("places.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    author_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    reply_to_review_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("place_reviews.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    body: Mapped[str] = mapped_column(String(2000), nullable=False)
+    rating: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending_review")
+    moderator_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    moderated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -196,6 +196,27 @@ def format_route_fk(
     ).format(href, label, escape(str(rid)), short)
 
 
+def format_place_fk(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    raw = getattr(model, "place_id", None)
+    if raw is None:
+        return Markup('<span class="text-secondary">—</span>')
+    place_id = UUID(str(raw)) if not isinstance(raw, UUID) else raw
+    names = _entity_cache(request, "place_names")
+    label = escape(names.get(place_id) or "Локация")
+    href = escape(_admin_details_href(request, identity="place", pk=str(place_id)))
+    short = escape(str(place_id)[:8])
+    return Markup(
+        '<span class="ct-entity-ref">'
+        '<a class="ct-entity-link" href="{}">{}</a> '
+        '<span class="ct-id-soft" title="{}">{}…</span>'
+        "</span>"
+    ).format(href, label, escape(str(place_id)), short)
+
+
 def format_review_body_preview(model: object, attribute: object) -> Markup:
     body = str(getattr(model, "body", "") or "")
     preview = body if len(body) <= 80 else body[:79] + "…"

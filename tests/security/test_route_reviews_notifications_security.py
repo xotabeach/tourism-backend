@@ -14,14 +14,262 @@ from PIL import Image
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings
 from tourism_backend.db.redis import create_redis_client
 from tourism_backend.main import create_app
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.notifications.infrastructure.models import Notification
+from tourism_backend.modules.places.application import review_service as place_review_service
+from tourism_backend.modules.places.application.review_schemas import PlaceReviewCreateIn
+from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.routes.application import review_media
 from tourism_backend.modules.routes.application.review_service import set_review_status
 from tourism_backend.modules.routes.infrastructure.models import Route
+
+
+@pytest.mark.asyncio
+async def test_place_reviews_are_separate_moderated_targets(
+    live_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(review_media, "_MEDIA_ROOT", tmp_path)
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        place = await session.scalar(
+            select(Place).where(Place.publication_status == "published").limit(1)
+        )
+        place_id = str(place.id) if place is not None else None
+    if place_id is None:
+        await engine.dispose()
+        pytest.skip("No public place seeded")
+
+    unauth = await live_client.post(
+        f"/api/v1/places/{place_id}/reviews",
+        json={"body": "Красивое место", "rating": 5},
+    )
+    assert unauth.status_code == 401
+
+    auth = await _login(live_client, "+79001110991", "АвторЛокации")
+    headers = {"Authorization": f"Bearer {auth['access_token']}"}
+    created = await live_client.post(
+        f"/api/v1/places/{place_id}/reviews",
+        headers=headers,
+        json={"body": "<b>Отличный вид</b>", "rating": 5},
+    )
+    assert created.status_code == 200, created.text
+    review = created.json()
+    assert review["place_id"] == place_id
+    assert review["status"] == "pending_review"
+
+    updated = await live_client.post(
+        f"/api/v1/places/{place_id}/reviews",
+        headers=headers,
+        json={"body": "Отличный вид после дождя", "rating": 4},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["id"] == review["id"]
+    assert updated.json()["body"] == "Отличный вид после дождя"
+
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (24, 24), color=(65, 140, 210)).save(
+        image_buffer,
+        format="PNG",
+    )
+    uploaded = await live_client.post(
+        f"/api/v1/places/{place_id}/reviews/{review['id']}/media",
+        headers=headers,
+        data={"position": "0"},
+        files={"file": ("view.png", image_buffer.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["url"].startswith(f"/media/reviews/{review['id']}/")
+
+    duplicate = await live_client.post(
+        f"/api/v1/places/{place_id}/reviews/{review['id']}/media",
+        headers=headers,
+        data={"position": "1"},
+        files={"file": ("same-view.png", image_buffer.getvalue(), "image/png")},
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json()["id"] == uploaded.json()["id"]
+
+    public_before = await live_client.get(f"/api/v1/places/{place_id}/reviews")
+    assert all(item["id"] != review["id"] for item in public_before.json()["items"])
+    mine = await live_client.get("/api/v1/me/place-reviews", headers=headers)
+    assert any(item["id"] == review["id"] for item in mine.json()["items"])
+
+    async with session_maker() as session:
+        changed = await place_review_service.set_review_status(
+            session,
+            review_ids=[UUID(review["id"])],
+            status="published",
+        )
+        assert changed == 1
+        await session.commit()
+
+    public_after = await live_client.get(f"/api/v1/places/{place_id}/reviews")
+    assert any(item["id"] == review["id"] for item in public_after.json()["items"])
+
+    locked_media = await live_client.post(
+        f"/api/v1/places/{place_id}/reviews/{review['id']}/media",
+        headers=headers,
+        data={"position": "1"},
+        files={"file": ("locked.png", image_buffer.getvalue(), "image/png")},
+    )
+    assert locked_media.status_code == 409
+    assert locked_media.json()["error"]["code"] == "review_media_locked"
+
+    missing_reply = await live_client.post(
+        f"/api/v1/places/{place_id}/reviews",
+        headers=headers,
+        json={
+            "body": "Ответ на отсутствующий отзыв",
+            "rating": 5,
+            "reply_to_review_id": str(uuid4()),
+        },
+    )
+    assert missing_reply.status_code == 404
+    assert missing_reply.json()["error"]["code"] == "review_reply_target_not_found"
+
+    reply = await live_client.post(
+        f"/api/v1/places/{place_id}/reviews",
+        headers=headers,
+        json={
+            "body": "Добавлю: на закате особенно красиво",
+            "rating": 5,
+            "reply_to_review_id": review["id"],
+        },
+    )
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["reply_to"]["review_id"] == review["id"]
+
+    updated_reply = await live_client.post(
+        f"/api/v1/places/{place_id}/reviews",
+        headers=headers,
+        json={
+            "body": "Уточнение ответа",
+            "rating": 4,
+            "reply_to_review_id": review["id"],
+        },
+    )
+    assert updated_reply.status_code == 200, updated_reply.text
+    assert updated_reply.json()["id"] == reply.json()["id"]
+
+    deleted = await live_client.delete(
+        f"/api/v1/places/{place_id}/reviews/{reply.json()['id']}",
+        headers=headers,
+    )
+    assert deleted.status_code == 204
+    deleted_again = await live_client.delete(
+        f"/api/v1/places/{place_id}/reviews/{reply.json()['id']}",
+        headers=headers,
+    )
+    assert deleted_again.status_code == 404
+
+    async with session_maker() as session:
+        unchanged = await place_review_service.set_review_status(
+            session,
+            review_ids=[UUID(review["id"])],
+            status="published",
+        )
+        assert unchanged == 0
+        with pytest.raises(AppError, match="Invalid status"):
+            await place_review_service.set_review_status(
+                session,
+                review_ids=[UUID(review["id"])],
+                status="pending_review",
+            )
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_place_review_service_lifecycle(live_client: AsyncClient) -> None:
+    await _login(live_client, "+79001110992", "СервисЛокаций")
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_maker() as session:
+        place = await session.scalar(
+            select(Place).where(Place.publication_status == "published").limit(1)
+        )
+        user = await session.scalar(select(User).where(User.phone_e164 == "+79001110992"))
+        if place is None or user is None:
+            pytest.fail("Seeded place and authenticated user are required")
+
+        created = await place_review_service.upsert_review(
+            session,
+            place_id=place.id,
+            author_user_id=user.id,
+            payload=PlaceReviewCreateIn(body="Тихо и красиво", rating=5),
+        )
+        review_id = UUID(created.id)
+        pending = await place_review_service.ensure_own_pending_review(
+            session,
+            place_id=place.id,
+            review_id=review_id,
+            author_user_id=user.id,
+        )
+        assert pending.body == "Тихо и красиво"
+
+        updated = await place_review_service.upsert_review(
+            session,
+            place_id=place.id,
+            author_user_id=user.id,
+            payload=PlaceReviewCreateIn(body="Тихо, красиво и чисто", rating=4),
+        )
+        assert updated.id == created.id
+        mine = await place_review_service.list_my_reviews(
+            session,
+            author_user_id=user.id,
+            limit=10,
+            offset=0,
+        )
+        assert any(item.id == created.id for item in mine.items)
+
+        assert (
+            await place_review_service.set_review_status(
+                session,
+                review_ids=[review_id],
+                status="published",
+            )
+            == 1
+        )
+        await session.commit()
+        public = await place_review_service.list_published_reviews(
+            session,
+            place_id=place.id,
+            limit=100,
+            offset=0,
+        )
+        assert any(item.id == created.id for item in public.items)
+
+        with pytest.raises(AppError) as locked:
+            await place_review_service.ensure_own_pending_review(
+                session,
+                place_id=place.id,
+                review_id=review_id,
+                author_user_id=user.id,
+            )
+        assert locked.value.code == "review_media_locked"
+
+        await place_review_service.delete_own_review(
+            session,
+            place_id=place.id,
+            review_id=review_id,
+            author_user_id=user.id,
+        )
+        with pytest.raises(AppError) as missing:
+            await place_review_service.delete_own_review(
+                session,
+                place_id=place.id,
+                review_id=review_id,
+                author_user_id=user.id,
+            )
+        assert missing.value.code == "review_not_found"
+    await engine.dispose()
+
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",

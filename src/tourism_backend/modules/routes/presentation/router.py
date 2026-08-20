@@ -118,6 +118,7 @@ async def submit_route(
 async def get_routes(
     session: DbSession,
     region_slug: str | None = Query(default=None, max_length=128),
+    place_id: UUID | None = None,
     transport_mode: str | None = Query(default=None, max_length=32),
     difficulty: str | None = Query(default=None, max_length=32),
     q: str | None = Query(default=None, max_length=200),
@@ -129,6 +130,7 @@ async def get_routes(
     return await routes_service.list_routes(
         session,
         region_slug=region_slug,
+        place_id=place_id,
         transport_mode=transport_mode,
         difficulty=difficulty,
         q=q,

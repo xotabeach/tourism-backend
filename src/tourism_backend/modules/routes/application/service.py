@@ -253,6 +253,7 @@ async def list_routes(
     session: AsyncSession,
     *,
     region_slug: str | None,
+    place_id: UUID | None,
     transport_mode: str | None,
     difficulty: str | None,
     q: str | None,
@@ -267,6 +268,9 @@ async def list_routes(
     )
     if region_slug:
         stmt = stmt.join(Region, Region.id == Route.region_id).where(Region.slug == region_slug)
+    if place_id:
+        routes_with_place = select(RouteStop.route_id).where(RouteStop.place_id == place_id)
+        stmt = stmt.where(Route.id.in_(routes_with_place))
     if transport_mode:
         stmt = stmt.where(Route.transport_mode == transport_mode)
     if difficulty:

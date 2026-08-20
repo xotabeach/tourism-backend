@@ -86,6 +86,13 @@ async def test_editorial_routes_catalog_and_detail(live_app: object) -> None:
         assert card["stops"][0]["place_name"]
         assert card["stops"][0]["lat"] is not None
 
+        related = await client.get(
+            "/api/v1/routes",
+            params={"place_id": card["stops"][0]["place_id"]},
+        )
+        assert related.status_code == 200
+        assert route_id in {item["id"] for item in related.json()["items"]}
+
 
 @pytest.mark.asyncio
 async def test_routes_filters_and_unpublished_not_found(live_app: object) -> None:

@@ -87,6 +87,7 @@ async def test_geography_and_places_catalog(live_app: object) -> None:
         assert detail.status_code == 200
         assert detail.json()["name"]
         assert detail.json()["categories"]
+        assert isinstance(detail.json()["image_urls"], list)
 
         filtered = await client.get(
             "/api/v1/places",

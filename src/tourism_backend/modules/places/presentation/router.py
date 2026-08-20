@@ -1,14 +1,24 @@
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, File, Form, Query, UploadFile
 
-from tourism_backend.api.deps import DbSession
+from tourism_backend.api.deps import CurrentUserId, DbSession
+from tourism_backend.modules.places.application import review_service
 from tourism_backend.modules.places.application import service as places_service
+from tourism_backend.modules.places.application.review_schemas import (
+    MyPlaceReviewListOut,
+    PlaceReviewCreateIn,
+    PlaceReviewListOut,
+    PlaceReviewMediaOut,
+    PlaceReviewOut,
+)
 from tourism_backend.modules.places.application.schemas import (
     CategoryOut,
     PlaceDetailOut,
     PlaceListOut,
 )
+from tourism_backend.modules.routes.application import review_media
 
 router = APIRouter(tags=["places"])
 
@@ -57,3 +67,96 @@ async def get_places(
 @router.get("/places/{place_id}", response_model=PlaceDetailOut)
 async def get_place(session: DbSession, place_id: UUID) -> PlaceDetailOut:
     return await places_service.get_place(session, place_id)
+
+
+@router.get("/places/{place_id}/reviews", response_model=PlaceReviewListOut)
+async def list_place_reviews(
+    place_id: UUID,
+    session: DbSession,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> PlaceReviewListOut:
+    return await review_service.list_published_reviews(
+        session,
+        place_id=place_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/places/{place_id}/reviews", response_model=PlaceReviewOut)
+async def create_place_review(
+    place_id: UUID,
+    payload: PlaceReviewCreateIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> PlaceReviewOut:
+    return await review_service.upsert_review(
+        session,
+        place_id=place_id,
+        author_user_id=user_id,
+        payload=payload,
+    )
+
+
+@router.delete("/places/{place_id}/reviews/{review_id}", status_code=204)
+async def delete_place_review(
+    place_id: UUID,
+    review_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> None:
+    await review_service.delete_own_review(
+        session,
+        place_id=place_id,
+        review_id=review_id,
+        author_user_id=user_id,
+    )
+
+
+@router.post(
+    "/places/{place_id}/reviews/{review_id}/media",
+    response_model=PlaceReviewMediaOut,
+)
+async def upload_place_review_image(
+    place_id: UUID,
+    review_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    file: Annotated[UploadFile, File()],
+    position: Annotated[int, Form(ge=0, le=5)],
+) -> PlaceReviewMediaOut:
+    await review_service.ensure_own_pending_review(
+        session,
+        place_id=place_id,
+        review_id=review_id,
+        author_user_id=user_id,
+    )
+    saved = await review_media.save_review_image(file, review_id=review_id)
+    try:
+        return await review_service.add_review_image(
+            session,
+            place_id=place_id,
+            review_id=review_id,
+            author_user_id=user_id,
+            position=position,
+            saved=saved,
+        )
+    except Exception:
+        review_media.delete_review_image(saved.storage_key, review_id=review_id)
+        raise
+
+
+@router.get("/me/place-reviews", response_model=MyPlaceReviewListOut)
+async def list_my_place_reviews(
+    session: DbSession,
+    user_id: CurrentUserId,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> MyPlaceReviewListOut:
+    return await review_service.list_my_reviews(
+        session,
+        author_user_id=user_id,
+        limit=limit,
+        offset=offset,
+    )
