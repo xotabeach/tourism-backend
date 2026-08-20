@@ -79,6 +79,8 @@ from tourism_backend.modules.places.application import review_service as place_r
 from tourism_backend.modules.places.infrastructure.models import Place, PlaceReview
 from tourism_backend.modules.routes.application import review_service
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
+from tourism_backend.modules.subscriptions.application import service as travel_plus_service
+from tourism_backend.modules.subscriptions.infrastructure.models import TravelPlusSubscription
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
 
 
@@ -191,6 +193,7 @@ class UserAdmin(ModelView, model=User):
         User.updated_at,
         User.notify_push_enabled,
         User.is_expert,
+        User.travel_plus_active,
     ]
     column_labels = {
         User.id: "Баннер",
@@ -202,6 +205,9 @@ class UserAdmin(ModelView, model=User):
         User.updated_at: "Обновлён",
         User.notify_push_enabled: "Push",
         User.is_expert: "Эксперт",
+        User.travel_plus_active: "Travel+",
+        User.travel_plus_expires_at: "Travel+ до",
+        User.travel_plus_plan: "Travel+ план",
         User.notify_sms_enabled: "SMS",
         User.notify_haptics_enabled: "Тактильность",
     }
@@ -210,6 +216,7 @@ class UserAdmin(ModelView, model=User):
         User.display_name: format_user_avatar_name,
         User.notify_push_enabled: lambda m, _a: "Да" if m.notify_push_enabled else "Нет",
         User.is_expert: format_expert_status,
+        User.travel_plus_active: lambda m, _a: "Да" if m.travel_plus_active else "Нет",
     }
     column_formatters_detail = {
         User.id: format_user_cover,
@@ -346,6 +353,84 @@ class UserAdmin(ModelView, model=User):
     )
     async def revoke_expert(self, request: Request) -> Response:
         return await self._set_expert_status(request, is_expert=False)
+
+    async def _set_travel_plus(
+        self,
+        request: Request,
+        *,
+        plan: str | None,
+    ) -> Response:
+        actor_id = session_principal_id(request)
+        if actor_id is None:
+            return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
+        user_ids: list[UUID] = []
+        for raw in request.query_params.get("pks", "").split(","):
+            with contextlib.suppress(ValueError):
+                user_ids.append(UUID(raw.strip()))
+        if user_ids:
+            async with self.session_maker(expire_on_commit=False) as session:
+                for user_id in user_ids:
+                    if plan is None:
+                        await travel_plus_service.cancel_travel_plus(
+                            session,
+                            user_id=user_id,
+                            created_by_principal_id=actor_id,
+                            commit=False,
+                        )
+                        action = "admin.user_revoke_travel_plus"
+                    else:
+                        await travel_plus_service.activate_travel_plus(
+                            session,
+                            user_id=user_id,
+                            plan=plan,
+                            source="admin",
+                            created_by_principal_id=actor_id,
+                            commit=False,
+                        )
+                        action = "admin.user_grant_travel_plus"
+                    await record_audit(
+                        session,
+                        actor_id=actor_id,
+                        action=action,
+                        entity_type="user",
+                        entity_id=str(user_id),
+                        ip=request.client.host if request.client else None,
+                    )
+                await session.commit()
+        return RedirectResponse(
+            str(request.url_for("admin:list", identity=self.identity)),
+            status_code=303,
+        )
+
+    @action(
+        name="grant_travel_plus_monthly",
+        label="Выдать Travel+ (месяц)",
+        confirmation_message="Выдать выбранным пользователям Travel+ на месяц?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def grant_travel_plus_monthly(self, request: Request) -> Response:
+        return await self._set_travel_plus(request, plan="monthly")
+
+    @action(
+        name="grant_travel_plus_yearly",
+        label="Выдать Travel+ (год)",
+        confirmation_message="Выдать выбранным пользователям Travel+ на год?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def grant_travel_plus_yearly(self, request: Request) -> Response:
+        return await self._set_travel_plus(request, plan="yearly")
+
+    @action(
+        name="revoke_travel_plus",
+        label="Снять Travel+",
+        confirmation_message="Снять Travel+ у выбранных пользователей?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def revoke_travel_plus(self, request: Request) -> Response:
+        return await self._set_travel_plus(request, plan=None)
 
     async def scaffold_form(self, rules: Any = None) -> Any:
         form_cls = await super().scaffold_form(rules)
@@ -1069,6 +1154,49 @@ class UserExpertStatusEventAdmin(ModelView, model=UserExpertStatusEvent):
     page_size = 100
 
 
+class TravelPlusSubscriptionAdmin(ModelView, model=TravelPlusSubscription):
+    category = "Пользователи"
+    category_icon = "fa-solid fa-user-group"
+    name = "Подписка Travel+"
+    name_plural = "Подписки Travel+"
+    icon = "fa-solid fa-crown"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        TravelPlusSubscription.user_id,
+        TravelPlusSubscription.plan,
+        TravelPlusSubscription.status,
+        TravelPlusSubscription.starts_at,
+        TravelPlusSubscription.ends_at,
+        TravelPlusSubscription.source,
+        TravelPlusSubscription.created_by_principal_id,
+        TravelPlusSubscription.created_at,
+    ]
+    column_labels = {
+        TravelPlusSubscription.user_id: "Пользователь",
+        TravelPlusSubscription.plan: "План",
+        TravelPlusSubscription.status: "Статус",
+        TravelPlusSubscription.starts_at: "Начало",
+        TravelPlusSubscription.ends_at: "Окончание",
+        TravelPlusSubscription.source: "Источник",
+        TravelPlusSubscription.created_by_principal_id: "Администратор",
+        TravelPlusSubscription.created_at: "Создано",
+    }
+    column_formatters = {
+        TravelPlusSubscription.user_id: format_user_id_peek,
+    }
+    column_default_sort = (TravelPlusSubscription.created_at, True)
+    column_filters = [
+        OperationColumnFilter(TravelPlusSubscription.status, title="Статус"),
+        OperationColumnFilter(TravelPlusSubscription.plan, title="План"),
+        OperationColumnFilter(TravelPlusSubscription.source, title="Источник"),
+        OperationColumnFilter(TravelPlusSubscription.user_id, title="ID пользователя"),
+    ]
+    can_create = False
+    can_edit = False
+    can_delete = False
+    page_size = 50
+
+
 class RouteAdmin(ModelView, model=Route):
     category = "Маршруты"
     category_icon = "fa-solid fa-route"
@@ -1644,6 +1772,7 @@ def register_views(admin: Any, settings: Settings) -> None:
 
     admin.add_view(UserAdmin)
     admin.add_view(UserExpertStatusEventAdmin)
+    admin.add_view(TravelPlusSubscriptionAdmin)
     admin.add_view(TravelRankAdmin)
     admin.add_view(OtpChallengeAdmin)
     admin.add_view(PhoneChangeChallengeAdmin)

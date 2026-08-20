@@ -136,6 +136,13 @@ class MeOut(BaseModel):
     notify_push_enabled: bool = True
     notify_sms_enabled: bool = False
     notify_haptics_enabled: bool = True
+    travel_plus_active: bool = False
+    travel_plus_plan: str | None = None
+    travel_plus_expires_at: str | None = None
+    ai_chat_enabled: bool = False
+    max_route_points: int = 5
+    alternatives_count: int = 1
+    advanced_filters_enabled: bool = False
 
 
 class MePatchIn(BaseModel):

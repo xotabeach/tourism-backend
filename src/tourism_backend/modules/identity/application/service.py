@@ -437,6 +437,9 @@ async def get_me(session: AsyncSession, user_id: UUID) -> MeOut:
     user = await session.get(User, user_id)
     if user is None:
         raise AppError(code="unauthorized", message="Authentication required", status_code=401)
+    from tourism_backend.modules.subscriptions.application import service as travel_plus
+
+    user = await travel_plus.refresh_user_travel_plus(session, user)
     return await _me_out(session, user)
 
 
@@ -457,6 +460,10 @@ async def patch_me(session: AsyncSession, user_id: UUID, payload: MePatchIn) -> 
 
 
 async def _me_out(session: AsyncSession, user: User) -> MeOut:
+    from tourism_backend.modules.subscriptions.application.entitlements import (
+        policy_for_user,
+    )
+
     media = await media_service.resolve_urls(
         session,
         entity_type="user",
@@ -469,6 +476,8 @@ async def _me_out(session: AsyncSession, user: User) -> MeOut:
         entity_ids=[user.id],
         role="cover",
     )
+    expires = user.travel_plus_expires_at
+    policy = policy_for_user(user)
     return MeOut(
         id=str(user.id),
         display_name=user.display_name,
@@ -478,6 +487,13 @@ async def _me_out(session: AsyncSession, user: User) -> MeOut:
         notify_push_enabled=user.notify_push_enabled,
         notify_sms_enabled=user.notify_sms_enabled,
         notify_haptics_enabled=user.notify_haptics_enabled,
+        travel_plus_active=user.travel_plus_active,
+        travel_plus_plan=user.travel_plus_plan,
+        travel_plus_expires_at=expires.isoformat() if expires is not None else None,
+        ai_chat_enabled=policy.ai_chat_enabled,
+        max_route_points=policy.max_route_points,
+        alternatives_count=policy.alternatives_count,
+        advanced_filters_enabled=policy.advanced_filters_enabled,
     )
 
 

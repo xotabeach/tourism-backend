@@ -17,7 +17,13 @@ from tourism_backend.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("phone_e164", name="uq_users_phone_e164"),)
+    __table_args__ = (
+        UniqueConstraint("phone_e164", name="uq_users_phone_e164"),
+        CheckConstraint(
+            "travel_plus_plan IS NULL OR travel_plus_plan IN ('monthly', 'yearly')",
+            name="travel_plus_plan",
+        ),
+    )
 
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     phone_e164: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
@@ -53,6 +59,17 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default=False,
         server_default="false",
     )
+    travel_plus_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    travel_plus_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    travel_plus_plan: Mapped[str | None] = mapped_column(String(16), nullable=True)
     travel_points: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
