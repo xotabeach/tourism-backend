@@ -113,6 +113,32 @@ class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
         default="needs_review",
         server_default="needs_review",
     )
+    typical_crowding: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+        index=True,
+    )
+    price_min_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price_max_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price_currency: Mapped[str] = mapped_column(
+        String(8),
+        nullable=False,
+        default="RUB",
+        server_default="RUB",
+    )
+    access_transport: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    parking_available: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    content_enrichment_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="missing",
+        server_default="missing",
+        index=True,
+    )
+    content_enrichment: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    proposed_slug: Mapped[str | None] = mapped_column(String(150), nullable=True)
 
 
 class PlaceCategory(Base):
@@ -246,3 +272,43 @@ class PlaceReview(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending_review")
     moderator_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     moderated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RoadEvent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Temporary road closures / restrictions for planning (SoT, not RAG)."""
+
+    __tablename__ = "road_events"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'scheduled', 'resolved')",
+            name="ck_road_events_status",
+        ),
+        CheckConstraint(
+            "event_kind IN ('closure', 'restriction', 'congestion', 'other')",
+            name="ck_road_events_kind",
+        ),
+        Index(
+            "ix_road_events_source_external",
+            "source_name",
+            "source_external_id",
+            unique=True,
+            postgresql_where=text("source_name IS NOT NULL AND source_external_id IS NOT NULL"),
+        ),
+    )
+
+    region_id: Mapped[UUID] = mapped_column(
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    event_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    affects_transport: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)

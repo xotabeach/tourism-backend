@@ -32,6 +32,12 @@ class PlaceListItemOut(BaseModel):
     is_suitable_for_children: bool | None
     is_suitable_for_pets: bool | None
     recommended_visit_minutes: int | None
+    typical_crowding: str = "unknown"
+    price_min_amount: int | None = None
+    price_max_amount: int | None = None
+    price_currency: str = "RUB"
+    access_transport: list[str] | None = None
+    parking_available: bool | None = None
     publication_status: str
     categories: list[CategoryOut] = Field(default_factory=list)
     cover_image_url: str | None = None
@@ -64,6 +70,8 @@ class PlaceDetailOut(PlaceListItemOut):
     source_name: str | None
     source_license: str | None
     data_quality_status: str
+    content_enrichment_status: str = "missing"
+    proposed_slug: str | None = None
     primary_entrance: PlaceEntranceOut | None = None
 
 

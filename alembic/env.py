@@ -14,6 +14,9 @@ from tourism_backend.modules.notifications.infrastructure import (
     models as notifications_models,
 )
 from tourism_backend.modules.places.infrastructure import models as places_models
+from tourism_backend.modules.route_builder.infrastructure import (
+    models as route_builder_models,
+)
 from tourism_backend.modules.routes.infrastructure import models as routes_models
 from tourism_backend.modules.subscriptions.infrastructure import (
     models as subscriptions_models,
@@ -40,6 +43,7 @@ _ = (
     notifications_models,
     admin_models,
     subscriptions_models,
+    route_builder_models,
 )
 target_metadata = Base.metadata
 

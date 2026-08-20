@@ -89,6 +89,14 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     accessibility: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     geometry = mapped_column(Geography(geometry_type="LINESTRING", srid=4326), nullable=True)
     author_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    typical_crowding: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+    )
+    price_min_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price_max_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class RouteStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):

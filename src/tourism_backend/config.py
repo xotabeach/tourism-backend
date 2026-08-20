@@ -1,5 +1,6 @@
 from enum import StrEnum
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -88,6 +89,11 @@ class Settings(BaseSettings):
     lm_studio_model: str | None = None
     lm_studio_api_key: SecretStr | None = None
     rag_enabled: bool = False
+
+    # ADR-004 RoutingProvider. stub = synthetic haversine; osrm = later.
+    routing_provider: Literal["stub"] = "stub"
+    osrm_base_url: str | None = None
+    routing_timeout_seconds: float = Field(default=10, ge=1, le=60)
 
     @property
     def otp_accept_any_enabled(self) -> bool:

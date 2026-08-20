@@ -307,7 +307,7 @@ async def list_routes_for_owner(
     offset: int,
 ) -> RouteListOut:
     stmt: Select[tuple[Route]] = select(Route).where(
-        Route.source == "user_created",
+        Route.source.in_(("user_created", "generated")),
         Route.owner_user_id == owner_user_id,
         Route.publication_status != "deleted",
     )
@@ -418,7 +418,7 @@ async def get_owned_route(
         select(Route).where(
             Route.id == route_id,
             Route.owner_user_id == owner_user_id,
-            Route.source == "user_created",
+            Route.source.in_(("user_created", "generated")),
             Route.publication_status != "deleted",
         )
     )
@@ -442,7 +442,11 @@ async def _owned_editable_route(
     owner_user_id: UUID,
 ) -> Route:
     route = await session.get(Route, route_id)
-    if route is None or route.owner_user_id != owner_user_id or route.source != "user_created":
+    if (
+        route is None
+        or route.owner_user_id != owner_user_id
+        or route.source not in {"user_created", "generated"}
+    ):
         raise AppError(code="route_not_found", message="Route not found", status_code=404)
     if route.publication_status not in {"draft", "rejected"}:
         raise AppError(
