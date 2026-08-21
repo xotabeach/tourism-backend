@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings, get_settings
 from tourism_backend.modules.identity.infrastructure.models import User
-from tourism_backend.modules.route_builder.application import generate_service
+from tourism_backend.modules.knowledge.infrastructure.retriever import (
+    RetrievalRequest,
+    TourismKnowledgeRetriever,
+)
+from tourism_backend.modules.route_builder.application import generate_service, match_service
 from tourism_backend.modules.route_builder.application.ai import ChatMessage, ChatTurnResult
 from tourism_backend.modules.route_builder.application.chat_actions import (
     clarification_action_blocks,
@@ -32,6 +36,8 @@ from tourism_backend.modules.route_builder.application.place_picker import (
 )
 from tourism_backend.modules.route_builder.application.schemas import (
     ActionsBlockOut,
+    CatalogMatchBlockOut,
+    CatalogRouteItemOut,
     ChatBlockOut,
     PlaceChipBlockOut,
     RecommendationCardBlockOut,
@@ -77,6 +83,9 @@ from tourism_backend.modules.subscriptions.application.service import (
 _HISTORY_LIMIT = 12
 _SESSION_LIST_MAX = 50
 _MESSAGE_LIST_MAX = 100
+_CONTROL_ACTION_IDS = frozenset({"budget_amount", "with_children", "with_pets"})
+_MATCH_FIRST_ACTIONS = frozenset({"want_generate"})
+_CUSTOM_GENERATE_ACTIONS = frozenset({"build_custom_route"})
 
 
 async def create_session(
@@ -303,10 +312,19 @@ async def post_message(
                         confirmed = sanitize_confirmed_fields([*confirmed, *touched])
 
     intent = classify_chat_intent(payload.text)
-    if payload.want_generate or (
-        payload.action_id and normalize_action_id(payload.action_id) == "want_generate"
-    ):
+    flow: str = intent
+    canonical_action = normalize_action_id(payload.action_id) if payload.action_id else None
+    is_control_only = payload.action_id in _CONTROL_ACTION_IDS and payload.control_value is not None
+    if payload.want_generate or canonical_action in _MATCH_FIRST_ACTIONS:
+        flow = "generate"
         intent = "generate"
+    elif canonical_action in _CUSTOM_GENERATE_ACTIONS:
+        flow = "generate_custom"
+        intent = "generate"
+    elif canonical_action == "clear_params":
+        flow = "clear_params"
+    elif is_control_only:
+        flow = "control_ack"
 
     now = datetime.now(UTC)
     user_payload: dict[str, Any] | None = None
@@ -339,10 +357,10 @@ async def post_message(
     proposed: dict[str, Any] | None = None
     prefetch: dict[str, Any] = {}
 
-    if intent in {"crisis", "off_topic", "injection_attempt"}:
+    if flow in {"crisis", "off_topic", "injection_attempt"}:
         assistant_text = canned_reply_for_intent(intent)
         ask_field = first_missing_ask_field(confirmed)
-        if intent == "off_topic":
+        if flow == "off_topic":
             blocks = list(
                 clarification_action_blocks(
                     constraints_dict,
@@ -350,18 +368,86 @@ async def post_message(
                     ask_field=ask_field,
                 )
             )
-    elif intent == "generate":
-        params = RouteMatchParamsIn.model_validate(constraints_dict)
-        generated = await generate_service.generate_route(
-            session,
-            user_id=user_id,
-            payload=RouteGenerateIn(channel="chat", params=params),
+    elif flow == "clear_params":
+        constraints_dict = RouteMatchParamsIn(city="Крым").model_dump(mode="json")
+        confirmed = []
+        assistant_text = "Очистил параметры. Выбери из предложенного или опиши идеальный маршрут."
+        ask_field = "pace"
+        blocks = [
+            ActionsBlockOut(
+                layout="stack",
+                actions=[
+                    {"id": "pace_calm", "label": "Спокойный маршрут"},
+                    {"id": "pace_active", "label": "Активный маршрут"},
+                    {"id": "interest_mountains", "label": "Маршрут по горам"},
+                    {"id": "interest_sea", "label": "Путешествие к морю"},
+                    {"id": "interest_food", "label": "Хочу пожрать"},
+                ],
+            )
+        ]
+    elif flow == "control_ack":
+        # Slider/toggle: merge already done — short ack, no LLM reprint.
+        ask_field = prefer_ready_ask_field(confirmed)
+        label = payload.text.strip()[:80] or "параметр"
+        assistant_text = f"Ок, учёл: {label}."
+        provider_name = "control_ack"
+        blocks = _compose_assistant_blocks(
+            constraints=constraints_dict,
+            confirmed_fields=confirmed,
+            ask_field=ask_field,
+            action_ids=["want_generate"] if ask_field == "ready" else None,
+            tool_context={},
+            include_recommendations=False,
         )
-        await session.refresh(planning)
-        proposal_out = generated.proposal
-        assistant_text = generated.proposal.assistant_text
-        provider_name = "deterministic_generate"
-        blocks = list(proposal_out.blocks)
+    elif flow in {"generate", "generate_custom"}:
+        params = RouteMatchParamsIn.model_validate(constraints_dict)
+        force_custom = flow == "generate_custom"
+        if not force_custom:
+            try:
+                matched = await match_service.match_routes(
+                    session,
+                    user_id=user_id,
+                    params=params,
+                    ai_planning_enabled=cfg.ai_planning_enabled,
+                )
+                catalog_block = _catalog_match_block(matched)
+            except AppError:
+                # Empty catalog / missing region seed → fall through to generate.
+                catalog_block = None
+            if catalog_block is not None:
+                assistant_text = "Вот подобранные маршруты по выбранным параметрам:"
+                provider_name = "catalog_match"
+                blocks = [
+                    catalog_block,
+                    ActionsBlockOut(
+                        layout="stack",
+                        actions=[
+                            {
+                                "id": "build_custom_route",
+                                "label": "Собрать собственный маршрут",
+                            },
+                            {
+                                "id": "clear_params",
+                                "label": "Очистить мои параметры",
+                            },
+                        ],
+                    ),
+                ]
+                ask_field = "ready"
+            else:
+                force_custom = True
+        if force_custom:
+            generated = await generate_service.generate_route(
+                session,
+                user_id=user_id,
+                payload=RouteGenerateIn(channel="chat", params=params),
+            )
+            await session.refresh(planning)
+            proposal_out = generated.proposal
+            assistant_text = "Собрал маршрут по твоим параметрам:"
+            provider_name = "deterministic_generate"
+            blocks = list(proposal_out.blocks)
+            ask_field = "ready"
     else:
         turn, provider_name, fallback, prefetch = await _assistant_from_ai(
             session,
@@ -387,7 +473,8 @@ async def post_message(
             confirmed_fields=confirmed,
             ask_field=ask_field,
             action_ids=list(turn.action_ids) if turn.action_ids else None,
-            prefetch=prefetch,
+            tool_context=prefetch,
+            include_recommendations=fallback,
         )
 
     # Persist merged constraints / confirmed after the turn.
@@ -471,6 +558,41 @@ async def _assistant_from_ai(
     place_hints = list(tool_context.get("place_candidates") or [])
     if not place_hints and "city" in confirmed_fields:
         place_hints = await _place_hints(session, constraints)
+
+    # Phase 2: retrieve narrative chunks (RAG / pgvector) and feed them as
+    # untrusted DATA when enabled. Hard facts still come from PostGIS tools.
+    if settings.rag_enabled:
+        try:
+            retriever = TourismKnowledgeRetriever()
+            interests = constraints.get("interests")
+            if isinstance(interests, list) and interests:
+                query = " ".join(str(item) for item in interests[:6])[:400]
+            else:
+                query = str(constraints.get("city") or "Крым")[:400]
+            rag = await retriever.retrieve(
+                session,
+                request=RetrievalRequest(
+                    query=query,
+                    top_k=settings.rag_top_k,
+                    region=str(constraints.get("region_slug") or "crimea")[:64],
+                    locality=(str(constraints["city"])[:120] if constraints.get("city") else None),
+                ),
+            )
+            if rag.chunks:
+                tool_context = {
+                    **tool_context,
+                    "knowledge": [
+                        {
+                            "title": chunk.title[:120],
+                            "body": chunk.body[:1600],
+                            "source": chunk.source,
+                            "content_type": chunk.content_type,
+                        }
+                        for chunk in rag.chunks[: settings.rag_top_k]
+                    ],
+                }
+        except Exception:  # noqa: BLE001,S110 — RAG must never break the chat turn
+            pass
 
     async def _once(provider: Any, ctx: dict[str, Any]) -> ChatTurnResult:
         return cast(
@@ -589,27 +711,35 @@ def _compose_assistant_blocks(
     confirmed_fields: list[str],
     ask_field: str | None,
     action_ids: list[str] | None,
-    prefetch: dict[str, Any],
+    tool_context: dict[str, Any],
+    include_recommendations: bool = False,
 ) -> list[ChatBlockOut]:
     blocks: list[ChatBlockOut] = []
-    for tip in (prefetch.get("seasonal_recommendations") or [])[:2]:
-        if not isinstance(tip, dict):
-            continue
-        title = str(tip.get("title") or "").strip()
-        body = str(tip.get("body") or "").strip()
-        accept = str(tip.get("accept_action") or "").strip()
-        tip_id = str(tip.get("id") or accept).strip()
-        if not title or not body or not accept:
-            continue
-        blocks.append(
-            RecommendationCardBlockOut(
-                id=tip_id[:64],
-                title=title[:120],
-                body=body[:500],
-                accept_action_id=accept[:64],
+    # Seasonal tip cards only when AI is unavailable (fallback) — not on every
+    # live agent turn (product: «2 карточки Летом» only as offline help).
+    if include_recommendations:
+        seen_tips: set[str] = set()
+        for tip in (tool_context.get("seasonal_recommendations") or [])[:2]:
+            if not isinstance(tip, dict):
+                continue
+            title = str(tip.get("title") or "").strip()
+            body = str(tip.get("body") or "").strip()
+            accept = str(tip.get("accept_action") or "").strip()
+            tip_id = str(tip.get("id") or accept).strip()
+            if not title or not body or not accept:
+                continue
+            if tip_id in seen_tips:
+                continue
+            seen_tips.add(tip_id)
+            blocks.append(
+                RecommendationCardBlockOut(
+                    id=tip_id[:64],
+                    title=title[:120],
+                    body=body[:500],
+                    accept_action_id=accept[:64],
+                )
             )
-        )
-    for place in (prefetch.get("place_candidates") or [])[:4]:
+    for place in (tool_context.get("place_candidates") or [])[:4]:
         if not isinstance(place, dict):
             continue
         place_id = str(place.get("place_id") or "").strip()
@@ -634,6 +764,68 @@ def _compose_assistant_blocks(
         )
     )
     return blocks
+
+
+def _catalog_match_block(matched: object) -> CatalogMatchBlockOut | None:
+    """Build screen-2 carousel from algorithmic match hits (ideal then close)."""
+    ideal = getattr(matched, "ideal", None) or []
+    close = getattr(matched, "close", None) or []
+    hits = list(ideal)[:5]
+    if len(hits) < 5:
+        hits.extend(list(close)[: 5 - len(hits)])
+    if not hits:
+        return None
+    routes: list[CatalogRouteItemOut] = []
+    for hit in hits:
+        route = getattr(hit, "route", None)
+        if route is None:
+            continue
+        distance_km = None
+        meters = getattr(route, "distance_meters", None)
+        if isinstance(meters, int) and meters > 0:
+            distance_km = round(meters / 1000.0, 1)
+        tags: list[str] = []
+        transport = getattr(route, "transport_mode", None)
+        mode_labels = {
+            "walk": "Пешком",
+            "walking": "Пешком",
+            "car": "Авто",
+            "public": "Общ. транспорт",
+            "mixed": "Смешанный",
+        }
+        if isinstance(transport, str) and transport in mode_labels:
+            tags.append(mode_labels[transport])
+        if getattr(route, "suitable_for_children", None) is True:
+            tags.append("С детьми")
+        seasonality = getattr(route, "seasonality", None) or []
+        for raw in list(seasonality)[:2]:
+            label = str(raw).strip().capitalize()
+            if label and label not in tags:
+                tags.append(label)
+        difficulty = getattr(route, "difficulty", None)
+        difficulty_label = None
+        if isinstance(difficulty, str) and difficulty.strip():
+            difficulty_label = difficulty.strip()[:40]
+        elif isinstance(difficulty, int):
+            difficulty_label = f"{difficulty}/5"
+        routes.append(
+            CatalogRouteItemOut(
+                route_id=str(route.id),
+                title=str(route.name)[:120],
+                cover_url=getattr(route, "cover_image_url", None),
+                rating=None,
+                distance_km=distance_km,
+                locality_label=None,
+                tags=tags[:8],
+                budget_label=None,
+                difficulty_label=difficulty_label,
+                stops_count=int(getattr(route, "stops_count", 0) or 0),
+                duration_minutes=int(getattr(route, "estimated_duration_minutes", 0) or 0),
+            )
+        )
+    if not routes:
+        return None
+    return CatalogMatchBlockOut(routes=routes)
 
 
 def _control_patch(
@@ -741,6 +933,8 @@ def _try_parse_block(item: dict[str, Any]) -> ChatBlockOut | None:
             return PlaceChipBlockOut.model_validate(item)
         if block_type == "route_proposal_card":
             return RouteProposalCardBlockOut.model_validate(item)
+        if block_type == "catalog_match":
+            return CatalogMatchBlockOut.model_validate(item)
         if block_type == "actions":
             return ActionsBlockOut.model_validate(item)
         if block_type == "slider":

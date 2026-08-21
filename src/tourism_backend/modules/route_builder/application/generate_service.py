@@ -30,7 +30,7 @@ from tourism_backend.modules.route_builder.application.routing import (
 from tourism_backend.modules.route_builder.application.schemas import (
     ActionsBlockOut,
     ChatBlockOut,
-    PlaceChipBlockOut,
+    ProposalLocationOut,
     QuotaSnapshotOut,
     RouteGenerateIn,
     RouteGenerateOut,
@@ -168,27 +168,69 @@ def _title_for(params: RouteMatchParamsIn) -> str:
 
 
 def _assistant_text(params: RouteMatchParamsIn, places: list[PickedPlace]) -> str:
-    names = ", ".join(place.name for place in places[:3])
-    more = "" if len(places) <= 3 else f" и ещё {len(places) - 3}"
-    return (
-        f"Собрал черновик маршрута из {params.city}: {names}{more}. "
-        "Можно создать маршрут, сохранить в черновик или уточнить параметры."
-    )
+    _ = places
+    return "Собрал маршрут по твоим параметрам:"
 
 
 def _blocks_for_proposal(
     proposal: RouteProposal,
     places: list[PickedPlace],
 ) -> list[ChatBlockOut]:
-    chips = [
-        PlaceChipBlockOut(
-            place_id=str(place.place_id),
-            title=place.name,
-            subtitle=place.short_description,
-            duration_minutes=place.recommended_visit_minutes,
+    params = RouteMatchParamsIn.model_validate(proposal.params)
+    tags: list[str] = []
+    for raw in (params.interests or [])[:3]:
+        tag = str(raw).strip().capitalize()
+        if tag and tag not in tags:
+            tags.append(tag)
+    if params.transport_mode:
+        mode_labels = {
+            "walk": "Пешком",
+            "car": "Авто",
+            "public": "Общ. транспорт",
+            "mixed": "Смешанный",
+        }
+        mode_label = mode_labels.get(params.transport_mode)
+        if mode_label and mode_label not in tags:
+            tags.append(mode_label)
+    if params.with_children:
+        tags.append("С детьми")
+    if params.season:
+        tags.append(params.season.capitalize()[:24])
+    budget_label = (
+        f"{params.budget_amount:,} ₽".replace(",", " ")
+        if params.budget_amount is not None
+        else None
+    )
+    locations = [
+        ProposalLocationOut(
+            id=str(place.place_id),
+            title=(
+                place.name.strip()[:120] if place.name and place.name.strip() else f"Точка {idx}"
+            ),
+            subtitle=(
+                f"{place.recommended_visit_minutes} мин"
+                if place.recommended_visit_minutes
+                else None
+            ),
+            index=idx,
         )
-        for place in places
+        for idx, place in enumerate(places[:12], start=1)
     ]
+    gallery: list[str] = []
+    if proposal.cover_url:
+        gallery.append(proposal.cover_url)
+    start = places[0] if places else None
+    finish = places[-1] if places else None
+    start_name = (
+        start.name.strip()[:120]
+        if start and start.name and start.name.strip()
+        else ("Точка 1" if start else None)
+    )
+    finish_name = (
+        finish.name.strip()[:120]
+        if finish and finish.name and finish.name.strip()
+        else (f"Точка {len(places)}" if finish else None)
+    )
     card = RouteProposalCardBlockOut(
         proposal_id=str(proposal.id),
         title=proposal.title,
@@ -196,16 +238,32 @@ def _blocks_for_proposal(
         duration_minutes=proposal.duration_minutes,
         cover_url=proposal.cover_url,
         place_ids=[str(place.place_id) for place in places],
+        rating=None,
+        distance_km=None,
+        locality_label=params.city[:120],
+        tags=tags[:8],
+        budget_label=budget_label,
+        difficulty_label=_difficulty_for_pace(params.pace)[:40],
+        primary_action_label="Пройти маршрут",
+        card_variant="assembled",
+        gallery_urls=gallery[:8],
+        start_label=start_name,
+        start_subtitle=f"г. {params.city}"[:120] if start else None,
+        finish_label=finish_name,
+        finish_subtitle=f"г. {params.city}"[:120] if finish else None,
+        locations=locations,
+        route_id=str(proposal.route_id) if proposal.route_id else None,
     )
     actions = ActionsBlockOut(
+        layout="stack",
         actions=[
-            {"id": "accept_proposal", "label": "Создать маршрут"},
-            {"id": "save_draft", "label": "В черновик"},
-            {"id": "refine", "label": "Уточнить"},
-            {"id": "reject", "label": "Другой вариант"},
-        ]
+            {"id": "accept_proposal", "label": "Пройти маршрут"},
+            {"id": "save_draft", "label": "Сохранить маршрут в черновик"},
+            {"id": "refine", "label": "Указать агенту на ошибку"},
+            {"id": "reject", "label": "Собрать маршрут заново"},
+        ],
     )
-    return [*chips, card, actions]
+    return [card, actions]
 
 
 def _proposal_out(

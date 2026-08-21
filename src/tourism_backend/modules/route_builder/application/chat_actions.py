@@ -39,8 +39,14 @@ _CONFIRMABLE_FIELDS: frozenset[str] = frozenset(
 # Canonical id → label + optional constraint patch (+ field marked confirmed).
 _ACTION_CATALOG: dict[str, dict[str, Any]] = {
     "want_generate": {"label": "Подбери маршрут", "patch": None, "field": None},
+    "build_custom_route": {
+        "label": "Собрать собственный маршрут",
+        "patch": None,
+        "field": None,
+    },
+    "clear_params": {"label": "Очистить мои параметры", "patch": None, "field": None},
     "pace_calm": {
-        "label": "Хочу спокойно",
+        "label": "Спокойный маршрут",
         "patch": {"pace": "calm"},
         "field": "pace",
     },
@@ -50,18 +56,23 @@ _ACTION_CATALOG: dict[str, dict[str, Any]] = {
         "field": "pace",
     },
     "pace_active": {
-        "label": "Хочу активно",
+        "label": "Активный маршрут",
         "patch": {"pace": "active"},
         "field": "pace",
     },
     "interest_sea": {
-        "label": "Больше моря",
+        "label": "Путешествие к морю",
         "patch": {"interests_add": ["море"]},
         "field": "interests",
     },
     "interest_mountains": {
-        "label": "Больше гор",
+        "label": "Маршрут по горам",
         "patch": {"interests_add": ["горы"]},
+        "field": "interests",
+    },
+    "interest_food": {
+        "label": "Хочу пожрать",
+        "patch": {"interests_add": ["еда"]},
         "field": "interests",
     },
     "interest_romance": {
@@ -121,6 +132,14 @@ _ACTION_CATALOG: dict[str, dict[str, Any]] = {
         "patch": {"people": 3},
         "field": "people",
     },
+    # Budget is a slider control: this action only opens the budget slider
+    # (sets ask_field=budget); the actual value comes from the control, not a
+    # constraint patch.
+    "ask_budget": {
+        "label": "Бюджет",
+        "patch": None,
+        "field": "budget_amount",
+    },
 }
 
 # Legacy chip ids from the first interactive slice.
@@ -150,6 +169,7 @@ _ASK_FIELD_DEFAULTS: dict[str, tuple[str, ...]] = {
     "duration": ("duration_d1_2", "duration_d3_5", "duration_d6_7", "duration_d7plus"),
     "people": ("people_1", "people_2", "people_3_plus"),
     "with_children": ("with_children",),
+    "budget": ("ask_budget",),
     "ready": ("want_generate",),
 }
 
@@ -261,11 +281,7 @@ def merge_constraint_patch(
             continue
         merged[key] = value
     if isinstance(interests_add, list):
-        current = (
-            list(merged.get("interests") or [])
-            if "interests" in confirmed_before
-            else []
-        )
+        current = list(merged.get("interests") or []) if "interests" in confirmed_before else []
         seen = {str(item).casefold() for item in current}
         for raw in interests_add:
             item = str(raw).strip()

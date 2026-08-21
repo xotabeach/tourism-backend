@@ -117,6 +117,15 @@ class PlaceChipBlockOut(BaseModel):
     duration_minutes: int | None = None
 
 
+class ProposalLocationOut(BaseModel):
+    """One stop in the assembled-route preview (design-spec screen 3)."""
+
+    id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=120)
+    subtitle: str | None = Field(default=None, max_length=80)
+    index: int = Field(default=1, ge=1, le=22)
+
+
 class RouteProposalCardBlockOut(BaseModel):
     type: Literal["route_proposal_card"] = "route_proposal_card"
     proposal_id: str
@@ -125,11 +134,54 @@ class RouteProposalCardBlockOut(BaseModel):
     duration_minutes: int
     cover_url: str | None = None
     place_ids: list[str]
+    # Design-spec extras for the chat route preview (screen 2/3 of
+    # design-spec-travel-agent.md). All optional; mobile renders what it gets.
+    rating: float | None = Field(default=None, ge=0, le=5)
+    distance_km: float | None = Field(default=None, ge=0)
+    locality_label: str | None = Field(default=None, max_length=120)
+    tags: list[str] = Field(default_factory=list, max_length=8)
+    budget_label: str | None = Field(default=None, max_length=40)
+    difficulty_label: str | None = Field(default=None, max_length=40)
+    primary_action_label: str = Field(default="Пройти маршрут", max_length=40)
+    # ``catalog`` = existing DB route preview; ``assembled`` = generated detail.
+    card_variant: Literal["catalog", "assembled", "compact"] = "compact"
+    gallery_urls: list[str] = Field(default_factory=list, max_length=8)
+    start_label: str | None = Field(default=None, max_length=120)
+    start_subtitle: str | None = Field(default=None, max_length=120)
+    finish_label: str | None = Field(default=None, max_length=120)
+    finish_subtitle: str | None = Field(default=None, max_length=120)
+    locations: list[ProposalLocationOut] = Field(default_factory=list, max_length=22)
+    route_id: str | None = Field(default=None, max_length=64)
+
+
+class CatalogRouteItemOut(BaseModel):
+    """One editorial/catalog hit inside a chat carousel (design-spec screen 2)."""
+
+    route_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=120)
+    cover_url: str | None = None
+    rating: float | None = Field(default=None, ge=0, le=5)
+    distance_km: float | None = Field(default=None, ge=0)
+    locality_label: str | None = Field(default=None, max_length=120)
+    tags: list[str] = Field(default_factory=list, max_length=8)
+    budget_label: str | None = Field(default=None, max_length=40)
+    difficulty_label: str | None = Field(default=None, max_length=40)
+    stops_count: int = 0
+    duration_minutes: int = 0
+
+
+class CatalogMatchBlockOut(BaseModel):
+    """Carousel of existing catalog routes before custom generate."""
+
+    type: Literal["catalog_match"] = "catalog_match"
+    routes: list[CatalogRouteItemOut] = Field(default_factory=list, max_length=5)
 
 
 class ActionsBlockOut(BaseModel):
     type: Literal["actions"] = "actions"
     actions: list[dict[str, str]]
+    # ``stack`` = full-width outline rows (design-spec); ``wrap`` = chips.
+    layout: Literal["wrap", "stack"] = "wrap"
 
 
 class SliderBlockOut(BaseModel):
@@ -168,6 +220,7 @@ class RecommendationCardBlockOut(BaseModel):
 ChatBlockOut = (
     PlaceChipBlockOut
     | RouteProposalCardBlockOut
+    | CatalogMatchBlockOut
     | ActionsBlockOut
     | SliderBlockOut
     | ToggleBlockOut

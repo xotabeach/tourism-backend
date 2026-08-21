@@ -223,8 +223,12 @@ async def test_session_bola_and_message_bounds(live_client: AsyncClient) -> None
     assert generate.status_code == 200, generate.text
     body = generate.json()
     assert body["intent"] == "generate"
-    assert body["proposal"] is not None
-    assert body["proposal"]["proposal_id"]
+    block_types = {block.get("type") for block in body.get("blocks") or []}
+    # Match-first: catalog carousel when hits exist; else generated proposal.
+    if body.get("proposal") is not None:
+        assert body["proposal"]["proposal_id"]
+    else:
+        assert "catalog_match" in block_types
 
     listed = await live_client.get(
         "/api/v1/route-builder/sessions",

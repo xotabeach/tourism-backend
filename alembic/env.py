@@ -9,6 +9,7 @@ from tourism_backend.modules.admin.infrastructure import models as admin_models
 from tourism_backend.modules.favorites.infrastructure import models as favorites_models
 from tourism_backend.modules.geography.infrastructure import models as geography_models
 from tourism_backend.modules.identity.infrastructure import models as identity_models
+from tourism_backend.modules.knowledge.infrastructure import models as knowledge_models
 from tourism_backend.modules.media.infrastructure import models as media_models
 from tourism_backend.modules.notifications.infrastructure import (
     models as notifications_models,
@@ -44,6 +45,7 @@ _ = (
     admin_models,
     subscriptions_models,
     route_builder_models,
+    knowledge_models,
 )
 target_metadata = Base.metadata
 

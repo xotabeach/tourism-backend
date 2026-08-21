@@ -85,7 +85,7 @@ def test_compose_blocks_and_control_patch() -> None:
         confirmed_fields=["city"],
         ask_field="ready",
         action_ids=["want_generate"],
-        prefetch={
+        tool_context={
             "seasonal_recommendations": [
                 {
                     "id": "summer_foros",
@@ -103,11 +103,31 @@ def test_compose_blocks_and_control_patch() -> None:
                 {"place_id": "", "title": "skip"},
             ],
         },
+        include_recommendations=False,
     )
     types = {block.type for block in blocks}
-    assert "recommendation_card" in types
+    assert "recommendation_card" not in types
     assert "place_chip" in types
     assert "actions" in types
+    with_recs = _compose_assistant_blocks(
+        constraints={"city": "Ялта"},
+        confirmed_fields=["city"],
+        ask_field="ready",
+        action_ids=["want_generate"],
+        tool_context={
+            "seasonal_recommendations": [
+                {
+                    "id": "summer_foros",
+                    "title": "Летом — пляжи",
+                    "body": "Рекомендую ЮБК.",
+                    "accept_action": "accept_rec_summer_foros",
+                }
+            ],
+            "place_candidates": [],
+        },
+        include_recommendations=True,
+    )
+    assert "recommendation_card" in {block.type for block in with_recs}
     parsed = _try_parse_block(
         {
             "type": "recommendation_card",

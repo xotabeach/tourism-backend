@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import or_, select
+from geoalchemy2 import Geometry
+from sqlalchemy import cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
@@ -17,7 +18,21 @@ ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
 
 _MAX_PLACES = 8
 _MAX_TOOL_ROUNDS = 2
-_ALLOWED_TOOLS = frozenset({"search_places", "seasonal_recommendations"})
+_ALLOWED_TOOLS = frozenset(
+    {
+        "search_places",
+        "seasonal_recommendations",
+        "get_place_details",
+        "find_places_near_point",
+    }
+)
+
+# Region-wide fallback when a city isn't pinned to a locality (e.g. «Крым»).
+_REGION_CITY_ALIASES = frozenset({"крым", "crimea", "полуостров", "весь крым"})
+
+
+def _looks_like_region_city(city: str) -> bool:
+    return city.casefold().strip() in _REGION_CITY_ALIASES
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +177,12 @@ async def execute_tool(
         if call.name == "search_places":
             data = await _search_places(session, call.arguments, constraints)
             return ToolResult(name=call.name, ok=True, data=data)
+        if call.name == "get_place_details":
+            data = await _get_place_details(session, call.arguments, constraints)
+            return ToolResult(name=call.name, ok=True, data=data)
+        if call.name == "find_places_near_point":
+            data = await _find_places_near_point(session, call.arguments, constraints)
+            return ToolResult(name=call.name, ok=True, data=data)
         if call.name == "seasonal_recommendations":
             data = _seasonal_recommendations(call.arguments, constraints)
             return ToolResult(name=call.name, ok=True, data=data)
@@ -249,7 +270,7 @@ async def _search_places(
     constraints: dict[str, Any],
 ) -> dict[str, Any]:
     city = str(args.get("city") or constraints.get("city") or "").strip()
-    if not city or city == "Крым":
+    if not city:
         return {"places": [], "note": "city_required"}
     limit = args.get("limit", 6)
     if not isinstance(limit, int):
@@ -258,18 +279,29 @@ async def _search_places(
     region = await session.scalar(select(Region).where(Region.slug == "crimea"))
     if region is None:
         return {"places": []}
-    locality_ids = list(
-        await session.scalars(
-            select(Locality.id).where(
-                Locality.region_id == region.id,
-                Locality.status == "active",
-                Locality.name.ilike(f"%{city}%"),
+
+    region_wide = _looks_like_region_city(city)
+    if not region_wide:
+        locality_ids = list(
+            await session.scalars(
+                select(Locality.id).where(
+                    Locality.region_id == region.id,
+                    Locality.status == "active",
+                    Locality.name.ilike(f"%{city}%"),
+                )
             )
         )
-    )
+    else:
+        locality_ids = []
+
     stmt = select(Place).where(
         Place.region_id == region.id,
         Place.publication_status == "published",
+        # Hard filters: never surface temporarily closed places as candidates.
+        or_(
+            Place.temporary_closure_status.is_(None),
+            Place.temporary_closure_status == "none",
+        ),
     )
     if locality_ids:
         stmt = stmt.where(
@@ -279,7 +311,7 @@ async def _search_places(
                 Place.address.ilike(f"%{city}%"),
             )
         )
-    else:
+    elif not region_wide:
         stmt = stmt.where(
             or_(
                 Place.name.ilike(f"%{city}%"),
@@ -288,6 +320,7 @@ async def _search_places(
         )
     rows = (await session.scalars(stmt.limit(40))).all()
     interest = str(args.get("interest") or "").casefold()
+    city_cf = city.casefold()
     scored: list[tuple[float, Place]] = []
     for place in rows:
         text = " ".join(
@@ -299,7 +332,11 @@ async def _search_places(
             )
         ).casefold()
         score = 0.2
-        if city.casefold() in text or city.casefold() in (place.address or "").casefold():
+        if region_wide:
+            # Region-wide query: every published place is a candidate; keep a
+            # small locality baseline so ordering stays stable.
+            score = 0.3
+        elif city_cf in text or city_cf in (place.address or "").casefold():
             score += 0.4
         if interest and interest in text:
             score += 0.3
@@ -314,6 +351,135 @@ async def _search_places(
         for _, place in scored[:limit]
     ]
     return {"places": places, "city": city}
+
+
+async def _get_place_details(
+    session: AsyncSession,
+    args: dict[str, Any],
+    constraints: dict[str, Any],
+) -> dict[str, Any]:
+    """Structured facts for one place — the first 'fact' tool feeding RAG.
+
+    Returns only allowlisted stable fields; hard facts (schedule, price) are
+    read from PostGIS, never from the model. Anything else is deliberately
+    excluded so the model can't re-invent coordinates or hours.
+    """
+    raw_id = args.get("place_id")
+    if isinstance(raw_id, str) and raw_id.strip():
+        place_id = raw_id.strip()
+    else:
+        first = list(constraints.get("place_candidates") or [])
+        if not first or not isinstance(first[0], dict):
+            return {"ok": False, "error": "place_id_required"}
+        place_id = str(first[0].get("place_id") or "")
+        if not place_id:
+            return {"ok": False, "error": "place_id_required"}
+    try:
+        place = await session.get(Place, place_id)
+    except Exception:  # noqa: BLE001 — invalid uuid must not break the turn
+        return {"ok": False, "error": "place_not_found"}
+    if place is None or place.publication_status != "published":
+        return {"ok": False, "error": "place_not_found"}
+    seasonality = list(place.seasonality or [])
+    transport_access = list(place.access_transport or [])
+    return {
+        "ok": True,
+        "place": {
+            "place_id": str(place.id),
+            "title": place.name[:120],
+            "subtitle": (place.short_description or "")[:200] or None,
+            "category": (place.category_name if hasattr(place, "category_name") else None),
+            "is_paid": bool(place.is_paid),
+            "price_notes": (place.price_notes or "")[:160] or None,
+            "visit_minutes": place.recommended_visit_minutes,
+            "children_ok": place.is_suitable_for_children,
+            "pets_ok": place.is_suitable_for_pets,
+            "access_transport": transport_access[:4],
+            "seasonality": seasonality[:4],
+            "crowding": (place.typical_crowding if hasattr(place, "typical_crowding") else None),
+            "temporary_closure_status": place.temporary_closure_status,
+        },
+    }
+
+
+async def _find_places_near_point(
+    session: AsyncSession,
+    args: dict[str, Any],
+    constraints: dict[str, Any],
+) -> dict[str, Any]:
+    """Find published places near a lat/lng point (radius in meters).
+
+    Uses a cheap bounding-box pre-filter over the PostGIS point column, then a
+    haversine distance sort. Kept additive to structured SQL — never sent to the
+    model as facts beyond the returned allowlisted rows.
+    """
+    lat = args.get("lat")
+    lng = args.get("lng")
+    if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
+        return {"places": [], "note": "lat_lng_required"}
+    if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+        return {"places": [], "note": "coords_out_of_range"}
+    radius_m = args.get("radius_m", 3000)
+    if not isinstance(radius_m, (int, float)):
+        radius_m = 3000
+    radius_m = max(500, min(int(radius_m), 20_000))
+    limit = args.get("limit", 6)
+    if not isinstance(limit, int):
+        limit = 6
+    limit = max(1, min(limit, _MAX_PLACES))
+
+    # Approx 1 deg lat ~ 111 km, 1 deg lng scaled by cos(lat).
+    import math
+
+    d_lat = radius_m / 111_000.0
+    d_lng = radius_m / (111_000.0 * max(0.2, math.cos(math.radians(lat))))
+    lat_min, lat_max = lat - d_lat, lat + d_lat
+    lng_min, lng_max = lng - d_lng, lng + d_lng
+
+    from geoalchemy2.functions import ST_X, ST_Y
+
+    geom = cast(Place.location, Geometry)
+
+    geom = cast(Place.location, Geometry)
+    rows = (
+        await session.execute(
+            select(Place, ST_X(geom), ST_Y(geom)).where(
+                Place.publication_status == "published",
+                or_(
+                    Place.temporary_closure_status.is_(None),
+                    Place.temporary_closure_status == "none",
+                ),
+                ST_Y(geom) >= lat_min,
+                ST_Y(geom) <= lat_max,
+                ST_X(geom) >= lng_min,
+                ST_X(geom) <= lng_max,
+            )
+        )
+    ).all()
+    results: list[tuple[float, str, str, str | None]] = []
+    for place, plng, plat in rows:
+        if plng is None or plat is None:
+            continue
+        d = _haversine_km(lat, lng, float(plat), float(plng))
+        if d * 1000 <= radius_m:
+            results.append(
+                (d, str(place.id), place.name[:80], (place.short_description or "")[:120])
+            )
+    results.sort(key=lambda item: item[0])
+    places = [
+        {"place_id": pid, "title": name, "subtitle": sub or None}
+        for _, pid, name, sub in results[:limit]
+    ]
+    return {"places": places, "near_lat": lat, "near_lng": lng, "radius_m": radius_m}
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    import math
+
+    r = 6371.0
+    p1, p2, dlng = math.radians(lat1), math.radians(lat2), math.radians(lng2 - lng1)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
 
 
 def _seasonal_recommendations(

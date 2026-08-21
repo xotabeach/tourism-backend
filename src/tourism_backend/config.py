@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     lm_studio_model: str | None = None
     lm_studio_api_key: SecretStr | None = None
     rag_enabled: bool = False
+    rag_top_k: int = Field(default=4, ge=1, le=8)
+    rag_embedding_model: str = "hash-v1"
 
     # ADR-004 RoutingProvider. stub = synthetic haversine; osrm = later.
     routing_provider: Literal["stub"] = "stub"

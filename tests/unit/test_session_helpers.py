@@ -1,9 +1,13 @@
 """Unit tests for planning session helpers."""
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
+from tourism_backend.modules.knowledge.infrastructure.models import KnowledgeChunk
 from tourism_backend.modules.route_builder.application.session_service import (
+    _catalog_match_block,
+    _compose_assistant_blocks,
     _parse_blocks,
     _session_out,
     _stored_message_out,
@@ -73,3 +77,79 @@ def test_session_and_message_out_helpers() -> None:
     assert stored.message_id == str(message.id)
     assert len(stored.blocks) == 1
     assert stored.blocks[0].type == "actions"
+
+
+def test_compose_assistant_blocks_recommendations_only_when_requested() -> None:
+    tip = {
+        "id": "yubk",
+        "title": "ЮБК летом",
+        "body": "Тёплые пляжи и набережные.",
+        "accept_action": "rec_yubk",
+    }
+    without = _compose_assistant_blocks(
+        constraints={"city": "Крым"},
+        confirmed_fields=[],
+        ask_field=None,
+        action_ids=["want_generate"],
+        tool_context={"seasonal_recommendations": [tip]},
+        include_recommendations=False,
+    )
+    assert all(b.type != "recommendation_card" for b in without)
+
+    with_recs = _compose_assistant_blocks(
+        constraints={"city": "Крым"},
+        confirmed_fields=[],
+        ask_field=None,
+        action_ids=["want_generate"],
+        tool_context={"seasonal_recommendations": [tip]},
+        include_recommendations=True,
+    )
+    assert any(b.type == "recommendation_card" for b in with_recs)
+
+
+def test_catalog_match_block_from_bands() -> None:
+    assert _catalog_match_block(SimpleNamespace(ideal=[], close=[], related=[])) is None
+
+    route_id = uuid4()
+    route = SimpleNamespace(
+        id=route_id,
+        name="Ялта на день",
+        cover_image_url=None,
+        distance_meters=4200,
+        transport_mode="car",
+        suitable_for_children=True,
+        seasonality=["лето"],
+        difficulty="easy",
+        estimated_duration_minutes=240,
+        stops_count=4,
+    )
+    matched = SimpleNamespace(
+        ideal=[SimpleNamespace(route=route, score=0.9, reasons=["рядом"])],
+        close=[],
+        related=[],
+    )
+    block = _catalog_match_block(matched)
+    assert block is not None
+    assert block.type == "catalog_match"
+    assert block.routes[0].route_id == str(route_id)
+    assert block.routes[0].title == "Ялта на день"
+
+
+def test_knowledge_chunk_model_columns() -> None:
+    assert KnowledgeChunk.__tablename__ == "knowledge_chunks"
+    assert "doc_id" in KnowledgeChunk.__table__.c
+    assert "body" in KnowledgeChunk.__table__.c
+
+
+def test_control_patch_helpers() -> None:
+    from tourism_backend.modules.route_builder.application.session_service import (
+        _control_patch,
+    )
+
+    assert _control_patch("budget_amount", 1500.7) == {"budget_amount": 1500}
+    assert _control_patch("budget_amount", -5) == {"budget_amount": 0}
+    assert _control_patch("with_children", True) == {"with_children": True}
+    assert _control_patch("with_pets", False) == {"with_pets": False}
+    assert _control_patch("with_children", None) == {"with_children": True}
+    assert _control_patch("with_pets", None) == {"with_pets": True}
+    assert _control_patch("unknown", 1) is None
