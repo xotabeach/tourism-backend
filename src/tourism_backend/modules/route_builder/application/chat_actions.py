@@ -239,10 +239,19 @@ def first_missing_ask_field(confirmed_fields: list[str]) -> str:
 def merge_constraint_patch(
     constraints: dict[str, Any],
     patch: dict[str, Any] | None,
+    *,
+    previously_confirmed: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Merge allowlisted patch keys into constraints (interests_add special)."""
+    """Merge allowlisted patch into working constraints.
+
+    Form values may already sit in ``constraints`` as a *draft*. Chat statements
+    win for newly confirmed list fields: the first ``interests_add`` while
+    ``interests`` is not yet confirmed replaces the draft list instead of
+    appending to it (so form «природа» does not become a chat fact).
+    """
     if not patch:
         return dict(constraints)
+    confirmed_before = set(sanitize_confirmed_fields(previously_confirmed))
     merged = dict(constraints)
     interests_add = patch.get("interests_add")
     for key, value in patch.items():
@@ -252,7 +261,11 @@ def merge_constraint_patch(
             continue
         merged[key] = value
     if isinstance(interests_add, list):
-        current = list(merged.get("interests") or [])
+        current = (
+            list(merged.get("interests") or [])
+            if "interests" in confirmed_before
+            else []
+        )
         seen = {str(item).casefold() for item in current}
         for raw in interests_add:
             item = str(raw).strip()
@@ -264,6 +277,25 @@ def merge_constraint_patch(
                 break
         merged["interests"] = current
     return merged
+
+
+def form_draft_constraints(
+    constraints: dict[str, Any],
+    confirmed_fields: list[str],
+) -> dict[str, Any]:
+    """Working params that are still draft (not stated in this chat)."""
+    confirmed = set(sanitize_confirmed_fields(confirmed_fields))
+    draft: dict[str, Any] = {}
+    for key, value in constraints.items():
+        if key not in _CONFIRMABLE_FIELDS or key in confirmed:
+            continue
+        if value is None or value == "" or value == []:
+            continue
+        # Generic region placeholder is not a useful draft city.
+        if key == "city" and str(value).strip() in {"", "Крым"}:
+            continue
+        draft[key] = value
+    return draft
 
 
 def fields_touched_by_patch(patch: dict[str, Any] | None) -> list[str]:

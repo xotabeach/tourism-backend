@@ -19,6 +19,7 @@ from tourism_backend.modules.route_builder.application.chat_actions import (
     field_for_action,
     fields_touched_by_patch,
     first_missing_ask_field,
+    form_draft_constraints,
     interactive_control_blocks,
     merge_constraint_patch,
     normalize_action_id,
@@ -268,13 +269,21 @@ async def post_message(
     if payload.action_id:
         rec_patch = recommendation_accept_patch(payload.action_id)
         if rec_patch is not None:
-            constraints_dict = merge_constraint_patch(constraints_dict, rec_patch)
+            constraints_dict = merge_constraint_patch(
+                constraints_dict,
+                rec_patch,
+                previously_confirmed=confirmed,
+            )
             touched = fields_touched_by_patch(rec_patch)
             confirmed = sanitize_confirmed_fields([*confirmed, *touched])
         else:
             control_patch = _control_patch(payload.action_id, payload.control_value)
             if control_patch:
-                constraints_dict = merge_constraint_patch(constraints_dict, control_patch)
+                constraints_dict = merge_constraint_patch(
+                    constraints_dict,
+                    control_patch,
+                    previously_confirmed=confirmed,
+                )
                 touched = fields_touched_by_patch(control_patch)
                 confirmed = sanitize_confirmed_fields([*confirmed, *touched])
             else:
@@ -282,7 +291,11 @@ async def post_message(
                 if canonical:
                     action_patch = patch_for_action(canonical)
                     if action_patch:
-                        constraints_dict = merge_constraint_patch(constraints_dict, action_patch)
+                        constraints_dict = merge_constraint_patch(
+                            constraints_dict,
+                            action_patch,
+                            previously_confirmed=confirmed,
+                        )
                         touched = fields_touched_by_patch(action_patch)
                         field = field_for_action(canonical)
                         if field:
@@ -360,7 +373,11 @@ async def post_message(
         assistant_text = turn.assistant_text
         ask_field = turn.ask_field or prefer_ready_ask_field(confirmed)
         if turn.proposed_constraints:
-            constraints_dict = merge_constraint_patch(constraints_dict, turn.proposed_constraints)
+            constraints_dict = merge_constraint_patch(
+                constraints_dict,
+                turn.proposed_constraints,
+                previously_confirmed=confirmed,
+            )
             touched = fields_touched_by_patch(turn.proposed_constraints)
             confirmed = sanitize_confirmed_fields([*confirmed, *touched])
             proposed = dict(turn.proposed_constraints)
@@ -448,6 +465,9 @@ async def _assistant_from_ai(
         constraints=constraints,
         confirmed_fields=confirmed_fields,
     )
+    draft = form_draft_constraints(constraints, confirmed_fields)
+    if draft:
+        tool_context = {**tool_context, "form_draft_not_facts": draft}
     place_hints = list(tool_context.get("place_candidates") or [])
     if not place_hints and "city" in confirmed_fields:
         place_hints = await _place_hints(session, constraints)

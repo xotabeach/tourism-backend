@@ -39,9 +39,49 @@ def test_legacy_aliases_normalize() -> None:
 
 
 def test_known_constraints_and_merge() -> None:
-    constraints = {"city": "Ялта", "people": 2, "pace": "calm", "interests": []}
+    constraints = {
+        "city": "Ялта",
+        "people": 2,
+        "pace": "calm",
+        "interests": ["природа"],
+    }
     assert known_constraints(constraints, ["city"]) == {"city": "Ялта"}
-    merged = merge_constraint_patch(constraints, {"interests_add": ["горы"], "pace": "active"})
+    # First chat interest replaces form draft list, does not append.
+    merged = merge_constraint_patch(
+        constraints,
+        {"interests_add": ["горы"], "pace": "active"},
+        previously_confirmed=[],
+    )
     assert merged["pace"] == "active"
     assert merged["interests"] == ["горы"]
-    assert sanitize_confirmed_fields(["city", "hack", "pace", "city"]) == ["city", "pace"]
+    # Later interest adds onto already stated interests.
+    merged_again = merge_constraint_patch(
+        merged,
+        {"interests_add": ["море"]},
+        previously_confirmed=["interests", "pace"],
+    )
+    assert merged_again["interests"] == ["горы", "море"]
+    assert sanitize_confirmed_fields(["city", "hack", "pace", "city"]) == [
+        "city",
+        "pace",
+    ]
+
+
+def test_form_draft_excludes_confirmed_and_placeholder_city() -> None:
+    from tourism_backend.modules.route_builder.application.chat_actions import (
+        form_draft_constraints,
+    )
+
+    draft = form_draft_constraints(
+        {
+            "city": "Крым",
+            "people": 2,
+            "interests": ["природа"],
+            "pace": "calm",
+        },
+        ["pace"],
+    )
+    assert "city" not in draft
+    assert draft["people"] == 2
+    assert draft["interests"] == ["природа"]
+    assert "pace" not in draft
