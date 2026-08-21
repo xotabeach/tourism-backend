@@ -155,3 +155,56 @@ class RouteGenerateOut(BaseModel):
     proposal: RouteProposalOut
     route_id: str | None = None
     persisted_draft: bool = False
+
+
+SessionStatus = Literal["active", "closed"]
+ChatMessageRole = Literal["user", "assistant", "system"]
+ChatIntentOut = Literal[
+    "crisis",
+    "greeting",
+    "on_topic_travel",
+    "off_topic",
+    "injection_attempt",
+    "generate",
+]
+
+
+class RoutePlanningSessionCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    params: RouteMatchParamsIn
+
+
+class RoutePlanningSessionOut(BaseModel):
+    session_id: str
+    status: SessionStatus
+    constraints: RouteMatchParamsIn
+    ai_planning_enabled: bool = False
+
+
+class RoutePlanningMessageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=2000)
+    want_generate: bool = False
+
+    @field_validator("text")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Value must not be blank")
+        return cleaned
+
+
+class RoutePlanningMessageOut(BaseModel):
+    message_id: str
+    session_id: str
+    role: ChatMessageRole
+    text: str
+    intent: ChatIntentOut | None = None
+    proposed_constraints: dict[str, object] | None = None
+    proposal: RouteProposalOut | None = None
+    blocks: list[ChatBlockOut] = Field(default_factory=list)
+    provider: str | None = None
+    fallback: bool = False

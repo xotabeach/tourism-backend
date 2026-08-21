@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from tourism_backend.config import Settings, validate_settings
+from tourism_backend.modules.route_builder.application.ai import ChatMessage
 from tourism_backend.modules.route_builder.infrastructure.lm_studio import LMStudioProvider
 
 
@@ -43,6 +44,27 @@ async def test_lm_studio_probe_checks_model_and_completion() -> None:
     assert result.available_models == ("gemma-test",)
     assert result.response_text == '{"status":"ok"}'
     assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_lm_studio_chat_turn_sends_reasoning_effort_none() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/chat/completions"
+        body = json.loads(request.content)
+        assert body["reasoning_effort"] == "none"
+        assert body["model"] == "gemma-test"
+        assert body["messages"][0]["role"] == "system"
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "Уточните длительность поездки."}}]},
+        )
+
+    result = await _provider(httpx.MockTransport(handler)).chat_turn(
+        messages=[ChatMessage(role="user", content="Хочу спокойный день")],
+        constraints={"city": "Ялта"},
+    )
+    assert result.provider == "lmstudio"
+    assert "длительность" in result.assistant_text
 
 
 @pytest.mark.asyncio

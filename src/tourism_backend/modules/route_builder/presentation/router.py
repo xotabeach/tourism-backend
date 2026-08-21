@@ -1,16 +1,24 @@
-"""HTTP API for route builder match + generate (Phase 8A)."""
+"""HTTP API for route builder match + generate + AI chat sessions."""
 
 from uuid import UUID
 
 from fastapi import APIRouter
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, SettingsDep
-from tourism_backend.modules.route_builder.application import generate_service, match_service
+from tourism_backend.modules.route_builder.application import (
+    generate_service,
+    match_service,
+    session_service,
+)
 from tourism_backend.modules.route_builder.application.schemas import (
     RouteGenerateIn,
     RouteGenerateOut,
     RouteMatchOut,
     RouteMatchParamsIn,
+    RoutePlanningMessageIn,
+    RoutePlanningMessageOut,
+    RoutePlanningSessionCreateIn,
+    RoutePlanningSessionOut,
     RouteProposalOut,
 )
 
@@ -68,4 +76,54 @@ async def reject_proposal(
         session,
         user_id=user_id,
         proposal_id=proposal_id,
+    )
+
+
+@router.post("/sessions", response_model=RoutePlanningSessionOut)
+async def create_planning_session(
+    payload: RoutePlanningSessionCreateIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+    settings: SettingsDep,
+) -> RoutePlanningSessionOut:
+    return await session_service.create_session(
+        session,
+        user_id=user_id,
+        payload=payload,
+        settings=settings,
+    )
+
+
+@router.get("/sessions/{session_id}", response_model=RoutePlanningSessionOut)
+async def get_planning_session(
+    session_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    settings: SettingsDep,
+) -> RoutePlanningSessionOut:
+    return await session_service.get_session(
+        session,
+        user_id=user_id,
+        session_id=session_id,
+        settings=settings,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/messages",
+    response_model=RoutePlanningMessageOut,
+)
+async def post_planning_message(
+    session_id: UUID,
+    payload: RoutePlanningMessageIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+    settings: SettingsDep,
+) -> RoutePlanningMessageOut:
+    return await session_service.post_message(
+        session,
+        user_id=user_id,
+        session_id=session_id,
+        payload=payload,
+        settings=settings,
     )

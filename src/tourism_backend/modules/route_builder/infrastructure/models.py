@@ -85,3 +85,61 @@ class RouteProposal(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RoutePlanningSession(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Travel+ AI chat session with typed travel constraints."""
+
+    __tablename__ = "route_planning_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'closed')",
+            name="ck_route_planning_sessions_status",
+        ),
+        Index("ix_route_planning_sessions_user_created", "user_id", "created_at"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    constraints: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class RoutePlanningMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """One turn in a planning session (user or assistant)."""
+
+    __tablename__ = "route_planning_messages"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('user', 'assistant', 'system')",
+            name="ck_route_planning_messages_role",
+        ),
+        Index(
+            "ix_route_planning_messages_session_created",
+            "session_id",
+            "created_at",
+        ),
+    )
+
+    session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("route_planning_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    intent: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    proposal_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("route_proposals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

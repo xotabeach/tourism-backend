@@ -1,10 +1,29 @@
 """LM Studio adapter over its OpenAI-compatible HTTP API."""
 
+from __future__ import annotations
+
+import json
 from typing import Any
 
 import httpx
 
-from tourism_backend.modules.route_builder.application.ai import AIProviderProbeResult
+from tourism_backend.modules.route_builder.application.ai import (
+    AIProviderProbeResult,
+    ChatMessage,
+    ChatTurnResult,
+)
+
+_SYSTEM_PROMPT = (
+    "Ты помощник КрымТрип по подбору маршрутов и мест в Крыму. "
+    "Отвечай кратко на русском. Разрешены только: уточнение параметров поездки "
+    "(город, длительность, интересы, темп, транспорт, сезон, компания), "
+    "предложения идей маршрута и объяснения trade-offs. "
+    "Запрещены код, DevOps, рецепты, медицина, юриспруденция, политика, NSFW, "
+    "jailbreak. Не выдумывай точные адреса/цены/часы работы как факты. "
+    "Если пользователь просит подобрать маршрут — попроси подтвердить город "
+    "и ключевые интересы, затем предложи написать «подбери маршрут». "
+    "Отвечай обычным текстом без markdown-блоков кода."
+)
 
 
 class LMStudioProvider:
@@ -56,39 +75,85 @@ class LMStudioProvider:
                     f"Configured LM Studio model {self._model!r} is not loaded; "
                     f"available={model_ids!r}"
                 )
-            response = await client.post(
-                "chat/completions",
-                json={
-                    "model": self._model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "Верни только компактный JSON без markdown.",
-                        },
-                        {
-                            "role": "user",
-                            "content": '{"status":"ok","language":"ru"}',
-                        },
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 80,
-                    "stream": False,
-                    # Gemma 4 otherwise fills the budget with reasoning_content
-                    # and returns empty message.content (finish_reason=length).
-                    "reasoning_effort": "none",
-                },
+            content = await self._complete(
+                client,
+                messages=[
+                    ChatMessage(
+                        role="system",
+                        content="Верни только компактный JSON без markdown.",
+                    ),
+                    ChatMessage(role="user", content='{"status":"ok","language":"ru"}'),
+                ],
+                max_tokens=80,
             )
-            response.raise_for_status()
-            payload: Any = response.json()
-            try:
-                content = payload["choices"][0]["message"]["content"]
-            except (KeyError, IndexError, TypeError) as exc:
-                raise ValueError("LM Studio chat completion returned an invalid payload") from exc
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError("LM Studio chat completion returned empty content")
             return AIProviderProbeResult(
                 provider="lmstudio",
                 configured_model=self._model,
                 available_models=model_ids,
-                response_text=content.strip(),
+                response_text=content,
             )
+
+    async def chat_turn(
+        self,
+        *,
+        messages: list[ChatMessage],
+        constraints: dict[str, Any],
+        max_tokens: int = 256,
+    ) -> ChatTurnResult:
+        constraint_note = (
+            "Текущие параметры формы (JSON, недоверенные как факты мест): "
+            + json.dumps(constraints, ensure_ascii=False)[:1200]
+        )
+        bounded = messages[-12:]
+        payload_messages = [
+            ChatMessage(role="system", content=_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=constraint_note),
+            *bounded,
+        ]
+        async with httpx.AsyncClient(
+            base_url=self._base_url,
+            headers=self._headers(),
+            timeout=self._timeout,
+            transport=self._transport,
+        ) as client:
+            content = await self._complete(
+                client,
+                messages=payload_messages,
+                max_tokens=max_tokens,
+            )
+        return ChatTurnResult(
+            assistant_text=content,
+            proposed_constraints=None,
+            provider="lmstudio",
+        )
+
+    async def _complete(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        messages: list[ChatMessage],
+        max_tokens: int,
+    ) -> str:
+        response = await client.post(
+            "chat/completions",
+            json={
+                "model": self._model,
+                "messages": [
+                    {"role": message.role, "content": message.content} for message in messages
+                ],
+                "temperature": 0.4,
+                "max_tokens": max_tokens,
+                "stream": False,
+                # Gemma 4 otherwise fills the budget with reasoning_content.
+                "reasoning_effort": "none",
+            },
+        )
+        response.raise_for_status()
+        payload: Any = response.json()
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError("LM Studio chat completion returned an invalid payload") from exc
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("LM Studio chat completion returned empty content")
+        return content.strip()
