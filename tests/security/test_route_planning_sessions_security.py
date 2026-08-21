@@ -194,3 +194,45 @@ async def test_session_bola_and_message_bounds(live_client: AsyncClient) -> None
     assert body["intent"] == "generate"
     assert body["proposal"] is not None
     assert body["proposal"]["proposal_id"]
+
+    listed = await live_client.get(
+        "/api/v1/route-builder/sessions",
+        headers=headers_a,
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["total"] >= 1
+    assert any(item["session_id"] == session_id for item in listed.json()["items"])
+
+    messages = await live_client.get(
+        f"/api/v1/route-builder/sessions/{session_id}/messages",
+        headers=headers_a,
+    )
+    assert messages.status_code == 200, messages.text
+    assert messages.json()["total"] >= 2
+
+    foreign_list = await live_client.get(
+        f"/api/v1/route-builder/sessions/{session_id}/messages",
+        headers=headers_b,
+    )
+    assert foreign_list.status_code == 404
+
+    closed = await live_client.post(
+        f"/api/v1/route-builder/sessions/{session_id}/close",
+        headers=headers_a,
+    )
+    assert closed.status_code == 200
+    assert closed.json()["status"] == "closed"
+
+    foreign_close = await live_client.post(
+        f"/api/v1/route-builder/sessions/{session_id}/close",
+        headers=headers_b,
+    )
+    assert foreign_close.status_code == 404
+
+    after_close = await live_client.post(
+        f"/api/v1/route-builder/sessions/{session_id}/messages",
+        headers=headers_a,
+        json={"text": "ещё раз"},
+    )
+    assert after_close.status_code == 409
+    assert after_close.json()["error"]["code"] == "session_closed"

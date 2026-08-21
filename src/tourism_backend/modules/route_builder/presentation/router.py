@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, SettingsDep
 from tourism_backend.modules.route_builder.application import (
@@ -16,8 +16,10 @@ from tourism_backend.modules.route_builder.application.schemas import (
     RouteMatchOut,
     RouteMatchParamsIn,
     RoutePlanningMessageIn,
+    RoutePlanningMessageListOut,
     RoutePlanningMessageOut,
     RoutePlanningSessionCreateIn,
+    RoutePlanningSessionListOut,
     RoutePlanningSessionOut,
     RouteProposalOut,
 )
@@ -79,6 +81,23 @@ async def reject_proposal(
     )
 
 
+@router.get("/sessions", response_model=RoutePlanningSessionListOut)
+async def list_planning_sessions(
+    session: DbSession,
+    user_id: CurrentUserId,
+    settings: SettingsDep,
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> RoutePlanningSessionListOut:
+    return await session_service.list_sessions(
+        session,
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+        settings=settings,
+    )
+
+
 @router.post("/sessions", response_model=RoutePlanningSessionOut)
 async def create_planning_session(
     payload: RoutePlanningSessionCreateIn,
@@ -105,6 +124,43 @@ async def get_planning_session(
         session,
         user_id=user_id,
         session_id=session_id,
+        settings=settings,
+    )
+
+
+@router.post("/sessions/{session_id}/close", response_model=RoutePlanningSessionOut)
+async def close_planning_session(
+    session_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    settings: SettingsDep,
+) -> RoutePlanningSessionOut:
+    return await session_service.close_session(
+        session,
+        user_id=user_id,
+        session_id=session_id,
+        settings=settings,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/messages",
+    response_model=RoutePlanningMessageListOut,
+)
+async def list_planning_messages(
+    session_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    settings: SettingsDep,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+) -> RoutePlanningMessageListOut:
+    return await session_service.list_messages(
+        session,
+        user_id=user_id,
+        session_id=session_id,
+        limit=limit,
+        offset=offset,
         settings=settings,
     )
 

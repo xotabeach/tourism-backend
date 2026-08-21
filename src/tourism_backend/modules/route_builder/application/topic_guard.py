@@ -13,10 +13,6 @@ ChatIntent = Literal[
     "generate",
 ]
 
-_GREETING_REPLY = (
-    "Привет! У меня всё супер — я готов помочь составить маршрут по Крыму. "
-    "Откуда стартуем и сколько у вас времени?"
-)
 _OFF_TOPIC_REPLY = (
     "Я могу помогать только с подбором маршрутов и мест в Крыму. "
     "Давайте вернёмся к поездке: город старта, длительность или интересы?"
@@ -56,16 +52,13 @@ def classify_chat_intent(raw: str) -> ChatIntent:
 
 
 def canned_reply_for_intent(intent: ChatIntent) -> str:
+    """Canned text only for safety / hard off-topic. Greeting goes to the LLM."""
     if intent == "crisis":
         return _CRISIS_REPLY
-    if intent == "greeting":
-        return _GREETING_REPLY
     if intent == "off_topic":
         return _OFF_TOPIC_REPLY
     if intent == "injection_attempt":
         return _INJECTION_REPLY
-    if intent == "generate":
-        return ""
     return ""
 
 
@@ -110,8 +103,42 @@ def _looks_like_generate(text: str) -> bool:
         "сделай маршрут",
         "построить маршрут",
         "построй маршрут",
+        "собери предложение",
+        "собери черновик",
     )
-    return any(marker in text for marker in markers)
+    if any(marker in text for marker in markers):
+        return True
+    return _looks_like_confirm_generate(text)
+
+
+def _looks_like_confirm_generate(text: str) -> bool:
+    """Short yes / proceed cues → structured generate, not free-form LLM prose."""
+    normalized = text.strip().rstrip("!.?").casefold().replace("ё", "е").replace(",", " ").split()
+    joined = " ".join(normalized)
+    confirms = {
+        "давай",
+        "давай так",
+        "да",
+        "ок",
+        "окей",
+        "хорошо",
+        "согласен",
+        "согласна",
+        "подходит",
+        "собирай",
+        "собери",
+        "го",
+        "поехали",
+        "можно",
+        "да давай",
+        "давай собери",
+        "давай подбери",
+        "давай сделай",
+        "сделай",
+        "ладно",
+        "супер давай",
+    }
+    return joined in confirms
 
 
 def _looks_like_greeting(text: str) -> bool:

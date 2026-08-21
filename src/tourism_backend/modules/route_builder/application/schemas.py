@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -180,6 +181,33 @@ class RoutePlanningSessionOut(BaseModel):
     status: SessionStatus
     constraints: RouteMatchParamsIn
     ai_planning_enabled: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class RoutePlanningSessionListOut(BaseModel):
+    items: list[RoutePlanningSessionOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class RoutePlanningStoredMessageOut(BaseModel):
+    message_id: str
+    session_id: str
+    role: ChatMessageRole
+    text: str
+    intent: ChatIntentOut | None = None
+    proposal_id: str | None = None
+    blocks: list[ChatBlockOut] = Field(default_factory=list)
+    created_at: datetime
+
+
+class RoutePlanningMessageListOut(BaseModel):
+    items: list[RoutePlanningStoredMessageOut]
+    total: int
+    limit: int
+    offset: int
 
 
 class RoutePlanningMessageIn(BaseModel):
