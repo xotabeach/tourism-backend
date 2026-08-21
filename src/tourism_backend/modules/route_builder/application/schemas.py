@@ -133,7 +133,7 @@ class ActionsBlockOut(BaseModel):
 
 
 class SliderBlockOut(BaseModel):
-    """Reserved for a later interactive slice; clients may ignore."""
+    """Numeric slider control rendered under an assistant message."""
 
     type: Literal["slider"] = "slider"
     id: str = Field(min_length=1, max_length=64)
@@ -142,15 +142,27 @@ class SliderBlockOut(BaseModel):
     max_value: float = 1
     step: float = 1
     value: float | None = None
+    unit: str | None = Field(default=None, max_length=16)
 
 
 class ToggleBlockOut(BaseModel):
-    """Reserved for a later interactive slice; clients may ignore."""
+    """Boolean control rendered under an assistant message."""
 
     type: Literal["toggle"] = "toggle"
     id: str = Field(min_length=1, max_length=64)
     label: str = Field(min_length=1, max_length=80)
     value: bool = False
+
+
+class RecommendationCardBlockOut(BaseModel):
+    """Seasonal / editorial tip the user can accept with one tap."""
+
+    type: Literal["recommendation_card"] = "recommendation_card"
+    id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1, max_length=500)
+    accept_action_id: str = Field(min_length=1, max_length=64)
+    accept_label: str = Field(default="Попробуем так", max_length=80)
 
 
 ChatBlockOut = (
@@ -159,6 +171,7 @@ ChatBlockOut = (
     | ActionsBlockOut
     | SliderBlockOut
     | ToggleBlockOut
+    | RecommendationCardBlockOut
 )
 
 
@@ -262,6 +275,7 @@ class RoutePlanningMessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     want_generate: bool = False
     action_id: str | None = Field(default=None, max_length=64)
+    control_value: float | bool | None = None
 
     @field_validator("text")
     @classmethod

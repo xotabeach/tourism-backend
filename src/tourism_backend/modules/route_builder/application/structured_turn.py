@@ -25,6 +25,7 @@ _ASK_FIELDS = frozenset(
         "duration",
         "people",
         "with_children",
+        "budget",
         "ready",
     }
 )
@@ -78,11 +79,18 @@ def parse_structured_turn(
                 action_ids.append(canonical)
 
     patch = _sanitize_patch(payload.get("constraint_patch"))
+    tool_requests: list[dict[str, Any]] = []
+    raw_tools = payload.get("tool_requests") or payload.get("tools")
+    if isinstance(raw_tools, list):
+        for item in raw_tools[:2]:
+            if isinstance(item, dict) and isinstance(item.get("name"), str):
+                tool_requests.append(item)
     return StructuredChatTurn(
         assistant_text=text.strip()[:_MAX_TEXT],
         ask_field=ask_field,
         action_ids=tuple(action_ids),
         constraint_patch=patch,
+        tool_requests=tuple(tool_requests),
     )
 
 

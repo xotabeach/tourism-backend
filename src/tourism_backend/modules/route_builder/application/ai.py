@@ -24,6 +24,7 @@ class ChatTurnResult:
     proposed_constraints: dict[str, Any] | None = None
     ask_field: str | None = None
     action_ids: tuple[str, ...] = ()
+    tool_requests: tuple[dict[str, Any], ...] = ()
     provider: str = "mock"
 
 
@@ -35,6 +36,7 @@ class StructuredChatTurn:
     ask_field: str | None = None
     action_ids: tuple[str, ...] = ()
     constraint_patch: dict[str, Any] = field(default_factory=dict)
+    tool_requests: tuple[dict[str, Any], ...] = ()
 
 
 class AIPlanningProvider(Protocol):
@@ -49,6 +51,7 @@ class AIPlanningProvider(Protocol):
         constraints: dict[str, Any],
         confirmed_fields: list[str] | None = None,
         place_hints: list[dict[str, str]] | None = None,
+        tool_context: dict[str, Any] | None = None,
         max_tokens: int = 320,
     ) -> ChatTurnResult:
         """One bounded assistant turn for Crimea route planning chat."""

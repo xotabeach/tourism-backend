@@ -24,13 +24,12 @@ async def test_mock_chat_turn_asks_city_when_unconfirmed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mock_chat_turn_transport_chips_when_city_confirmed() -> None:
+async def test_mock_chat_turn_ready_when_enough_confirmed() -> None:
     provider = MockAIPlanningProvider()
     result = await provider.chat_turn(
         messages=[ChatMessage(role="user", content="Больше гор")],
         constraints={"city": "Ялта", "interests": ["горы"]},
         confirmed_fields=["city", "interests", "pace", "duration"],
     )
-    assert result.ask_field == "transport_mode"
-    assert "transport_car" in result.action_ids
-    assert "гор" in result.assistant_text.casefold() or "машин" in result.assistant_text.casefold()
+    assert result.ask_field == "ready"
+    assert "want_generate" in result.action_ids

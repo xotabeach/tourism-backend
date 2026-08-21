@@ -337,3 +337,58 @@ def clarification_action_blocks(
         ask_field=ask_field,
         confirmed_fields=confirmed_fields,
     )
+
+
+def interactive_control_blocks(
+    *,
+    ask_field: str | None,
+    constraints: dict[str, Any] | None = None,
+) -> list[Any]:
+    """Slider / toggle blocks matched to the current ask_field."""
+    from tourism_backend.modules.route_builder.application.schemas import (
+        SliderBlockOut,
+        ToggleBlockOut,
+    )
+
+    constraints = constraints or {}
+    out: list[Any] = []
+    if ask_field in {"budget", "ready"}:
+        current = constraints.get("budget_amount")
+        value = float(current) if isinstance(current, int) else 3000.0
+        out.append(
+            SliderBlockOut(
+                id="budget_amount",
+                label="Бюджет на день, ₽",
+                min_value=0,
+                max_value=20000,
+                step=500,
+                value=value,
+                unit="₽",
+            )
+        )
+    if ask_field in {"with_children", "ready", "people"}:
+        out.append(
+            ToggleBlockOut(
+                id="with_children",
+                label="Едем с детьми",
+                value=bool(constraints.get("with_children")),
+            )
+        )
+        out.append(
+            ToggleBlockOut(
+                id="with_pets",
+                label="С питомцами",
+                value=bool(constraints.get("with_pets")),
+            )
+        )
+    return out
+
+
+def prefer_ready_ask_field(confirmed_fields: list[str]) -> str:
+    """Fewer quiz turns: city + one preference is enough to offer generate."""
+    confirmed = set(sanitize_confirmed_fields(confirmed_fields))
+    if "city" in confirmed and confirmed & {"pace", "interests", "season", "duration"}:
+        return "ready"
+    if len(confirmed) >= 3:
+        return "ready"
+    return first_missing_ask_field(confirmed_fields)
