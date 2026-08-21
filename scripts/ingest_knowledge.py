@@ -82,6 +82,7 @@ def _route_locality(session: Session, route_id: UUID) -> str | None:
 
     row = session.execute(
         select(Locality.name)
+        .select_from(RouteStop)
         .join(Place, Place.id == RouteStop.place_id)
         .join(Locality, Locality.id == Place.locality_id)
         .where(RouteStop.route_id == route_id)
