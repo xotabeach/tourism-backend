@@ -118,6 +118,18 @@ async def test_sessions_require_auth_and_travel_plus(live_client: AsyncClient) -
     )
     assert created.status_code == 200, created.text
     assert created.json()["constraints"]["city"] == "Ялта"
+    assert created.json()["confirmed_fields"] == []
+
+    with_confirmed = await live_client.post(
+        "/api/v1/route-builder/sessions",
+        headers=headers,
+        json={
+            "params": {"city": "Севастополь"},
+            "confirmed_fields": ["city", "hack_script", "pace"],
+        },
+    )
+    assert with_confirmed.status_code == 200, with_confirmed.text
+    assert with_confirmed.json()["confirmed_fields"] == ["city", "pace"]
 
 
 @pytest.mark.asyncio
@@ -183,6 +195,25 @@ async def test_session_bola_and_message_bounds(live_client: AsyncClient) -> None
     assert greeting.status_code == 200
     assert greeting.json()["intent"] == "greeting"
     assert greeting.json()["proposal"] is None
+    assert isinstance(greeting.json().get("blocks"), list)
+
+    chip = await live_client.post(
+        f"/api/v1/route-builder/sessions/{session_id}/messages",
+        headers=headers_a,
+        json={
+            "text": "На машине",
+            "action_id": "transport_car",
+        },
+    )
+    assert chip.status_code == 200, chip.text
+    assert "transport_mode" in chip.json().get("confirmed_fields", [])
+
+    bad_action = await live_client.post(
+        f"/api/v1/route-builder/sessions/{session_id}/messages",
+        headers=headers_a,
+        json={"text": "x", "action_id": "a" * 80},
+    )
+    assert bad_action.status_code == 422
 
     generate = await live_client.post(
         f"/api/v1/route-builder/sessions/{session_id}/messages",

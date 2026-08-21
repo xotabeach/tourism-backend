@@ -29,6 +29,8 @@ printf 'Running MyPy...\n'
 uv run mypy src/tourism_backend
 
 printf 'Running pip-audit...\n'
+# uv sync may leave a vulnerable tooling pip; bump before audit.
+uv pip install 'pip>=26.2' >/dev/null
 uv run pip-audit
 
 printf 'Running Pytest...\n'

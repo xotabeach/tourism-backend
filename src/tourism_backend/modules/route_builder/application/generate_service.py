@@ -29,6 +29,7 @@ from tourism_backend.modules.route_builder.application.routing import (
 )
 from tourism_backend.modules.route_builder.application.schemas import (
     ActionsBlockOut,
+    ChatBlockOut,
     PlaceChipBlockOut,
     QuotaSnapshotOut,
     RouteGenerateIn,
@@ -178,7 +179,7 @@ def _assistant_text(params: RouteMatchParamsIn, places: list[PickedPlace]) -> st
 def _blocks_for_proposal(
     proposal: RouteProposal,
     places: list[PickedPlace],
-) -> list[PlaceChipBlockOut | RouteProposalCardBlockOut | ActionsBlockOut]:
+) -> list[ChatBlockOut]:
     chips = [
         PlaceChipBlockOut(
             place_id=str(place.place_id),

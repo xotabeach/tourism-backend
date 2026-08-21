@@ -13,9 +13,19 @@ from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings, get_settings
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.route_builder.application import generate_service
-from tourism_backend.modules.route_builder.application.ai import ChatMessage
+from tourism_backend.modules.route_builder.application.ai import ChatMessage, ChatTurnResult
 from tourism_backend.modules.route_builder.application.chat_actions import (
     clarification_action_blocks,
+    field_for_action,
+    fields_touched_by_patch,
+    first_missing_ask_field,
+    merge_constraint_patch,
+    normalize_action_id,
+    patch_for_action,
+    sanitize_confirmed_fields,
+)
+from tourism_backend.modules.route_builder.application.place_picker import (
+    pick_places_for_params,
 )
 from tourism_backend.modules.route_builder.application.schemas import (
     ActionsBlockOut,
@@ -31,6 +41,8 @@ from tourism_backend.modules.route_builder.application.schemas import (
     RoutePlanningSessionOut,
     RoutePlanningStoredMessageOut,
     RouteProposalCardBlockOut,
+    SliderBlockOut,
+    ToggleBlockOut,
 )
 from tourism_backend.modules.route_builder.application.topic_guard import (
     ai_unavailable_fallback,
@@ -77,6 +89,7 @@ async def create_session(
         user_id=user_id,
         status="active",
         constraints=payload.params.model_dump(mode="json"),
+        confirmed_fields=sanitize_confirmed_fields(payload.confirmed_fields),
         created_at=now,
         updated_at=now,
     )
@@ -237,8 +250,29 @@ async def post_message(
             status_code=409,
         )
 
+    confirmed = sanitize_confirmed_fields(
+        list(planning.confirmed_fields) if isinstance(planning.confirmed_fields, list) else []
+    )
+    constraints_dict = dict(planning.constraints)
+
+    # Chip tap → merge allowlisted patch before intent / generate.
+    action_patch: dict[str, Any] | None = None
+    if payload.action_id:
+        canonical = normalize_action_id(payload.action_id)
+        if canonical:
+            action_patch = patch_for_action(canonical)
+            if action_patch:
+                constraints_dict = merge_constraint_patch(constraints_dict, action_patch)
+                touched = fields_touched_by_patch(action_patch)
+                field = field_for_action(canonical)
+                if field:
+                    touched = sanitize_confirmed_fields([*touched, field])
+                confirmed = sanitize_confirmed_fields([*confirmed, *touched])
+
     intent = classify_chat_intent(payload.text)
-    if payload.want_generate:
+    if payload.want_generate or (
+        payload.action_id and normalize_action_id(payload.action_id) == "want_generate"
+    ):
         intent = "generate"
 
     now = datetime.now(UTC)
@@ -250,30 +284,39 @@ async def post_message(
         text=payload.text,
         intent=intent,
         proposal_id=None,
-        payload=None,
+        payload={"action_id": payload.action_id} if payload.action_id else None,
         created_at=now,
         updated_at=now,
     )
     session.add(user_msg)
     await session.flush()
 
-    constraints = RouteMatchParamsIn.model_validate(planning.constraints)
     proposal_out = None
     provider_name: str | None = None
     fallback = False
     assistant_text = ""
     blocks: list[ChatBlockOut] = []
+    ask_field: str | None = None
+    proposed: dict[str, Any] | None = None
 
     # Greeting goes to the LLM (with system rules). Canned only for hard cases.
     if intent in {"crisis", "off_topic", "injection_attempt"}:
         assistant_text = canned_reply_for_intent(intent)
+        ask_field = first_missing_ask_field(confirmed)
         if intent == "off_topic":
-            blocks = list(clarification_action_blocks(planning.constraints))
+            blocks = list(
+                clarification_action_blocks(
+                    constraints_dict,
+                    confirmed_fields=confirmed,
+                    ask_field=ask_field,
+                )
+            )
     elif intent == "generate":
+        params = RouteMatchParamsIn.model_validate(constraints_dict)
         generated = await generate_service.generate_route(
             session,
             user_id=user_id,
-            payload=RouteGenerateIn(channel="chat", params=constraints),
+            payload=RouteGenerateIn(channel="chat", params=params),
         )
         await session.refresh(planning)
         proposal_out = generated.proposal
@@ -281,13 +324,37 @@ async def post_message(
         provider_name = "deterministic_generate"
         blocks = list(proposal_out.blocks)
     else:
-        assistant_text, provider_name, fallback = await _assistant_from_ai(
+        turn, provider_name, fallback = await _assistant_from_ai(
             session,
             planning=planning,
-            constraints=planning.constraints,
+            constraints=constraints_dict,
+            confirmed_fields=confirmed,
             settings=cfg,
         )
-        blocks = list(clarification_action_blocks(planning.constraints))
+        assistant_text = turn.assistant_text
+        ask_field = turn.ask_field or first_missing_ask_field(confirmed)
+        if turn.proposed_constraints:
+            constraints_dict = merge_constraint_patch(constraints_dict, turn.proposed_constraints)
+            touched = fields_touched_by_patch(turn.proposed_constraints)
+            confirmed = sanitize_confirmed_fields([*confirmed, *touched])
+            proposed = dict(turn.proposed_constraints)
+        blocks = list(
+            clarification_action_blocks(
+                constraints_dict,
+                confirmed_fields=confirmed,
+                ask_field=ask_field,
+                action_ids=list(turn.action_ids) if turn.action_ids else None,
+            )
+        )
+
+    # Persist merged constraints / confirmed after the turn.
+    try:
+        planning.constraints = RouteMatchParamsIn.model_validate(constraints_dict).model_dump(
+            mode="json"
+        )
+        planning.confirmed_fields = confirmed
+    except Exception:  # noqa: BLE001,S110 — keep previous constraints if patch invalid
+        pass
 
     assistant_msg = RoutePlanningMessage(
         id=uuid4(),
@@ -300,6 +367,8 @@ async def post_message(
         payload={
             "provider": provider_name,
             "fallback": fallback,
+            "ask_field": ask_field,
+            "confirmed_fields": confirmed,
             "blocks": [block.model_dump(mode="json") for block in blocks],
         },
         created_at=datetime.now(UTC),
@@ -316,7 +385,9 @@ async def post_message(
         role="assistant",
         text=assistant_text,
         intent=intent,
-        proposed_constraints=None,
+        proposed_constraints=proposed,
+        confirmed_fields=confirmed,
+        ask_field=ask_field,
         proposal=proposal_out,
         blocks=blocks,
         provider=provider_name,
@@ -329,8 +400,9 @@ async def _assistant_from_ai(
     *,
     planning: RoutePlanningSession,
     constraints: dict[str, Any],
+    confirmed_fields: list[str],
     settings: Settings,
-) -> tuple[str, str | None, bool]:
+) -> tuple[ChatTurnResult, str | None, bool]:
     history_rows = (
         await session.scalars(
             select(RoutePlanningMessage)
@@ -345,22 +417,55 @@ async def _assistant_from_ai(
         chat_messages.append(ChatMessage(role=row.role, content=row.text))
     chat_messages = chat_messages[-_HISTORY_LIMIT:]
 
+    place_hints: list[dict[str, str]] = []
+    if "city" in confirmed_fields:
+        place_hints = await _place_hints(session, constraints)
+
     if not settings.ai_planning_enabled:
         result = await MockAIPlanningProvider().chat_turn(
             messages=chat_messages,
             constraints=constraints,
+            confirmed_fields=confirmed_fields,
+            place_hints=place_hints,
         )
-        return result.assistant_text, result.provider, True
+        return result, result.provider, True
 
     try:
         provider = get_ai_planning_provider(settings)
         result = await provider.chat_turn(
             messages=chat_messages,
             constraints=constraints,
+            confirmed_fields=confirmed_fields,
+            place_hints=place_hints,
         )
-        return result.assistant_text, result.provider, False
+        return result, result.provider, False
     except Exception:  # noqa: BLE001 — soft fallback for home-lab outages
-        return ai_unavailable_fallback(), None, True
+        return (
+            ChatTurnResult(
+                assistant_text=ai_unavailable_fallback(),
+                ask_field=first_missing_ask_field(confirmed_fields),
+                action_ids=(),
+                provider="fallback",
+            ),
+            None,
+            True,
+        )
+
+
+async def _place_hints(
+    session: AsyncSession,
+    constraints: dict[str, Any],
+) -> list[dict[str, str]]:
+    try:
+        params = RouteMatchParamsIn.model_validate(constraints)
+        picked = await pick_places_for_params(
+            session,
+            params=params,
+            max_points=8,
+        )
+    except Exception:  # noqa: BLE001 — hints are optional context only
+        return []
+    return [{"place_id": str(item.place_id), "title": item.name[:80]} for item in picked[:8]]
 
 
 async def _owned_session(
@@ -384,10 +489,14 @@ def _session_out(
     *,
     ai_planning_enabled: bool,
 ) -> RoutePlanningSessionOut:
+    confirmed = sanitize_confirmed_fields(
+        list(row.confirmed_fields) if isinstance(row.confirmed_fields, list) else []
+    )
     return RoutePlanningSessionOut(
         session_id=str(row.id),
         status=row.status,  # type: ignore[arg-type]
         constraints=RouteMatchParamsIn.model_validate(row.constraints),
+        confirmed_fields=confirmed,
         ai_planning_enabled=ai_planning_enabled,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -431,6 +540,10 @@ def _try_parse_block(item: dict[str, Any]) -> ChatBlockOut | None:
             return RouteProposalCardBlockOut.model_validate(item)
         if block_type == "actions":
             return ActionsBlockOut.model_validate(item)
+        if block_type == "slider":
+            return SliderBlockOut.model_validate(item)
+        if block_type == "toggle":
+            return ToggleBlockOut.model_validate(item)
     except Exception:  # noqa: BLE001 — allowlist: skip unknown/invalid blocks
         return None
     return None

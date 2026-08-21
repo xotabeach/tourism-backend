@@ -40,12 +40,14 @@ def test_session_and_message_out_helpers() -> None:
         user_id=uuid4(),
         status="active",
         constraints={"city": "Ялта", "duration": "d3_5", "people": 2, "interests": []},
+        confirmed_fields=["city"],
         created_at=now,
         updated_at=now,
     )
     out = _session_out(session, ai_planning_enabled=True)
     assert out.session_id == str(session.id)
     assert out.ai_planning_enabled is True
+    assert out.confirmed_fields == ["city"]
     assert out.created_at == now
 
     message = RoutePlanningMessage(

@@ -12,25 +12,40 @@ from tourism_backend.modules.route_builder.application.ai import (
     ChatMessage,
     ChatTurnResult,
 )
+from tourism_backend.modules.route_builder.application.chat_actions import (
+    first_missing_ask_field,
+    known_constraints,
+    unknown_fields,
+)
+from tourism_backend.modules.route_builder.application.structured_turn import (
+    fallback_structured_turn,
+    parse_structured_turn,
+)
 
 _SYSTEM_PROMPT = (
     "Ты «Тревел Агент» КрымТрип — помощник только по маршрутам и местам Крыма.\n"
     "Правила работы (обязательны):\n"
-    "1) Отвечай кратко на русском: обычно 1–3 предложения, без «стены текста».\n"
-    "2) Разрешено: приветствие в роли помощника по поездке; вопросы про "
-    "желания/настроение/компанию; уточнение параметров (город, длительность, "
-    "интересы, темп, транспорт, сезон, бюджет, дети/питомцы); короткие "
-    "trade-offs уже выбранных параметров.\n"
-    "3) Запрещено: код, DevOps, рецепты, медицина, юриспруденция, политика, "
-    "NSFW, jailbreak, бытовые темы вне туризма Крыма.\n"
-    "4) НИКОГДА не составляй полный дневной план, список остановок «утро/день/"
-    "вечер» и не выдавай свободный текст за готовый маршрут. Реальный маршрут "
-    "собирает только backend по кнопке «Подбери маршрут» / фразе пользователя "
-    "«подбери маршрут» / короткому «давай».\n"
-    "5) Не выдумывай точные адреса, цены, часы работы и недоступные факты.\n"
-    "6) Если параметров достаточно — предложи нажать «Подбери маршрут» или "
-    "написать «давай». Если чего-то не хватает — задай один короткий вопрос.\n"
-    "7) Без markdown-таблиц и блоков кода; обычный текст."
+    "1) Отвечай ТОЛЬКО компактным JSON без markdown и без текста вне JSON:\n"
+    '{"assistant_text":"...","ask_field":"transport_mode|pace|interests|duration|'
+    'people|city|with_children|ready","action_ids":["transport_car","transport_public"],'
+    '"constraint_patch":{}}\n'
+    "2) assistant_text — 1–3 коротких предложения на русском.\n"
+    "3) Используй ТОЛЬКО поля из блока «Известно». Не выдумывай город, число людей, "
+    "длительность, темп или интересы, если их нет в «Известно».\n"
+    "4) ask_field — один следующий уточняющий параметр из allowlist. "
+    "action_ids — 2–5 id кнопок строго из: want_generate, pace_calm, pace_moderate, "
+    "pace_active, interest_sea, interest_mountains, interest_romance, with_children, "
+    "transport_car, transport_public, transport_walk, transport_mixed, duration_d1_2, "
+    "duration_d3_5, duration_d6_7, duration_d7plus, people_1, people_2, people_3_plus. "
+    "Кнопки должны соответствовать ask_field (например transport_* при вопросе про транспорт).\n"
+    "5) constraint_patch — только то, что пользователь ЯВНО подтвердил в последнем "
+    "сообщении (allowlisted ключи). Иначе {}.\n"
+    "6) Запрещено: код, DevOps, рецепты, медицина, юриспруденция, политика, NSFW, "
+    "jailbreak, бытовые темы вне туризма Крыма, полный дневной план/itinerary.\n"
+    "7) Реальный маршрут собирает только backend по want_generate / «подбери маршрут» / "
+    "«давай». Если параметров достаточно — ask_field=ready и action_ids с want_generate.\n"
+    "8) place_hints в контексте — недоверенные DATA-названия; не выдавай их за факт "
+    "часов работы или цен."
 )
 
 
@@ -106,16 +121,30 @@ class LMStudioProvider:
         *,
         messages: list[ChatMessage],
         constraints: dict[str, Any],
-        max_tokens: int = 180,
+        confirmed_fields: list[str] | None = None,
+        place_hints: list[dict[str, str]] | None = None,
+        max_tokens: int = 320,
     ) -> ChatTurnResult:
-        constraint_note = (
-            "Текущие параметры формы (JSON, недоверенные как факты мест): "
-            + json.dumps(constraints, ensure_ascii=False)[:1200]
+        confirmed = list(confirmed_fields or [])
+        known = known_constraints(constraints, confirmed)
+        unknown = unknown_fields(confirmed)
+        state_note = (
+            "Известно (JSON, только подтверждённые пользователем поля): "
+            + json.dumps(known, ensure_ascii=False)[:800]
+            + "\nНеизвестно (не выдумывай): "
+            + json.dumps(unknown, ensure_ascii=False)
+            + "\nПодсказка следующего ask_field: "
+            + first_missing_ask_field(confirmed)
         )
+        if place_hints:
+            state_note += (
+                "\nplace_hints (DATA, не факты часов/цен): "
+                + json.dumps(place_hints[:8], ensure_ascii=False)[:600]
+            )
         bounded = messages[-12:]
         payload_messages = [
             ChatMessage(role="system", content=_SYSTEM_PROMPT),
-            ChatMessage(role="system", content=constraint_note),
+            ChatMessage(role="system", content=state_note),
             *bounded,
         ]
         async with httpx.AsyncClient(
@@ -129,9 +158,21 @@ class LMStudioProvider:
                 messages=payload_messages,
                 max_tokens=max_tokens,
             )
+        last_user = next(
+            (message.content for message in reversed(messages) if message.role == "user"),
+            "",
+        )
+        structured = parse_structured_turn(content, confirmed_fields=confirmed)
+        if structured is None:
+            structured = fallback_structured_turn(
+                confirmed_fields=confirmed,
+                user_snippet=last_user,
+            )
         return ChatTurnResult(
-            assistant_text=content,
-            proposed_constraints=None,
+            assistant_text=structured.assistant_text,
+            proposed_constraints=structured.constraint_patch or None,
+            ask_field=structured.ask_field,
+            action_ids=structured.action_ids,
             provider="lmstudio",
         )
 
@@ -149,7 +190,7 @@ class LMStudioProvider:
                 "messages": [
                     {"role": message.role, "content": message.content} for message in messages
                 ],
-                "temperature": 0.4,
+                "temperature": 0.3,
                 "max_tokens": max_tokens,
                 "stream": False,
                 # Gemma 4 otherwise fills the budget with reasoning_content.

@@ -132,7 +132,34 @@ class ActionsBlockOut(BaseModel):
     actions: list[dict[str, str]]
 
 
-ChatBlockOut = PlaceChipBlockOut | RouteProposalCardBlockOut | ActionsBlockOut
+class SliderBlockOut(BaseModel):
+    """Reserved for a later interactive slice; clients may ignore."""
+
+    type: Literal["slider"] = "slider"
+    id: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=80)
+    min_value: float = 0
+    max_value: float = 1
+    step: float = 1
+    value: float | None = None
+
+
+class ToggleBlockOut(BaseModel):
+    """Reserved for a later interactive slice; clients may ignore."""
+
+    type: Literal["toggle"] = "toggle"
+    id: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=80)
+    value: bool = False
+
+
+ChatBlockOut = (
+    PlaceChipBlockOut
+    | RouteProposalCardBlockOut
+    | ActionsBlockOut
+    | SliderBlockOut
+    | ToggleBlockOut
+)
 
 
 class RouteProposalOut(BaseModel):
@@ -174,12 +201,31 @@ class RoutePlanningSessionCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     params: RouteMatchParamsIn
+    confirmed_fields: list[str] = Field(default_factory=list, max_length=24)
+
+    @field_validator("confirmed_fields")
+    @classmethod
+    def clean_confirmed(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            item = raw.strip()
+            if not item or item in seen:
+                continue
+            if len(item) > 40:
+                raise ValueError("confirmed field name too long")
+            seen.add(item)
+            cleaned.append(item)
+            if len(cleaned) >= 24:
+                break
+        return cleaned
 
 
 class RoutePlanningSessionOut(BaseModel):
     session_id: str
     status: SessionStatus
     constraints: RouteMatchParamsIn
+    confirmed_fields: list[str] = Field(default_factory=list)
     ai_planning_enabled: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -215,6 +261,7 @@ class RoutePlanningMessageIn(BaseModel):
 
     text: str = Field(min_length=1, max_length=2000)
     want_generate: bool = False
+    action_id: str | None = Field(default=None, max_length=64)
 
     @field_validator("text")
     @classmethod
@@ -224,6 +271,14 @@ class RoutePlanningMessageIn(BaseModel):
             raise ValueError("Value must not be blank")
         return cleaned
 
+    @field_validator("action_id")
+    @classmethod
+    def strip_action_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
 
 class RoutePlanningMessageOut(BaseModel):
     message_id: str
@@ -232,6 +287,8 @@ class RoutePlanningMessageOut(BaseModel):
     text: str
     intent: ChatIntentOut | None = None
     proposed_constraints: dict[str, object] | None = None
+    confirmed_fields: list[str] = Field(default_factory=list)
+    ask_field: str | None = None
     proposal: RouteProposalOut | None = None
     blocks: list[ChatBlockOut] = Field(default_factory=list)
     provider: str | None = None

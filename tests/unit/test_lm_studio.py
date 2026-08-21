@@ -54,17 +54,37 @@ async def test_lm_studio_chat_turn_sends_reasoning_effort_none() -> None:
         assert body["reasoning_effort"] == "none"
         assert body["model"] == "gemma-test"
         assert body["messages"][0]["role"] == "system"
+        assert any("Известно" in message["content"] for message in body["messages"])
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": "Уточните длительность поездки."}}]},
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "assistant_text": "Уточните длительность поездки.",
+                                    "ask_field": "duration",
+                                    "action_ids": ["duration_d1_2", "duration_d3_5"],
+                                    "constraint_patch": {},
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            },
         )
 
     result = await _provider(httpx.MockTransport(handler)).chat_turn(
         messages=[ChatMessage(role="user", content="Хочу спокойный день")],
         constraints={"city": "Ялта"},
+        confirmed_fields=["city"],
     )
     assert result.provider == "lmstudio"
     assert "длительность" in result.assistant_text
+    assert result.ask_field == "duration"
+    assert "duration_d1_2" in result.action_ids
 
 
 @pytest.mark.asyncio

@@ -106,6 +106,12 @@ class RoutePlanningSession(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     constraints: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    confirmed_fields: Mapped[list[Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
 
 
 class RoutePlanningMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
