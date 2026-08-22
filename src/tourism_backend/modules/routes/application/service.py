@@ -14,6 +14,7 @@ from tourism_backend.modules.geography.infrastructure.models import Region
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
+from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
 from tourism_backend.modules.places.infrastructure.models import Place, PlaceImage
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
 from tourism_backend.modules.routes.application.schemas import (
@@ -129,6 +130,14 @@ async def _cover_urls_for_routes(
             if source_url
         }
     )
+    still_missing = [route_id for route_id in route_ids if route_id not in covers]
+    if still_missing:
+        # Photo coverage is sparse today (import pipeline not fully run) —
+        # never leave a route card blank, reuse any existing place photo.
+        generic = await generic_fallback_cover(session)
+        if generic:
+            for route_id in still_missing:
+                covers[route_id] = generic
     return covers
 
 

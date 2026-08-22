@@ -381,7 +381,7 @@ async def post_message(
                     {"id": "pace_active", "label": "Активный маршрут"},
                     {"id": "interest_mountains", "label": "Маршрут по горам"},
                     {"id": "interest_sea", "label": "Путешествие к морю"},
-                    {"id": "interest_food", "label": "Хочу пожрать"},
+                    {"id": "interest_food", "label": "Гастрономический тур"},
                 ],
             )
         ]
@@ -410,7 +410,7 @@ async def post_message(
                     params=params,
                     ai_planning_enabled=cfg.ai_planning_enabled,
                 )
-                catalog_block = _catalog_match_block(matched)
+                catalog_block = _catalog_match_block(matched, locality_label=params.city)
             except AppError:
                 # Empty catalog / missing region seed → fall through to generate.
                 catalog_block = None
@@ -449,7 +449,7 @@ async def post_message(
             blocks = list(proposal_out.blocks)
             ask_field = "ready"
     else:
-        turn, provider_name, fallback, prefetch = await _assistant_from_ai(
+        turn, provider_name, fallback, prefetch, explicit_places = await _assistant_from_ai(
             session,
             planning=planning,
             constraints=constraints_dict,
@@ -475,6 +475,7 @@ async def post_message(
             action_ids=list(turn.action_ids) if turn.action_ids else None,
             tool_context=prefetch,
             include_recommendations=fallback,
+            place_candidates=explicit_places,
         )
 
     # Persist merged constraints / confirmed after the turn.
@@ -532,7 +533,7 @@ async def _assistant_from_ai(
     constraints: dict[str, Any],
     confirmed_fields: list[str],
     settings: Settings,
-) -> tuple[ChatTurnResult, str | None, bool, dict[str, Any]]:
+) -> tuple[ChatTurnResult, str | None, bool, dict[str, Any], list[dict[str, str]]]:
     history_rows = (
         await session.scalars(
             select(RoutePlanningMessage)
@@ -609,7 +610,7 @@ async def _assistant_from_ai(
     if not settings.ai_planning_enabled:
         provider: Any = MockAIPlanningProvider()
         result = await _once(provider, tool_context)
-        result, tool_context = await _run_tool_rounds(
+        result, tool_context, explicit_places = await _run_tool_rounds(
             session,
             provider=provider,
             result=result,
@@ -619,12 +620,12 @@ async def _assistant_from_ai(
             place_hints=place_hints,
             tool_context=tool_context,
         )
-        return result, result.provider, True, tool_context
+        return result, result.provider, True, tool_context, explicit_places
 
     try:
         provider = get_ai_planning_provider(settings)
         result = await _once(provider, tool_context)
-        result, tool_context = await _run_tool_rounds(
+        result, tool_context, explicit_places = await _run_tool_rounds(
             session,
             provider=provider,
             result=result,
@@ -634,7 +635,7 @@ async def _assistant_from_ai(
             place_hints=place_hints,
             tool_context=tool_context,
         )
-        return result, result.provider, False, tool_context
+        return result, result.provider, False, tool_context, explicit_places
     except Exception:  # noqa: BLE001 — soft fallback for home-lab outages
         return (
             ChatTurnResult(
@@ -646,6 +647,7 @@ async def _assistant_from_ai(
             None,
             True,
             tool_context,
+            [],
         )
 
 
@@ -659,11 +661,17 @@ async def _run_tool_rounds(
     chat_messages: list[ChatMessage],
     place_hints: list[dict[str, str]],
     tool_context: dict[str, Any],
-) -> tuple[ChatTurnResult, dict[str, Any]]:
+) -> tuple[ChatTurnResult, dict[str, Any], list[dict[str, str]]]:
     calls = parse_tool_calls(list(result.tool_requests))
     if not calls:
-        return result, tool_context
+        return result, tool_context, []
     tool_payloads: list[dict[str, Any]] = []
+    # Only a `search_places` call the model makes *this* turn means it wants
+    # place chips rendered now — background prefetch just grounds the prompt
+    # and must never leak into the reply's blocks (it would re-attach the
+    # same place carousel to every later clarifying question once a city is
+    # known).
+    explicit_places: list[dict[str, str]] = []
     for call in calls:
         executed = await execute_tool(session, call, constraints=constraints)
         tool_payloads.append({"name": executed.name, "ok": executed.ok, "data": executed.data})
@@ -677,6 +685,7 @@ async def _run_tool_rounds(
             places = executed.data.get("places") or []
             tool_context = {**tool_context, "place_candidates": places}
             place_hints = list(places)
+            explicit_places = list(places)
     follow_messages = [
         *chat_messages,
         ChatMessage(
@@ -702,6 +711,7 @@ async def _run_tool_rounds(
             provider=follow.provider,
         ),
         tool_context,
+        explicit_places,
     )
 
 
@@ -713,6 +723,7 @@ def _compose_assistant_blocks(
     action_ids: list[str] | None,
     tool_context: dict[str, Any],
     include_recommendations: bool = False,
+    place_candidates: list[dict[str, str]] | None = None,
 ) -> list[ChatBlockOut]:
     blocks: list[ChatBlockOut] = []
     # Seasonal tip cards only when AI is unavailable (fallback) — not on every
@@ -739,7 +750,7 @@ def _compose_assistant_blocks(
                     accept_action_id=accept[:64],
                 )
             )
-    for place in (tool_context.get("place_candidates") or [])[:4]:
+    for place in (place_candidates or [])[:4]:
         if not isinstance(place, dict):
             continue
         place_id = str(place.get("place_id") or "").strip()
@@ -766,7 +777,9 @@ def _compose_assistant_blocks(
     return blocks
 
 
-def _catalog_match_block(matched: object) -> CatalogMatchBlockOut | None:
+def _catalog_match_block(
+    matched: object, *, locality_label: str | None = None
+) -> CatalogMatchBlockOut | None:
     """Build screen-2 carousel from algorithmic match hits (ideal then close)."""
     ideal = getattr(matched, "ideal", None) or []
     close = getattr(matched, "close", None) or []
@@ -815,7 +828,7 @@ def _catalog_match_block(matched: object) -> CatalogMatchBlockOut | None:
                 cover_url=getattr(route, "cover_image_url", None),
                 rating=None,
                 distance_km=distance_km,
-                locality_label=None,
+                locality_label=locality_label[:120] if locality_label else None,
                 tags=tags[:8],
                 budget_label=None,
                 difficulty_label=difficulty_label,

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.identity.infrastructure.models import User
+from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.route_builder.application.place_picker import (
     PickedPlace,
@@ -26,6 +27,7 @@ from tourism_backend.modules.route_builder.application.routing import (
     RoutingError,
     RoutingResult,
     TransportMode,
+    normalize_transport_mode,
 )
 from tourism_backend.modules.route_builder.application.schemas import (
     ActionsBlockOut,
@@ -98,10 +100,7 @@ def _estimate_duration(
 
 
 def _transport_mode(params: RouteMatchParamsIn) -> TransportMode:
-    mode = params.transport_mode or "walk"
-    if mode in {"walk", "car", "public", "mixed"}:
-        return mode
-    return "walk"
+    return normalize_transport_mode(params.transport_mode)
 
 
 def _line_wkt(waypoints: list[RouteWaypoint]) -> str:
@@ -217,7 +216,12 @@ def _blocks_for_proposal(
         for idx, place in enumerate(places[:12], start=1)
     ]
     gallery: list[str] = []
-    if proposal.cover_url:
+    seen_covers: set[str] = set()
+    for place in places:
+        if place.cover_hint and place.cover_hint not in seen_covers:
+            gallery.append(place.cover_hint)
+            seen_covers.add(place.cover_hint)
+    if not gallery and proposal.cover_url:
         gallery.append(proposal.cover_url)
     start = places[0] if places else None
     finish = places[-1] if places else None
@@ -397,6 +401,12 @@ async def generate_route(
     duration = _estimate_duration(places, routing)
     now = datetime.now(UTC)
 
+    cover_url = next((place.cover_hint for place in places if place.cover_hint), None)
+    if cover_url is None:
+        # Photo coverage is sparse today — never leave the proposal card
+        # photo-less, reuse any existing place photo as a filler.
+        cover_url = await generic_fallback_cover(session)
+
     proposal = RouteProposal(
         id=uuid4(),
         user_id=user_id,
@@ -407,7 +417,7 @@ async def generate_route(
         params=params.model_dump(mode="json"),
         place_ids=[place.place_id for place in places],
         duration_minutes=duration,
-        cover_url=None,
+        cover_url=cover_url,
         route_id=None,
         created_at=now,
         updated_at=now,

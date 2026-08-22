@@ -71,3 +71,9 @@ def default_max_leg_meters(mode: TransportMode) -> int:
         "public": 80_000,
         "mixed": 100_000,
     }[mode]
+
+
+def normalize_transport_mode(mode: str | None) -> TransportMode:
+    if mode in {"walk", "car", "public", "mixed"}:
+        return mode  # type: ignore[return-value]
+    return "walk"

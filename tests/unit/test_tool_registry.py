@@ -95,14 +95,14 @@ def test_compose_blocks_and_control_patch() -> None:
                 },
                 {"id": "bad"},
             ],
-            "place_candidates": [
-                {
-                    "place_id": "11111111-1111-1111-1111-111111111111",
-                    "title": "Форос",
-                },
-                {"place_id": "", "title": "skip"},
-            ],
         },
+        place_candidates=[
+            {
+                "place_id": "11111111-1111-1111-1111-111111111111",
+                "title": "Форос",
+            },
+            {"place_id": "", "title": "skip"},
+        ],
         include_recommendations=False,
     )
     types = {block.type for block in blocks}
@@ -222,3 +222,22 @@ async def test_search_places_without_city() -> None:
     )
     assert "seasonal_recommendations" in ctx
     assert ctx["place_candidates"] == []
+
+
+def test_compose_blocks_ignores_stale_prefetch_place_candidates() -> None:
+    """Regression: prefetch grounding data must not leak into every reply's
+    blocks — otherwise a clarifying question ("какой вид отдыха?") re-attaches
+    the place carousel from an earlier, unrelated search_places call."""
+    blocks = _compose_assistant_blocks(
+        constraints={"city": "Ялта"},
+        confirmed_fields=["city"],
+        ask_field="trip_type",
+        action_ids=None,
+        tool_context={
+            "place_candidates": [
+                {"place_id": "11111111-1111-1111-1111-111111111111", "title": "Форос"},
+            ],
+        },
+        include_recommendations=False,
+    )
+    assert "place_chip" not in {block.type for block in blocks}

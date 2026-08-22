@@ -71,7 +71,7 @@ _ACTION_CATALOG: dict[str, dict[str, Any]] = {
         "field": "interests",
     },
     "interest_food": {
-        "label": "Хочу пожрать",
+        "label": "Гастрономический тур",
         "patch": {"interests_add": ["еда"]},
         "field": "interests",
     },

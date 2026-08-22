@@ -133,6 +133,11 @@ def test_catalog_match_block_from_bands() -> None:
     assert block.type == "catalog_match"
     assert block.routes[0].route_id == str(route_id)
     assert block.routes[0].title == "Ялта на день"
+    assert block.routes[0].locality_label is None
+
+    with_city = _catalog_match_block(matched, locality_label="Ялта")
+    assert with_city is not None
+    assert with_city.routes[0].locality_label == "Ялта"
 
 
 def test_knowledge_chunk_model_columns() -> None:
