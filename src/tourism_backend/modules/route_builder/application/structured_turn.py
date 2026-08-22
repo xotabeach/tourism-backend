@@ -55,7 +55,7 @@ def parse_structured_turn(
     *,
     confirmed_fields: list[str] | None = None,
 ) -> StructuredChatTurn | None:
-    payload = _extract_json_object(raw)
+    payload = extract_json_object(raw)
     if payload is None:
         return None
     text = payload.get("assistant_text")
@@ -140,7 +140,8 @@ def _ask_prompt(ask_field: str) -> str:
     return prompts.get(ask_field, "что важно для поездки?")
 
 
-def _extract_json_object(raw: str) -> dict[str, Any] | None:
+def extract_json_object(raw: str) -> dict[str, Any] | None:
+    """Parse the first JSON object in `raw`, tolerating a ```json fence."""
     text = raw.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)

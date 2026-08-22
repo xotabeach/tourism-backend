@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Draft human slug/descriptions for places (heuristic; optional LLM later).
+"""Draft human slug/descriptions for places (heuristic, or LM Studio via --llm).
 
 Does NOT auto-publish. Sets content_enrichment_status=generated_draft and
-fills empty short_description/description + proposed_slug.
+fills empty short_description/description + proposed_slug. Any LLM failure
+(timeout, bad JSON, provider down) falls back to the heuristic draft for that
+place — the batch never aborts on a single bad response.
 
 Examples:
   uv run python scripts/enrich_places_content.py --limit 100
   uv run python scripts/enrich_places_content.py --apply --limit 100
-  uv run python scripts/enrich_places_content.py --apply --llm  # needs AI flag + home lab
+  # --llm needs AI_PLANNING_ENABLED=true and AI_PROVIDER=lmstudio (home-lab
+  # LM Studio reachable) — otherwise it prints why and falls back silently.
+  uv run python scripts/enrich_places_content.py --apply --llm
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import create_engine, or_, select
 from sqlalchemy.orm import Session
@@ -26,15 +31,54 @@ from tourism_backend.modules.places.application.content_enrichment import (
     llm_content_draft_or_fallback,
 )
 from tourism_backend.modules.places.infrastructure.models import Category, Place, PlaceCategory
+from tourism_backend.modules.route_builder.infrastructure.lm_studio import LMStudioProvider
 
 _ = _geography_models
 
 
+def _lm_studio_callable(settings: Any) -> Any | None:
+    """Build the `llm_callable` used for content drafts, or None if LM Studio
+    is not configured — the caller then falls back to heuristic drafts."""
+    if settings.ai_provider.value != "lmstudio":
+        return None
+    if not settings.lm_studio_base_url or not settings.lm_studio_model:
+        return None
+    api_key = (
+        settings.lm_studio_api_key.get_secret_value()
+        if settings.lm_studio_api_key is not None
+        else None
+    )
+    provider = LMStudioProvider(
+        base_url=settings.lm_studio_base_url,
+        model=settings.lm_studio_model,
+        api_key=api_key,
+        timeout_seconds=settings.ai_request_timeout_seconds,
+    )
+
+    async def _callable(payload: dict[str, Any]) -> dict[str, Any]:
+        return await provider.draft_place_content(
+            name=str(payload.get("name") or ""),
+            categories=list(payload.get("categories") or []),
+            city=payload.get("city"),
+        )
+
+    return _callable
+
+
 async def _run(*, apply: bool, limit: int, llm: bool, only_missing: bool) -> None:
     settings = get_settings()
+    llm_callable = None
     if llm and not settings.ai_planning_enabled:
         print("AI_PLANNING_ENABLED is false; continuing with heuristic drafts only")
         llm = False
+    if llm:
+        llm_callable = _lm_studio_callable(settings)
+        if llm_callable is None:
+            print(
+                "AI_PROVIDER is not lmstudio (or LM Studio base URL/model missing); "
+                "continuing with heuristic drafts only"
+            )
+            llm = False
 
     engine = create_engine(settings.database_url_sync)
     scanned = 0
@@ -73,7 +117,7 @@ async def _run(*, apply: bool, limit: int, llm: bool, only_missing: bool) -> Non
                 category_names=categories,
                 city_hint=city,
                 llm_enabled=llm,
-                llm_callable=None,  # wired when home-lab LM Studio adapter is ready
+                llm_callable=llm_callable,
             )
             updated += 1
             if not apply:

@@ -18,6 +18,7 @@ from tourism_backend.modules.route_builder.application.chat_actions import (
     unknown_fields,
 )
 from tourism_backend.modules.route_builder.application.structured_turn import (
+    extract_json_object,
     fallback_structured_turn,
     parse_structured_turn,
 )
@@ -47,6 +48,17 @@ _SYSTEM_PROMPT = (
     "9) Стиль: зеркаль тон пользователя (сленг/шутки — можно мягко ответить в том же "
     "регистре). Если грубо/оскорбительно — вежливо попроси общаться культурнее; "
     "можно отказать в хамстве. Если извиняется — прими извинения и продолжи помощь."
+)
+
+_CONTENT_DRAFT_SYSTEM_PROMPT = (
+    "Ты редактор туристического каталога КрымТрип. Тебе дают название места, его "
+    "категории и (опционально) город. Верни ТОЛЬКО компактный JSON без markdown:\n"
+    '{"proposed_slug":"...","short_description":"...","description":"..."}\n'
+    "proposed_slug — латиницей, цифры/дефисы, без домена/языка, до 80 символов.\n"
+    "short_description — одно предложение на русском, до 200 символов.\n"
+    "description — 2-4 предложения на русском, до 600 символов.\n"
+    "Пиши только то, что можно вывести из названия/категории/города. НЕ выдумывай "
+    "часы работы, цены, координаты, историю, отзывы или факты, которых тебе не дали."
 )
 
 
@@ -181,6 +193,50 @@ class LMStudioProvider:
             tool_requests=structured.tool_requests,
             provider="lmstudio",
         )
+
+    async def draft_place_content(
+        self,
+        *,
+        name: str,
+        categories: list[str],
+        city: str | None,
+    ) -> dict[str, Any]:
+        """Draft slug/short_description/description for one place.
+
+        Matches the `llm_callable` contract expected by
+        `content_enrichment.llm_content_draft_or_fallback` — raises on any
+        transport/parse failure so the caller falls back to the heuristic
+        draft instead of silently writing bad content.
+        """
+        user_content = json.dumps(
+            {"name": name, "categories": categories[:6], "city": city},
+            ensure_ascii=False,
+        )
+        async with httpx.AsyncClient(
+            base_url=self._base_url,
+            headers=self._headers(),
+            timeout=self._timeout,
+            transport=self._transport,
+        ) as client:
+            content = await self._complete(
+                client,
+                messages=[
+                    ChatMessage(role="system", content=_CONTENT_DRAFT_SYSTEM_PROMPT),
+                    ChatMessage(role="user", content=user_content),
+                ],
+                max_tokens=320,
+            )
+        parsed = extract_json_object(content)
+        if parsed is None:
+            raise ValueError("LM Studio content draft returned invalid JSON")
+        return {
+            "proposed_slug": parsed.get("proposed_slug"),
+            "short_description": parsed.get("short_description"),
+            "description": parsed.get("description"),
+            "provider": "lmstudio",
+            "model": self._model,
+            "prompt_version": "content-v1",
+        }
 
     async def _complete(
         self,

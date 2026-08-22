@@ -108,6 +108,66 @@ async def test_lm_studio_probe_rejects_malformed_completion() -> None:
         await _provider(httpx.MockTransport(handler)).probe()
 
 
+@pytest.mark.asyncio
+async def test_lm_studio_draft_place_content_parses_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/chat/completions"
+        body = json.loads(request.content)
+        assert body["messages"][0]["role"] == "system"
+        user_payload = json.loads(body["messages"][1]["content"])
+        assert user_payload == {
+            "name": "Ласточкино гнездо",
+            "categories": ["Замок"],
+            "city": "Ялта",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "proposed_slug": "lastochkino-gnezdo",
+                                    "short_description": "Замок над морем в Ялте.",
+                                    "description": "Ласточкино гнездо — визитная "
+                                    "карточка Крыма, замок на скале над морем в Ялте.",
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    draft = await _provider(httpx.MockTransport(handler)).draft_place_content(
+        name="Ласточкино гнездо",
+        categories=["Замок"],
+        city="Ялта",
+    )
+    assert draft["proposed_slug"] == "lastochkino-gnezdo"
+    assert draft["short_description"] == "Замок над морем в Ялте."
+    assert draft["provider"] == "lmstudio"
+    assert draft["model"] == "gemma-test"
+
+
+@pytest.mark.asyncio
+async def test_lm_studio_draft_place_content_rejects_non_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "не могу помочь"}}]},
+        )
+
+    with pytest.raises(ValueError, match="invalid JSON"):
+        await _provider(httpx.MockTransport(handler)).draft_place_content(
+            name="Тестовое место",
+            categories=[],
+            city=None,
+        )
+
+
 def test_enabled_lm_studio_requires_endpoint_and_model() -> None:
     settings = Settings(ai_planning_enabled=True, ai_provider="lmstudio")
 

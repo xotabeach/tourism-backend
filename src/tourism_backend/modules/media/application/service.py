@@ -142,8 +142,13 @@ def upsert_place_file_attachment(
     sort_order: int = 0,
     alt_text: str | None = None,
     status: str = "active",
+    content_type: str | None = None,
+    byte_size: int | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    checksum_sha256: str | None = None,
 ) -> MediaAttachment:
-    """Sync helper for seed scripts."""
+    """Sync helper for seed / import scripts."""
     if role not in ROLES:
         raise ValueError(f"invalid role: {role}")
     now = datetime.now(UTC)
@@ -198,6 +203,16 @@ def upsert_place_file_attachment(
     existing.status = status
     existing.sort_order = sort_order
     existing.alt_text = alt_text
+    if content_type is not None:
+        existing.content_type = content_type
+    if byte_size is not None:
+        existing.byte_size = byte_size
+    if width is not None:
+        existing.width = width
+    if height is not None:
+        existing.height = height
+    if checksum_sha256 is not None:
+        existing.checksum_sha256 = checksum_sha256
     existing.updated_at = now
     session.flush()
     return existing
