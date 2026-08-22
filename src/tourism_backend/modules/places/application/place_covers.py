@@ -18,9 +18,7 @@ from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.infrastructure.models import PlaceImage
 
 
-async def covers_for_places(
-    session: AsyncSession, place_ids: list[UUID]
-) -> dict[UUID, str]:
+async def covers_for_places(session: AsyncSession, place_ids: list[UUID]) -> dict[UUID, str]:
     """Best available photo URL per place: `MediaAttachment` cover first,
     else the active `PlaceImage` (import-pipeline photo)."""
     if not place_ids:
