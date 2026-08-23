@@ -2,12 +2,20 @@
 
 Scope (2026-08-22 slice): OSM `wikimedia_commons` / `image` tags → Wikimedia
 Commons `imageinfo` API → license allowlist → caller downloads/stores.
-Mapillary is documented as a follow-up in
-`tourism-platform/docs/progress.md` (needs its own API token; not wired here).
+Only ~0.1% of real OSM elements carry a direct `wikimedia_commons`/`image`
+tag, so a `wikidata` tag → Wikidata P18 (image) claim → Commons title
+fallback was added (2026-08-23 slice) — ~6% of Crimea candidates carry a
+`wikidata` tag, a meaningfully larger yield with no new API token needed
+(Wikidata's API is public, like Commons'). Mapillary is documented as a
+further follow-up in `tourism-platform/docs/progress.md` (needs its own API
+token; not wired here).
 
 Security: every URL this module resolves an image from is re-validated
 against `ALLOWED_HOSTS` before the caller downloads it — never follow an
-arbitrary `image=` tag value off Wikimedia's own hosts.
+arbitrary `image=` tag value off Wikimedia's own hosts. The Wikidata lookup
+itself only ever queries a hardcoded `wikidata.org` API endpoint; the only
+externally-controlled input (the QID) is validated against a strict
+`Q[0-9]+` pattern before it reaches the request.
 """
 
 from __future__ import annotations
@@ -34,8 +42,10 @@ _ALLOWED_LICENSE_PATTERNS = (
 )
 
 _COMMONS_API_URL = "https://commons.wikimedia.org/w/api.php"
+_WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 _USER_AGENT = "CrimeaTripPlacePhotoImport/1.0 (https://crimeatrip.example; ops@crimeatrip.example)"
 _MAX_IMAGE_BYTES = 25 * 1024 * 1024
+_WIKIDATA_QID_PATTERN = re.compile(r"^Q[1-9][0-9]{0,9}$")
 
 
 def is_license_allowed(short_name: str | None) -> bool:
@@ -43,6 +53,14 @@ def is_license_allowed(short_name: str | None) -> bool:
         return False
     text = short_name.strip()
     return any(pattern.match(text) for pattern in _ALLOWED_LICENSE_PATTERNS)
+
+
+def normalize_wikidata_qid(raw: str | None) -> str | None:
+    """Validate an OSM `wikidata` tag value as a safe-to-query QID, or None."""
+    if not raw:
+        return None
+    candidate = raw.strip()
+    return candidate if _WIKIDATA_QID_PATTERN.match(candidate) else None
 
 
 def _is_allowed_host(url: str) -> bool:
@@ -144,6 +162,28 @@ class WikimediaCommonsClient:
             payload: Any = response.json()
         return _parse_imageinfo_response(payload, title=title)
 
+    def fetch_commons_title_via_wikidata(self, qid: str) -> str | None:
+        """Resolve a Wikidata item's P18 (image) claim to a Commons `File:` title."""
+        if normalize_wikidata_qid(qid) != qid:
+            raise ValueError(f"Refusing to query non-QID value: {qid!r}")
+        with httpx.Client(
+            headers={"User-Agent": _USER_AGENT},
+            timeout=self._timeout,
+            transport=self._transport,
+        ) as client:
+            response = client.get(
+                _WIKIDATA_API_URL,
+                params={
+                    "action": "wbgetclaims",
+                    "entity": qid,
+                    "property": "P18",
+                    "format": "json",
+                },
+            )
+            response.raise_for_status()
+            payload: Any = response.json()
+        return _parse_wikidata_p18_response(payload)
+
     def download_image(self, url: str) -> bytes:
         if not _is_allowed_host(url):
             raise ValueError(f"Refusing to download from non-allowlisted host: {url!r}")
@@ -206,6 +246,28 @@ def _parse_imageinfo_response(payload: Any, *, title: str) -> CommonsFileInfo | 
         width=width if isinstance(width, int) else None,
         height=height if isinstance(height, int) else None,
     )
+
+
+def _parse_wikidata_p18_response(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    claims = payload.get("claims")
+    if not isinstance(claims, dict):
+        return None
+    p18 = claims.get("P18")
+    if not isinstance(p18, list) or not p18:
+        return None
+    first = p18[0]
+    mainsnak = first.get("mainsnak") if isinstance(first, dict) else None
+    if not isinstance(mainsnak, dict):
+        return None
+    datavalue = mainsnak.get("datavalue")
+    if not isinstance(datavalue, dict):
+        return None
+    filename = datavalue.get("value")
+    if not isinstance(filename, str) or not filename.strip():
+        return None
+    return f"File:{filename.strip()}"
 
 
 def _extmeta_value(extmetadata: dict[str, Any], key: str) -> str | None:

@@ -9,6 +9,7 @@ from tourism_backend.modules.places.application.photo_import import (
     WikimediaCommonsClient,
     commons_title_from_tags,
     is_license_allowed,
+    normalize_wikidata_qid,
     strip_html,
 )
 
@@ -135,6 +136,50 @@ def test_download_image_enforces_host_allowlist() -> None:
     client = _client(httpx.MockTransport(lambda request: httpx.Response(200, content=b"x")))
     with pytest.raises(ValueError, match="non-allowlisted host"):
         client.download_image("https://evil.example/Evil.jpg")
+
+
+@pytest.mark.parametrize("qid", ["Q42", "Q1", "Q123456789"])
+def test_normalize_wikidata_qid_accepts_valid(qid: str) -> None:
+    assert normalize_wikidata_qid(qid) == qid
+
+
+@pytest.mark.parametrize("raw", [None, "", "42", "Q", "Q0", "q42", "P18", "Q42; DROP TABLE places"])
+def test_normalize_wikidata_qid_rejects_invalid(raw: str | None) -> None:
+    assert normalize_wikidata_qid(raw) is None
+
+
+def test_fetch_commons_title_via_wikidata_parses_p18() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "www.wikidata.org"
+        assert request.url.params["entity"] == "Q42"
+        assert request.url.params["property"] == "P18"
+        return httpx.Response(
+            200,
+            json={
+                "claims": {
+                    "P18": [
+                        {"mainsnak": {"datavalue": {"value": "Swallows Nest.jpg"}}},
+                    ]
+                }
+            },
+        )
+
+    title = _client(httpx.MockTransport(handler)).fetch_commons_title_via_wikidata("Q42")
+    assert title == "File:Swallows Nest.jpg"
+
+
+def test_fetch_commons_title_via_wikidata_returns_none_without_p18() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"claims": {}})
+
+    title = _client(httpx.MockTransport(handler)).fetch_commons_title_via_wikidata("Q99999")
+    assert title is None
+
+
+def test_fetch_commons_title_via_wikidata_rejects_non_qid() -> None:
+    client = _client(httpx.MockTransport(lambda request: httpx.Response(200, json={})))
+    with pytest.raises(ValueError, match="non-QID"):
+        client.fetch_commons_title_via_wikidata("Q42; DROP TABLE places")
 
 
 def test_download_image_enforces_size_cap() -> None:

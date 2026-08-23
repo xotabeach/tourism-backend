@@ -14,8 +14,10 @@ htmlcov/
 .env.*
 !.env.example
 
-# Runtime uploaded profile media (local/dev only)
+# Runtime uploaded / imported media (local/dev only)
 data/media/profiles/
+data/media/places/
+data/media/reviews/
 
 # Operating systems and editors
 .DS_Store

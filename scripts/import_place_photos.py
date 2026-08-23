@@ -27,12 +27,21 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.selectable import Exists
 
 from tourism_backend.config import get_settings
+from tourism_backend.modules.admin.infrastructure import models as _admin_models
+from tourism_backend.modules.favorites.infrastructure import models as _favorites_models
+from tourism_backend.modules.geography.infrastructure import models as _geography_models
+from tourism_backend.modules.identity.infrastructure import models as _identity_models
+from tourism_backend.modules.knowledge.infrastructure import models as _knowledge_models
 from tourism_backend.modules.media.application.service import upsert_place_file_attachment
+from tourism_backend.modules.notifications.infrastructure import (
+    models as _notifications_models,
+)
 from tourism_backend.modules.places.application.osm_import import OSM_SOURCE_NAME
 from tourism_backend.modules.places.application.photo_import import (
     WikimediaCommonsClient,
     commons_title_from_tags,
     is_license_allowed,
+    normalize_wikidata_qid,
 )
 from tourism_backend.modules.places.application.photo_storage import (
     InvalidPlacePhoto,
@@ -40,6 +49,31 @@ from tourism_backend.modules.places.application.photo_storage import (
 )
 from tourism_backend.modules.places.application.place_images import upsert_place_image
 from tourism_backend.modules.places.infrastructure.models import Place, PlaceImage
+from tourism_backend.modules.route_builder.infrastructure import (
+    models as _route_builder_models,
+)
+from tourism_backend.modules.routes.infrastructure import models as _routes_models
+from tourism_backend.modules.subscriptions.infrastructure import (
+    models as _subscriptions_models,
+)
+from tourism_backend.modules.support.infrastructure import models as _support_models
+
+# Force full model-metadata discovery (same set as alembic/env.py) — session.commit()
+# below flushes across ALL mapped classes to compute FK insert order, so a table
+# referenced only via a string ForeignKey (e.g. media_attachments -> users) must
+# already be registered even though this script never touches it directly.
+_ = (
+    _admin_models,
+    _favorites_models,
+    _geography_models,
+    _identity_models,
+    _knowledge_models,
+    _notifications_models,
+    _route_builder_models,
+    _routes_models,
+    _subscriptions_models,
+    _support_models,
+)
 
 
 def _has_active_cover_subquery() -> Exists:
@@ -58,6 +92,9 @@ def _run(*, apply: bool, limit: int, only_missing: bool, sleep_seconds: float) -
     counts: dict[str, int] = {
         "scanned": 0,
         "no_commons_tag": 0,
+        "via_wikidata": 0,
+        "wikidata_no_image": 0,
+        "wikidata_api_error": 0,
         "commons_not_found": 0,
         "commons_api_error": 0,
         "license_rejected": 0,
@@ -86,8 +123,20 @@ def _run(*, apply: bool, limit: int, only_missing: bool, sleep_seconds: float) -
                 continue
             title = commons_title_from_tags(tags)
             if title is None:
-                counts["no_commons_tag"] += 1
-                continue
+                qid = normalize_wikidata_qid(tags.get("wikidata"))
+                if qid is None:
+                    counts["no_commons_tag"] += 1
+                    continue
+                try:
+                    title = client.fetch_commons_title_via_wikidata(qid)
+                except httpx.HTTPError as exc:
+                    print(f"wikidata_api_error place={place.id} qid={qid!r} error={exc!r}")
+                    counts["wikidata_api_error"] += 1
+                    continue
+                if title is None:
+                    counts["wikidata_no_image"] += 1
+                    continue
+                counts["via_wikidata"] += 1
 
             try:
                 info = client.fetch_file_info(title)
