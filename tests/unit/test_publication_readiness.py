@@ -32,6 +32,23 @@ def test_complete_place_is_ready() -> None:
     assert publication_blockers(_facts()) == ()
 
 
+def test_annotation_instead_of_name_blocks() -> None:
+    """OSM labels unnamed features with parenthetical remarks.
+
+    A spring tagged "(плохая вода)" is a hiker's note about the water, not
+    a place name, and reads as nonsense as a catalog card heading — even
+    though its description is genuine human-written text.
+    """
+    facts = _facts(name="(плохая вода)", description="Стоячая лужа, я бы не пил (май 2025)")
+    assert is_ready_for_publication(facts) is False
+    assert "нет пригодного названия" in publication_blockers(facts)
+
+
+def test_nameless_and_punctuation_only_names_block() -> None:
+    for bad in (None, "", "   ", "-", "?!", "()"):
+        assert is_ready_for_publication(_facts(name=bad)) is False
+
+
 def test_missing_locality_blocks() -> None:
     blockers = publication_blockers(_facts(has_locality=False))
     assert "не привязано к городу" in blockers

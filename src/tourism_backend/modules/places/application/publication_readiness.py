@@ -50,6 +50,23 @@ class PlacePublicationFacts:
     temporary_closure_status: str | None
 
 
+def _is_usable_name(raw: str | None) -> bool:
+    """A catalog card needs a title, not an annotation.
+
+    OSM labels unnamed features with parenthetical notes — a spring tagged
+    "(плохая вода)" is a hiker's remark about the water, not a place name,
+    and it reads as nonsense as a card heading.
+    """
+    if not raw:
+        return False
+    name = raw.strip()
+    if len(name) < 2:
+        return False
+    if not any(char.isalpha() for char in name):
+        return False
+    return not (name.startswith("(") and name.endswith(")"))
+
+
 def _meaningful_text(facts: PlacePublicationFacts) -> str | None:
     """Longest human-written text, or None when only filler is present."""
     if facts.content_enrichment_status == GENERATED_DRAFT:
@@ -74,8 +91,8 @@ def _meaningful_text(facts: PlacePublicationFacts) -> str | None:
 def publication_blockers(facts: PlacePublicationFacts) -> tuple[str, ...]:
     """Reasons this place must not be published yet, in Russian for the admin."""
     blockers: list[str] = []
-    if not (facts.name and facts.name.strip()):
-        blockers.append("нет названия")
+    if not _is_usable_name(facts.name):
+        blockers.append("нет пригодного названия")
     if not facts.has_locality:
         blockers.append("не привязано к городу")
     if facts.category_count < 1:
