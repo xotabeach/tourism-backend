@@ -412,6 +412,11 @@ def main() -> None:
         action="store_true",
         help="Only upsert the category dictionary from the seed file",
     )
+    mode.add_argument(
+        "--localities-only",
+        action="store_true",
+        help="Only upsert localities; require existing region slug=crimea",
+    )
     args = parser.parse_args()
     payload = load_payload(args.file)
 
@@ -423,6 +428,14 @@ def main() -> None:
             categories = upsert_categories(session, payload.get("categories", []))
             session.commit()
             print(f"Seed OK: categories_upserted={len(categories)}")
+            return
+        if args.localities_only:
+            region = session.scalar(select(Region).where(Region.slug == "crimea"))
+            if region is None:
+                raise SystemExit("Region crimea not found; run full seed first")
+            localities = upsert_localities(session, region, payload.get("localities", []))
+            session.commit()
+            print(f"Seed OK: localities_upserted={len(localities)}")
             return
         if args.places_only:
             region = session.scalar(select(Region).where(Region.slug == "crimea"))
