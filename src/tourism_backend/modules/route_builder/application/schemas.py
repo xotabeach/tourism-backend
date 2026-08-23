@@ -180,8 +180,11 @@ class CatalogMatchBlockOut(BaseModel):
 class ActionsBlockOut(BaseModel):
     type: Literal["actions"] = "actions"
     actions: list[dict[str, str]]
-    # ``stack`` = full-width outline rows (design-spec); ``wrap`` = chips.
-    layout: Literal["wrap", "stack"] = "wrap"
+    # ``stack`` = full-width outline rows (design-spec); ``wrap`` = chips;
+    # ``sheet`` = single trigger button opening a modal picker list.
+    layout: Literal["wrap", "stack", "sheet"] = "wrap"
+    # Title shown at the top of the modal picker when layout == "sheet".
+    sheet_title: str | None = None
 
 
 class SliderBlockOut(BaseModel):

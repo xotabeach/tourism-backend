@@ -22,6 +22,35 @@ def test_clarification_actions_follow_ask_field() -> None:
     assert "pace_calm" not in ids
 
 
+def test_city_ask_field_renders_full_city_sheet() -> None:
+    blocks = clarification_action_blocks(
+        {},
+        confirmed_fields=[],
+        ask_field="city",
+    )
+    block = blocks[0]
+    assert block.layout == "sheet"
+    assert block.sheet_title == "Выбрать город"
+    ids = {item["id"] for item in block.actions}
+    assert "city_yalta" in ids
+    assert "city_sevastopol" in ids
+    assert "city_sudak" in ids
+    # No truncation to the inline-chip cap: all localities fit in the sheet.
+    assert len(block.actions) == 10
+
+
+def test_interests_ask_field_includes_history_and_nature() -> None:
+    blocks = clarification_action_blocks(
+        {},
+        confirmed_fields=[],
+        ask_field="interests",
+    )
+    ids = {item["id"] for item in blocks[0].actions}
+    assert "interest_history" in ids
+    assert "interest_nature" in ids
+    assert blocks[0].layout == "wrap"
+
+
 def test_explicit_action_ids_override_defaults() -> None:
     blocks = build_actions_block(
         action_ids=["transport_car", "want_generate", "bogus", "transport_car"],

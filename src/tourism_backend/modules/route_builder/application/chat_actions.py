@@ -80,6 +80,16 @@ _ACTION_CATALOG: dict[str, dict[str, Any]] = {
         "patch": {"interests_add": ["романтика"], "trip_type": "romance"},
         "field": "interests",
     },
+    "interest_history": {
+        "label": "История",
+        "patch": {"interests_add": ["история"]},
+        "field": "interests",
+    },
+    "interest_nature": {
+        "label": "Природа",
+        "patch": {"interests_add": ["природа"]},
+        "field": "interests",
+    },
     "with_children": {
         "label": "С детьми",
         "patch": {"with_children": True},
@@ -140,6 +150,43 @@ _ACTION_CATALOG: dict[str, dict[str, Any]] = {
         "patch": None,
         "field": "budget_amount",
     },
+    # City picker options — kept in sync with mobile's `_allCities` list
+    # (route_match_screen.dart) so the chat sheet and the params-form
+    # autocomplete offer the same set of localities.
+    "city_simferopol": {
+        "label": "Симферополь",
+        "patch": {"city": "Симферополь"},
+        "field": "city",
+    },
+    "city_yalta": {"label": "Ялта", "patch": {"city": "Ялта"}, "field": "city"},
+    "city_alushta": {
+        "label": "Алушта",
+        "patch": {"city": "Алушта"},
+        "field": "city",
+    },
+    "city_saki": {"label": "Саки", "patch": {"city": "Саки"}, "field": "city"},
+    "city_sevastopol": {
+        "label": "Севастополь",
+        "patch": {"city": "Севастополь"},
+        "field": "city",
+    },
+    "city_evpatoria": {
+        "label": "Евпатория",
+        "patch": {"city": "Евпатория"},
+        "field": "city",
+    },
+    "city_feodosia": {
+        "label": "Феодосия",
+        "patch": {"city": "Феодосия"},
+        "field": "city",
+    },
+    "city_kerch": {"label": "Керчь", "patch": {"city": "Керчь"}, "field": "city"},
+    "city_bakhchisaray": {
+        "label": "Бахчисарай",
+        "patch": {"city": "Бахчисарай"},
+        "field": "city",
+    },
+    "city_sudak": {"label": "Судак", "patch": {"city": "Судак"}, "field": "city"},
 }
 
 # Legacy chip ids from the first interactive slice.
@@ -152,12 +199,24 @@ _ALIASES: dict[str, str] = {
 }
 
 _ASK_FIELD_DEFAULTS: dict[str, tuple[str, ...]] = {
-    "city": (),
+    "city": (
+        "city_simferopol",
+        "city_yalta",
+        "city_alushta",
+        "city_saki",
+        "city_sevastopol",
+        "city_evpatoria",
+        "city_feodosia",
+        "city_kerch",
+        "city_bakhchisaray",
+        "city_sudak",
+    ),
     "pace": ("pace_calm", "pace_moderate", "pace_active"),
     "interests": (
         "interest_sea",
         "interest_mountains",
-        "interest_romance",
+        "interest_history",
+        "interest_nature",
         "with_children",
     ),
     "transport_mode": (
@@ -183,6 +242,10 @@ _MISSING_PRIORITY: tuple[str, ...] = (
 )
 
 _MAX_ACTIONS = 6
+# City chips render in a bottom-sheet list (not inline chips), so they can
+# hold the full locality set without cluttering the message bubble.
+_MAX_SHEET_ACTIONS = 12
+_SHEET_TITLES: dict[str, str] = {"city": "Выбрать город"}
 
 
 def normalize_action_id(action_id: str) -> str | None:
@@ -335,6 +398,7 @@ def build_actions_block(
 ) -> list[ActionsBlockOut]:
     """Build chips from explicit ids, ask_field defaults, or first missing field."""
     ids: list[str] = []
+    resolved_field: str | None = None
     if action_ids:
         for raw in action_ids[:_MAX_ACTIONS]:
             canonical = normalize_action_id(raw)
@@ -344,7 +408,9 @@ def build_actions_block(
         field = ask_field or first_missing_ask_field(confirmed_fields or [])
         if field not in _ASK_FIELD_DEFAULTS:
             field = first_missing_ask_field(confirmed_fields or [])
+        resolved_field = field
         ids = list(_ASK_FIELD_DEFAULTS.get(field, ()))
+    cap = _MAX_SHEET_ACTIONS if resolved_field in _SHEET_TITLES else _MAX_ACTIONS
     if (
         include_generate
         and "want_generate" not in ids
@@ -355,20 +421,24 @@ def build_actions_block(
     if (
         include_generate
         and "want_generate" not in ids
-        and len(ids) < _MAX_ACTIONS
+        and len(ids) < cap
         and (ask_field in {None, "ready"} or len(sanitize_confirmed_fields(confirmed_fields)) >= 2)
     ):
         ids.append("want_generate")
 
     actions: list[dict[str, str]] = []
-    for action_id in ids[:_MAX_ACTIONS]:
+    for action_id in ids[:cap]:
         label = action_label(action_id)
         if label is None:
             continue
         actions.append({"id": action_id, "label": label})
     if not actions:
         actions = [{"id": "want_generate", "label": "Подбери маршрут"}]
-    return [ActionsBlockOut(actions=actions)]
+    layout: Literal["wrap", "stack", "sheet"] = (
+        "sheet" if resolved_field in _SHEET_TITLES else "wrap"
+    )
+    sheet_title = _SHEET_TITLES.get(resolved_field) if resolved_field else None
+    return [ActionsBlockOut(actions=actions, layout=layout, sheet_title=sheet_title)]
 
 
 def clarification_action_blocks(
