@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
 from tourism_backend.modules.identity.infrastructure.models import User
-from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.places.infrastructure.models import Category, Place, PlaceCategory
 from tourism_backend.modules.route_builder.application.quota import quota_snapshot
 from tourism_backend.modules.route_builder.application.schemas import (
     RouteMatchHitOut,
@@ -132,6 +132,19 @@ async def _load_candidates(
         if locality_name:
             localities_by_route[route_id].append(locality_name)
 
+    # Distinct category slugs across each route's stops (ADR-009).
+    category_rows = (
+        await session.execute(
+            select(RouteStop.route_id, Category.slug)
+            .join(PlaceCategory, PlaceCategory.place_id == RouteStop.place_id)
+            .join(Category, Category.id == PlaceCategory.category_id)
+            .where(RouteStop.route_id.in_(route_ids))
+        )
+    ).all()
+    categories_by_route: dict[UUID, set[str]] = defaultdict(set)
+    for route_id, slug in category_rows:
+        categories_by_route[route_id].add(slug)
+
     counts = await routes_service._stops_count_map(session, route_ids)  # noqa: SLF001
     out: list[RouteMatchCandidate] = []
     for route in routes:
@@ -151,6 +164,7 @@ async def _load_candidates(
                 place_names=tuple(places_by_route.get(route.id, ())),
                 locality_names=tuple(dict.fromkeys(localities_by_route.get(route.id, ()))),
                 stops_count=counts.get(route.id, 0),
+                category_slugs=frozenset(categories_by_route.get(route.id, frozenset())),
             )
         )
     return out

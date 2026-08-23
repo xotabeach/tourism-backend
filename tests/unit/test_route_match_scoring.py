@@ -81,3 +81,58 @@ def test_season_aliases_accept_english_catalog_values() -> None:
         _candidate(seasonality=("summer", "spring")),
     )
     assert any("сезон" in reason for reason in scored.reasons)
+
+
+def test_interests_match_by_category_when_text_is_empty() -> None:
+    """ADR-009: imported places carry categories but almost no free text.
+
+    A route whose stops are museums/fortresses must match «История» even
+    when every descriptive field is empty — the pre-ADR-009 engine scored
+    this at the neutral default because it only searched free text.
+    """
+    params = RouteMatchParamsIn(city="Бахчисарай", duration="d1_2", interests=["История"])
+    textless = _candidate(
+        name="Маршрут",
+        short_description=None,
+        description=None,
+        place_names=("Объект 1", "Объект 2"),
+        locality_names=("Бахчисарай",),
+        category_slugs=frozenset({"museum", "fortress"}),
+    )
+    with_text = score_candidate(params, textless)
+
+    blind = _candidate(
+        name="Маршрут",
+        short_description=None,
+        description=None,
+        place_names=("Объект 1", "Объект 2"),
+        locality_names=("Бахчисарай",),
+        category_slugs=frozenset(),
+    )
+    without = score_candidate(params, blind)
+
+    assert with_text.score > without.score
+    assert any("интересы" in reason for reason in with_text.reasons)
+
+
+def test_trip_type_matches_by_category_overlap() -> None:
+    params = RouteMatchParamsIn(city="Судак", trip_type="adventure", duration="d1_2")
+    adventurous = _candidate(
+        name="Маршрут",
+        short_description=None,
+        description=None,
+        locality_names=("Судак",),
+        category_slugs=frozenset({"cave", "mountain"}),
+    )
+    scored = score_candidate(params, adventurous)
+    assert any("adventure" in reason for reason in scored.reasons)
+
+
+def test_category_signal_does_not_override_wrong_city() -> None:
+    """Taxonomy must not rescue a route in the wrong city (city weight 0.32)."""
+    params = RouteMatchParamsIn(city="Керчь", duration="d1_2", interests=["История"])
+    scored = score_candidate(
+        params,
+        _candidate(locality_names=("Ялта",), category_slugs=frozenset({"museum", "fortress"})),
+    )
+    assert scored.score < 0.55

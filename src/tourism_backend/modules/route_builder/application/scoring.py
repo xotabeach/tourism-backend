@@ -53,6 +53,40 @@ _INTEREST_KEYWORDS: dict[str, tuple[str, ...]] = {
 # Public alias for place picker / generate pipeline.
 INTEREST_KEYWORDS = _INTEREST_KEYWORDS
 
+# Category taxonomy is the only signal with full coverage (100% of places carry
+# at least one `place_categories` row), whereas the free text these keywords
+# search is filled for well under 1% of imported places. Categories are
+# therefore the primary interest signal and the keywords a fallback — see
+# ADR-009 (data-first route intelligence).
+INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
+    "природа": frozenset({"nature", "park", "waterfall", "trail"}),
+    "пляж": frozenset({"beach"}),
+    "море": frozenset({"beach", "viewpoint"}),
+    "горы": frozenset({"mountain", "viewpoint", "cave", "trail"}),
+    "еда": frozenset({"winery"}),
+    "вино": frozenset({"winery"}),
+    "история": frozenset(
+        {"museum", "fortress", "palace", "monument", "religious-site", "landmark"}
+    ),
+    "экстрим": frozenset({"cave", "mountain", "trail"}),
+    "фото": frozenset({"viewpoint", "waterfall", "palace"}),
+    "леса": frozenset({"nature", "park", "trail"}),
+    "спорт": frozenset({"trail", "mountain"}),
+    "лошади": frozenset({"trail", "nature"}),
+    "романтика": frozenset({"palace", "viewpoint", "beach", "park"}),
+}
+
+TRIP_TYPE_CATEGORIES: dict[TripType, frozenset[str]] = {
+    "romance": frozenset({"palace", "viewpoint", "beach", "park"}),
+    "rest": frozenset({"beach", "park", "nature"}),
+    "adventure": frozenset({"cave", "mountain", "trail", "waterfall"}),
+    "active": frozenset({"trail", "mountain", "cave"}),
+}
+
+
+def categories_for_interest(interest: str) -> frozenset[str]:
+    return INTEREST_CATEGORIES.get(interest.casefold().strip(), frozenset())
+
 
 @dataclass(frozen=True, slots=True)
 class RouteMatchCandidate:
@@ -69,6 +103,9 @@ class RouteMatchCandidate:
     place_names: tuple[str, ...]
     locality_names: tuple[str, ...]
     stops_count: int
+    # Distinct category slugs across the route's stops (ADR-009: primary
+    # interest/trip-type signal, since it is the one field with full coverage).
+    category_slugs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,15 +164,27 @@ def _keyword_hits(text: str, keywords: tuple[str, ...]) -> int:
     return sum(1 for kw in keywords if kw in text)
 
 
-def _interests_score(interests: list[str], text: str) -> tuple[float, str | None]:
+def _interests_score(
+    interests: list[str],
+    text: str,
+    categories: frozenset[str] = frozenset(),
+) -> tuple[float, str | None]:
+    """Category match first, free-text keywords as fallback.
+
+    Text alone yields false negatives on imported places (description is
+    filled for ~0.1% of them), so an interest counts as hit when either the
+    taxonomy or the text agrees.
+    """
     if not interests:
         return 0.5, None
     hits = 0
     matched: list[str] = []
     for interest in interests:
         key = interest.casefold()
+        by_category = bool(categories & categories_for_interest(key))
         stems = _INTEREST_KEYWORDS.get(key, (key,))
-        if _keyword_hits(text, stems) > 0 or key in text:
+        by_text = _keyword_hits(text, stems) > 0 or key in text
+        if by_category or by_text:
             hits += 1
             matched.append(interest)
     ratio = hits / len(interests)
@@ -143,14 +192,18 @@ def _interests_score(interests: list[str], text: str) -> tuple[float, str | None
     return ratio, reason
 
 
-def _trip_type_score(trip_type: TripType | None, text: str) -> tuple[float, str | None]:
+def _trip_type_score(
+    trip_type: TripType | None,
+    text: str,
+    categories: frozenset[str] = frozenset(),
+) -> tuple[float, str | None]:
     if trip_type is None:
         return 0.5, None
-    keywords = _TRIP_KEYWORDS[trip_type]
-    hits = _keyword_hits(text, keywords)
-    if hits >= 2:
+    overlap = len(categories & TRIP_TYPE_CATEGORIES[trip_type])
+    hits = _keyword_hits(text, _TRIP_KEYWORDS[trip_type])
+    if overlap >= 2 or hits >= 2:
         return 1.0, f"тип «{trip_type}»"
-    if hits == 1:
+    if overlap == 1 or hits == 1:
         return 0.7, f"тип «{trip_type}»"
     return 0.25, None
 
@@ -250,9 +303,9 @@ def score_candidate(params: RouteMatchParamsIn, candidate: RouteMatchCandidate) 
     parts.append((0.32, c_score, c_reason))
     d_score, d_reason = _duration_score(params.duration, candidate.estimated_duration_minutes)
     parts.append((0.18, d_score, d_reason))
-    i_score, i_reason = _interests_score(params.interests, text)
+    i_score, i_reason = _interests_score(params.interests, text, candidate.category_slugs)
     parts.append((0.2, i_score, i_reason))
-    t_score, t_reason = _trip_type_score(params.trip_type, text)
+    t_score, t_reason = _trip_type_score(params.trip_type, text, candidate.category_slugs)
     parts.append((0.12, t_score, t_reason))
     p_score, p_reason = _pace_score(params.pace, candidate.difficulty)
     parts.append((0.08, p_score, p_reason))

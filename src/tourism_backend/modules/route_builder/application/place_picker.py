@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
 from tourism_backend.modules.places.application.place_covers import covers_for_places
-from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.places.infrastructure.models import Category, Place, PlaceCategory
 from tourism_backend.modules.route_builder.application.routing import (
     default_max_leg_meters,
     normalize_transport_mode,
@@ -23,7 +23,10 @@ from tourism_backend.modules.route_builder.application.schemas import (
     DurationOption,
     RouteMatchParamsIn,
 )
-from tourism_backend.modules.route_builder.application.scoring import INTEREST_KEYWORDS
+from tourism_backend.modules.route_builder.application.scoring import (
+    INTEREST_KEYWORDS,
+    categories_for_interest,
+)
 
 _DURATION_STOPS: dict[DurationOption, int] = {
     "d1_2": 3,
@@ -60,7 +63,12 @@ def _target_stops(duration: DurationOption, max_points: int) -> int:
     return max(2, min(max_points, _DURATION_STOPS[duration]))
 
 
-def _score_place(params: RouteMatchParamsIn, place: Place, city_cf: str) -> float:
+def _score_place(
+    params: RouteMatchParamsIn,
+    place: Place,
+    city_cf: str,
+    categories: frozenset[str] = frozenset(),
+) -> float:
     text = " ".join(
         part
         for part in (
@@ -76,6 +84,10 @@ def _score_place(params: RouteMatchParamsIn, place: Place, city_cf: str) -> floa
         score += 0.35
     for interest in params.interests:
         key = interest.casefold()
+        # Taxonomy first: imported places have categories but almost no text.
+        if categories & categories_for_interest(key):
+            score += 0.12
+            continue
         stems = INTEREST_KEYWORDS.get(key, (key,))
         if any(stem in text for stem in stems) or key in text:
             score += 0.12
@@ -100,6 +112,25 @@ def _score_place(params: RouteMatchParamsIn, place: Place, city_cf: str) -> floa
     if place.temporary_closure_status in {"closed", "partial"}:
         score -= 0.5
     return score
+
+
+async def _categories_for_places(
+    session: AsyncSession,
+    place_ids: list[UUID],
+) -> dict[UUID, frozenset[str]]:
+    if not place_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(PlaceCategory.place_id, Category.slug)
+            .join(Category, Category.id == PlaceCategory.category_id)
+            .where(PlaceCategory.place_id.in_(place_ids))
+        )
+    ).all()
+    grouped: dict[UUID, set[str]] = {}
+    for place_id, slug in rows:
+        grouped.setdefault(place_id, set()).add(slug)
+    return {place_id: frozenset(slugs) for place_id, slugs in grouped.items()}
 
 
 async def pick_places_for_params(
@@ -161,9 +192,13 @@ async def pick_places_for_params(
             ).all()
         )
 
+    categories_by_place = await _categories_for_places(session, [place.id for place in places])
     ranked = sorted(
         places,
-        key=lambda place: (-_score_place(params, place, city_cf), place.name),
+        key=lambda place: (
+            -_score_place(params, place, city_cf, categories_by_place.get(place.id, frozenset())),
+            place.name,
+        ),
     )
     target = _target_stops(params.duration, max_points)
 
