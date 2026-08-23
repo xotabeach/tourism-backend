@@ -44,6 +44,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_expert_status,
     format_message_author,
     format_place_fk,
+    format_place_publication_status,
     format_review_body_preview,
     format_review_media_gallery,
     format_review_status,
@@ -76,6 +77,11 @@ from tourism_backend.modules.media.application.service import resolve_urls
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.notifications.application import service as notifications_service
 from tourism_backend.modules.places.application import review_service as place_review_service
+from tourism_backend.modules.places.application.publication_readiness import (
+    is_ready_for_publication,
+    publication_blockers,
+)
+from tourism_backend.modules.places.application.publication_service import facts_for_places
 from tourism_backend.modules.places.infrastructure.models import Place, PlaceReview
 from tourism_backend.modules.routes.application import review_service
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
@@ -1394,6 +1400,200 @@ class RouteAdmin(ModelView, model=Route):
         return await self._set_publication_status(request, publication_status="deleted")
 
 
+class PlaceAdmin(ModelView, model=Place):
+    category = "Места"
+    category_icon = "fa-solid fa-location-dot"
+    name = "Место"
+    name_plural = "Места"
+    icon = "fa-solid fa-map-pin"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        Place.publication_status,
+        Place.name,
+        Place.locality_id,
+        Place.data_quality_status,
+        Place.content_enrichment_status,
+        Place.source_name,
+        Place.updated_at,
+    ]
+    column_labels = {
+        Place.id: "ID",
+        Place.publication_status: "Статус",
+        Place.name: "Название",
+        Place.locality_id: "Город",
+        Place.region_id: "Регион",
+        Place.slug: "Slug",
+        Place.proposed_slug: "Предложенный slug",
+        Place.short_description: "Краткое описание",
+        Place.description: "Описание",
+        Place.address: "Адрес",
+        Place.website_url: "Сайт",
+        Place.contact_phone: "Телефон",
+        Place.opening_hours_raw: "Часы работы (OSM)",
+        Place.elevation_meters: "Высота, м",
+        Place.surface: "Покрытие",
+        Place.difficulty: "Сложность",
+        Place.recommended_visit_minutes: "Время осмотра, мин",
+        Place.is_paid: "Платное",
+        Place.payment_status: "Оплата",
+        Place.is_suitable_for_children: "Подходит детям",
+        Place.is_suitable_for_pets: "Можно с животными",
+        Place.temporary_closure_status: "Временное закрытие",
+        Place.data_quality_status: "Качество данных",
+        Place.content_enrichment_status: "Статус текста",
+        Place.source_name: "Источник",
+        Place.source_url: "Ссылка на источник",
+        Place.updated_at: "Обновлено",
+        Place.created_at: "Создано",
+    }
+    column_formatters = {
+        Place.publication_status: format_place_publication_status,
+    }
+    column_formatters_detail = {
+        Place.publication_status: format_place_publication_status,
+    }
+    column_searchable_list = [Place.name, Place.description, Place.address]
+    column_sortable_list = [
+        Place.publication_status,
+        Place.name,
+        Place.updated_at,
+        Place.created_at,
+    ]
+    column_default_sort = (Place.updated_at, True)
+    column_filters: ClassVar[list[Any]] = [
+        AllUniqueStringValuesFilter(Place.publication_status),
+        AllUniqueStringValuesFilter(Place.data_quality_status),
+        AllUniqueStringValuesFilter(Place.content_enrichment_status),
+        AllUniqueStringValuesFilter(Place.source_name),
+        OperationColumnFilter(Place.locality_id, title="ID города"),
+    ]
+    form_columns = [
+        Place.name,
+        Place.short_description,
+        Place.description,
+        Place.address,
+        Place.website_url,
+        Place.contact_phone,
+        Place.opening_hours_raw,
+        Place.difficulty,
+        Place.recommended_visit_minutes,
+        Place.is_suitable_for_children,
+        Place.is_suitable_for_pets,
+        Place.temporary_closure_status,
+    ]
+    # Places come from the import pipeline, never hand-created here; deletion
+    # would orphan route stops, so archiving is the only removal path.
+    can_create = False
+    can_edit = True
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+    async def _set_publication_status(
+        self,
+        request: Request,
+        *,
+        publication_status: str,
+        enforce_gate: bool,
+    ) -> Response:
+        actor_id = session_principal_id(request)
+        if actor_id is None:
+            return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
+        raw_pks = request.query_params.get("pks", "")
+        place_ids: list[UUID] = []
+        for raw in raw_pks.split(","):
+            with contextlib.suppress(ValueError):
+                place_ids.append(UUID(raw.strip()))
+        if place_ids:
+            async with self.session_maker(expire_on_commit=False) as session:
+                facts = await facts_for_places(session, place_ids) if enforce_gate else {}
+                places = list(
+                    (await session.scalars(select(Place).where(Place.id.in_(place_ids)))).all()
+                )
+                now = datetime.now(UTC)
+                for place in places:
+                    if enforce_gate:
+                        place_facts = facts.get(place.id)
+                        # Fail closed: a place we could not evaluate is not
+                        # publishable, and neither is one with open blockers.
+                        if place_facts is None or not is_ready_for_publication(place_facts):
+                            blockers = (
+                                ", ".join(publication_blockers(place_facts))
+                                if place_facts
+                                else "не удалось проверить готовность"
+                            )
+                            await record_audit(
+                                session,
+                                actor_id=actor_id,
+                                action="admin.place_publish_blocked",
+                                entity_type="place",
+                                entity_id=str(place.id),
+                                ip=request.client.host if request.client else None,
+                                metadata={"blockers": blockers},
+                            )
+                            continue
+                    place.publication_status = publication_status
+                    place.updated_at = now
+                    await record_audit(
+                        session,
+                        actor_id=actor_id,
+                        action=f"admin.place_{publication_status}",
+                        entity_type="place",
+                        entity_id=str(place.id),
+                        ip=request.client.host if request.client else None,
+                    )
+                await session.commit()
+        return RedirectResponse(
+            str(request.url_for("admin:list", identity=self.identity)),
+            status_code=303,
+        )
+
+    @action(
+        name="publish_places",
+        label="Опубликовать",
+        confirmation_message=(
+            "Опубликовать выбранные места? Места, не прошедшие проверку готовности, "
+            "будут пропущены."
+        ),
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def publish_places(self, request: Request) -> Response:
+        return await self._set_publication_status(
+            request,
+            publication_status="published",
+            enforce_gate=True,
+        )
+
+    @action(
+        name="reject_places",
+        label="Отклонить",
+        confirmation_message="Отклонить выбранные места?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_places(self, request: Request) -> Response:
+        return await self._set_publication_status(
+            request,
+            publication_status="rejected",
+            enforce_gate=False,
+        )
+
+    @action(
+        name="unpublish_places",
+        label="Вернуть в черновики",
+        confirmation_message="Снять выбранные места с публикации?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def unpublish_places(self, request: Request) -> Response:
+        return await self._set_publication_status(
+            request,
+            publication_status="draft",
+            enforce_gate=False,
+        )
+
+
 class RouteReviewAdmin(ModelView, model=RouteReview):
     category = "Отзывы"
     category_icon = "fa-solid fa-comments"
@@ -1778,6 +1978,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(PhoneChangeChallengeAdmin)
     admin.add_view(SupportTicketAdmin)
     admin.add_view(SupportMessageAdmin)
+    admin.add_view(PlaceAdmin)
     admin.add_view(RouteAdmin)
     admin.add_view(RouteReviewAdmin)
     admin.add_view(PlaceReviewAdmin)

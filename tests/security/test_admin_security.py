@@ -725,3 +725,52 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
     assert all("id" in m and "author_key" in m for m in payload["messages"])
     # Poll payload is data, not HTML — bodies stay plain text.
     assert "<script>" not in live.text
+
+
+def test_place_admin_is_registered_and_gated() -> None:
+    from tourism_backend.modules.admin.presentation.views import PlaceAdmin
+    from tourism_backend.modules.places.infrastructure.models import Place
+
+    class _FakeAdmin:
+        def __init__(self) -> None:
+            self.views: list[object] = []
+
+        def add_view(self, view: object) -> None:
+            self.views.append(view)
+
+    admin = _FakeAdmin()
+    register_views(admin, Settings(app_env="test"))
+    assert any(getattr(v, "model", None) is Place for v in admin.views)
+
+    # Places arrive from the import pipeline; deleting one would orphan route
+    # stops, so archiving via status is the only removal path.
+    assert PlaceAdmin.can_create is False
+    assert PlaceAdmin.can_delete is False
+    assert PlaceAdmin.can_edit is True
+
+    # publication_status must never be hand-editable: it is only reachable
+    # through the audited actions, which is what makes the gate a gate.
+    assert Place.publication_status not in PlaceAdmin.form_columns
+    assert PlaceAdmin.publish_places._action is True
+    assert PlaceAdmin.reject_places._action is True
+    assert PlaceAdmin.unpublish_places._action is True
+
+
+def test_place_publication_gate_fails_closed() -> None:
+    """A place the gate cannot evaluate must not slip through as publishable."""
+    from tourism_backend.modules.places.application.publication_readiness import (
+        PlacePublicationFacts,
+        is_ready_for_publication,
+    )
+
+    incomplete = PlacePublicationFacts(
+        name="Без описания",
+        has_locality=True,
+        category_count=1,
+        short_description=None,
+        description=None,
+        content_enrichment_status="missing",
+        has_cover_photo=True,
+        temporary_closure_status=None,
+    )
+    assert is_ready_for_publication(incomplete) is False

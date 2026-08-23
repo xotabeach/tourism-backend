@@ -38,6 +38,13 @@ _ROUTE_STATUS_LABELS = {
     "deleted": ("Удалён", "ct-badge-route-deleted"),
 }
 
+_PLACE_STATUS_LABELS = {
+    "draft": ("Черновик", "ct-badge-route-draft"),
+    "published": ("Опубликовано", "ct-badge-route-published"),
+    "rejected": ("Отклонено", "ct-badge-route-rejected"),
+    "archived": ("В архиве", "ct-badge-route-deleted"),
+}
+
 _REVIEW_STATUS_LABELS = {
     "pending_review": ("На модерации", "ct-badge-route-pending"),
     "published": ("Опубликован", "ct-badge-route-published"),
@@ -116,6 +123,10 @@ def format_admin_role(model: object, attribute: object) -> Markup:
 
 def format_route_publication_status(model: object, attribute: object) -> Markup:
     return _badge(getattr(model, "publication_status", None), _ROUTE_STATUS_LABELS)
+
+
+def format_place_publication_status(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "publication_status", None), _PLACE_STATUS_LABELS)
 
 
 def format_review_status(model: object, attribute: object) -> Markup:
