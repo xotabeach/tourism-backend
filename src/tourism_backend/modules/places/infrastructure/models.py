@@ -139,6 +139,11 @@ class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     )
     content_enrichment: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     proposed_slug: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    elevation_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Raw OSM `opening_hours` expression — untrusted free text, parsed at read
+    # time; never the sole authority for whether a place is open.
+    opening_hours_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
+    surface: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class PlaceCategory(Base):
