@@ -84,7 +84,7 @@ def _has_active_cover_subquery() -> Exists:
     )
 
 
-def _run(*, apply: bool, limit: int, only_missing: bool, sleep_seconds: float) -> None:
+def _run(*, apply: bool, limit: int, offset: int, only_missing: bool, sleep_seconds: float) -> None:
     settings = get_settings()
     engine = create_engine(settings.database_url_sync)
     client = WikimediaCommonsClient()
@@ -105,10 +105,16 @@ def _run(*, apply: bool, limit: int, only_missing: bool, sleep_seconds: float) -
     }
 
     with Session(engine) as session:
+        # Ordered by id (stable across runs, unlike updated_at which this
+        # script never touches) so --offset can page through all places in
+        # memory-bounded chunks — the backend container this runs inside has
+        # a 192m hard limit shared with the live app; a single 5000-row pass
+        # (Place ORM rows + Pillow, imported via photo_storage) OOM-killed it.
         stmt = (
             select(Place)
             .where(Place.source_name == OSM_SOURCE_NAME, Place.source_payload.is_not(None))
-            .order_by(Place.updated_at.desc())
+            .order_by(Place.id)
+            .offset(offset)
             .limit(limit)
         )
         if only_missing:
@@ -212,6 +218,12 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="Skip this many places (ordered by id) — page through in memory-bounded chunks",
+    )
+    parser.add_argument(
         "--all",
         action="store_true",
         help="Do not restrict to places without an active cover photo",
@@ -227,9 +239,12 @@ def main() -> None:
         raise SystemExit("limit must be between 1 and 5000")
     if args.sleep_seconds < 0:
         raise SystemExit("sleep-seconds must be >= 0")
+    if args.offset < 0:
+        raise SystemExit("offset must be >= 0")
     _run(
         apply=args.apply,
         limit=args.limit,
+        offset=args.offset,
         only_missing=not args.all,
         sleep_seconds=args.sleep_seconds,
     )
