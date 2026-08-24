@@ -1441,6 +1441,7 @@ class PlaceAdmin(ModelView, model=Place):
         Place.temporary_closure_status: "Временное закрытие",
         Place.data_quality_status: "Качество данных",
         Place.content_enrichment_status: "Статус текста",
+        Place.merged_into_place_id: "Объединено с",
         Place.source_name: "Источник",
         Place.source_url: "Ссылка на источник",
         Place.updated_at: "Обновлено",

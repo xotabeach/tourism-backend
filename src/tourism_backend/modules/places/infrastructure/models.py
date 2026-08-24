@@ -144,6 +144,15 @@ class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     # time; never the sole authority for whether a place is open.
     opening_hours_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
     surface: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Set by scripts/dedupe_places.py when this place turned out to be an
+    # OSM-imported duplicate of another (usually seed) place; the target
+    # keeps its own row (routes.place_id is ondelete="RESTRICT") and takes
+    # over its cover photo / typed fields instead of being deleted.
+    merged_into_place_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("places.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
 
 class PlaceCategory(Base):
