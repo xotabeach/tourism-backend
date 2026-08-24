@@ -134,13 +134,22 @@ async def _run(*, apply: bool, limit: int, llm: bool, only_missing: bool) -> Non
             place.proposed_slug = draft.proposed_slug
             if not place.short_description:
                 place.short_description = draft.short_description
-            if not place.description:
+            # publication_readiness._meaningful_text() takes the LONGER of
+            # description/short_description, so a status flip only matters
+            # when description itself was actually (re)written here — an
+            # already-substantive OSM/editorial description must not lose
+            # its publication-readiness just because the still-empty
+            # short_description got a machine draft alongside it (this
+            # regressed 141 gate-ready places to 0 in production once).
+            description_was_empty = not place.description
+            if description_was_empty:
                 place.description = draft.description
             # Promote readable slug only for still-technical OSM drafts.
             if place.slug.startswith("osm-") and place.publication_status == "draft":
                 place.slug = draft.proposed_slug
-            place.content_enrichment_status = draft.status
-            place.content_enrichment = draft.provenance
+            if description_was_empty:
+                place.content_enrichment_status = draft.status
+                place.content_enrichment = draft.provenance
             place.updated_at = datetime.now(UTC)
         if apply:
             session.commit()
