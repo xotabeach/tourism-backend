@@ -169,7 +169,16 @@ async def test_lm_studio_draft_place_content_rejects_non_json() -> None:
 
 
 def test_enabled_lm_studio_requires_endpoint_and_model() -> None:
-    settings = Settings(ai_planning_enabled=True, ai_provider="lmstudio")
+    # Explicit None, not just an omitted kwarg: Settings also reads .env, and
+    # local dev now configures LM_STUDIO_BASE_URL/LM_STUDIO_MODEL there for
+    # the home-lab Gemma box — this test asserts the missing-config case, so
+    # it must not depend on the developer's ambient .env being empty.
+    settings = Settings(
+        ai_planning_enabled=True,
+        ai_provider="lmstudio",
+        lm_studio_base_url=None,
+        lm_studio_model=None,
+    )
 
     with pytest.raises(RuntimeError, match="LM_STUDIO_BASE_URL"):
         validate_settings(settings)

@@ -6,6 +6,11 @@ fills empty short_description/description + proposed_slug. Any LLM failure
 (timeout, bad JSON, provider down) falls back to the heuristic draft for that
 place — the batch never aborts on a single bad response.
 
+When `fetch_wikipedia_extracts.py` has already stored a
+source_payload["wikipedia"]["extract"] for a place, both the heuristic and
+the LLM draft use it as grounding instead of inventing generic filler text —
+see `content_enrichment.py` / `lm_studio.py`'s grounded prompt.
+
 Examples:
   uv run python scripts/enrich_places_content.py --limit 100
   uv run python scripts/enrich_places_content.py --apply --limit 100
@@ -58,6 +63,7 @@ def _lm_studio_callable(settings: Any) -> Any | None:
     async def _callable(payload: dict[str, Any]) -> dict[str, Any]:
         return await provider.draft_place_content(
             name=str(payload.get("name") or ""),
+            source_text=payload.get("source_text") or None,
             categories=list(payload.get("categories") or []),
             city=payload.get("city"),
         )
@@ -110,6 +116,8 @@ async def _run(*, apply: bool, limit: int, llm: bool, only_missing: bool) -> Non
             if place.locality_id is not None:
                 locality = session.get(Locality, place.locality_id)
                 city = locality.name if locality is not None else None
+            wikipedia = (place.source_payload or {}).get("wikipedia")
+            source_text = wikipedia.get("extract") if isinstance(wikipedia, dict) else None
             draft = await llm_content_draft_or_fallback(
                 place_id=place.id,
                 name=place.name,
@@ -118,6 +126,7 @@ async def _run(*, apply: bool, limit: int, llm: bool, only_missing: bool) -> Non
                 city_hint=city,
                 llm_enabled=llm,
                 llm_callable=llm_callable,
+                source_text=source_text if isinstance(source_text, str) else None,
             )
             updated += 1
             if not apply:

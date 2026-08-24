@@ -8,6 +8,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from tourism_backend.modules.places.application.wikipedia_extract import (
+    first_sentence,
+    trim_extract,
+)
+
 _CYR_MAP = {
     "а": "a",
     "б": "b",
@@ -87,15 +92,22 @@ def heuristic_content_draft(
     source_external_id: str | None,
     category_names: list[str],
     city_hint: str | None = None,
+    source_text: str | None = None,
 ) -> ContentDraft:
     categories = ", ".join(category_names[:3]) if category_names else "достопримечательность"
     where = f" в {city_hint}" if city_hint else " в Крыму"
-    short = f"{name} — {categories}{where}."
-    description = (
-        f"{name} — туристическое место ({categories}){where}. "
-        "Описание сгенерировано автоматически как черновик и требует редакционной проверки. "
-        "Фактические часы работы, цены и закрытия нужно сверять с карточкой места в каталоге."
-    )
+    if source_text and source_text.strip():
+        short = first_sentence(source_text)
+        description = f"{trim_extract(source_text)} (По данным Wikipedia.)"
+        prompt_version = "heuristic-wikipedia-v1"
+    else:
+        short = f"{name} — {categories}{where}."
+        description = (
+            f"{name} — туристическое место ({categories}){where}. "
+            "Описание сгенерировано автоматически как черновик и требует редакционной проверки. "
+            "Фактические часы работы, цены и закрытия нужно сверять с карточкой места в каталоге."
+        )
+        prompt_version = "heuristic-v1"
     return ContentDraft(
         proposed_slug=stable_slug_with_suffix(name, source_external_id),
         short_description=short[:240],
@@ -104,7 +116,7 @@ def heuristic_content_draft(
         provenance={
             "provider": "heuristic",
             "model": None,
-            "prompt_version": "heuristic-v1",
+            "prompt_version": prompt_version,
             "place_id": str(place_id),
             "source_external_id": source_external_id,
             "generated_at": datetime.now(UTC).isoformat(),
@@ -122,6 +134,7 @@ async def llm_content_draft_or_fallback(
     city_hint: str | None,
     llm_enabled: bool,
     llm_callable: Any | None = None,
+    source_text: str | None = None,
 ) -> ContentDraft:
     """Call optional LLM producer; always fall back to heuristic draft."""
 
@@ -131,6 +144,7 @@ async def llm_content_draft_or_fallback(
         source_external_id=source_external_id,
         category_names=category_names,
         city_hint=city_hint,
+        source_text=source_text,
     )
     if not llm_enabled or llm_callable is None:
         return base
@@ -140,6 +154,7 @@ async def llm_content_draft_or_fallback(
                 "name": name,
                 "categories": category_names,
                 "city": city_hint,
+                "source_text": source_text,
             }
         )
     except Exception:  # noqa: BLE001 — enrichment must not fail the batch

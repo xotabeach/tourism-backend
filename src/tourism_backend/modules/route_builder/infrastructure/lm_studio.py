@@ -61,6 +61,21 @@ _CONTENT_DRAFT_SYSTEM_PROMPT = (
     "часы работы, цены, координаты, историю, отзывы или факты, которых тебе не дали."
 )
 
+#: Used instead of the prompt above whenever a `source_text` (a Wikipedia
+#: intro extract, see `wikipedia_extract.py`) is available — real material to
+#: rewrite instead of a bare name/category/city with nothing to expand on.
+_CONTENT_DRAFT_GROUNDED_SYSTEM_PROMPT = (
+    "Ты редактор туристического каталога КрымТрип. Тебе дают название места, его "
+    "категории, (опционально) город и source_text — фрагмент статьи Wikipedia об "
+    "этом месте. Верни ТОЛЬКО компактный JSON без markdown:\n"
+    '{"proposed_slug":"...","short_description":"...","description":"..."}\n'
+    "proposed_slug — латиницей, цифры/дефисы, без домена/языка, до 80 символов.\n"
+    "short_description — одно живое предложение на русском, до 200 символов.\n"
+    "description — перескажи и адаптируй source_text под стиль путеводителя: живо, "
+    "без канцелярита и вики-штампов, 4-8 предложений на русском, до 1200 символов.\n"
+    "НЕ добавляй фактов (часы работы, цены, даты, события), которых нет в source_text."
+)
+
 
 class LMStudioProvider:
     def __init__(
@@ -200,17 +215,23 @@ class LMStudioProvider:
         name: str,
         categories: list[str],
         city: str | None,
+        source_text: str | None = None,
     ) -> dict[str, Any]:
         """Draft slug/short_description/description for one place.
 
         Matches the `llm_callable` contract expected by
         `content_enrichment.llm_content_draft_or_fallback` — raises on any
         transport/parse failure so the caller falls back to the heuristic
-        draft instead of silently writing bad content.
+        draft instead of silently writing bad content. When `source_text` is
+        given (a Wikipedia intro extract), the grounded prompt rewrites it
+        instead of inventing history from a bare name/category/city.
         """
-        user_content = json.dumps(
-            {"name": name, "categories": categories[:6], "city": city},
-            ensure_ascii=False,
+        user_payload: dict[str, Any] = {"name": name, "categories": categories[:6], "city": city}
+        if source_text:
+            user_payload["source_text"] = source_text
+        user_content = json.dumps(user_payload, ensure_ascii=False)
+        system_prompt = (
+            _CONTENT_DRAFT_GROUNDED_SYSTEM_PROMPT if source_text else _CONTENT_DRAFT_SYSTEM_PROMPT
         )
         async with httpx.AsyncClient(
             base_url=self._base_url,
@@ -221,10 +242,10 @@ class LMStudioProvider:
             content = await self._complete(
                 client,
                 messages=[
-                    ChatMessage(role="system", content=_CONTENT_DRAFT_SYSTEM_PROMPT),
+                    ChatMessage(role="system", content=system_prompt),
                     ChatMessage(role="user", content=user_content),
                 ],
-                max_tokens=320,
+                max_tokens=700 if source_text else 320,
             )
         parsed = extract_json_object(content)
         if parsed is None:
