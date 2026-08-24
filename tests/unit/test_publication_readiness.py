@@ -5,6 +5,7 @@ from __future__ import annotations
 from tourism_backend.modules.places.application.publication_readiness import (
     PlacePublicationFacts,
     is_ready_for_publication,
+    meaningful_text_ignoring_status,
     publication_blockers,
     publication_warnings,
 )
@@ -110,3 +111,25 @@ def test_missing_photo_warns_but_never_blocks() -> None:
 def test_short_description_alone_is_enough() -> None:
     facts = _facts(description=None, short_description=_GOOD_TEXT)
     assert is_ready_for_publication(facts) is True
+
+
+def test_meaningful_text_ignoring_status_accepts_real_description() -> None:
+    text = meaningful_text_ignoring_status(
+        name="Генуэзская крепость", short_description=None, description=_GOOD_TEXT
+    )
+    assert text == _GOOD_TEXT
+
+
+def test_meaningful_text_ignoring_status_rejects_osm_survey_marker() -> None:
+    # Real-world shape: OSM `description` tags are often the survey's own
+    # code, not content (ADR-009: 9-char median across the import).
+    text = meaningful_text_ignoring_status(
+        name="Родник", short_description=None, description="МК-29"
+    )
+    assert text is None
+
+
+def test_meaningful_text_ignoring_status_with_both_fields_empty() -> None:
+    assert (
+        meaningful_text_ignoring_status(name="Х", short_description=None, description=None) is None
+    )

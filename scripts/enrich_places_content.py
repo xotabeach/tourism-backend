@@ -35,6 +35,9 @@ from tourism_backend.modules.geography.infrastructure.models import Locality
 from tourism_backend.modules.places.application.content_enrichment import (
     llm_content_draft_or_fallback,
 )
+from tourism_backend.modules.places.application.publication_readiness import (
+    meaningful_text_ignoring_status,
+)
 from tourism_backend.modules.places.infrastructure.models import Category, Place, PlaceCategory
 from tourism_backend.modules.route_builder.infrastructure.lm_studio import LMStudioProvider
 
@@ -131,23 +134,33 @@ async def _run(*, apply: bool, limit: int, llm: bool, only_missing: bool) -> Non
             updated += 1
             if not apply:
                 continue
+            # publication_readiness treats a place as already having real
+            # content when EITHER field clears the meaningful-content bar on
+            # its own — a short OSM survey-marker "description" (9 chars
+            # median, see ADR-009) does not, even though it is non-empty and
+            # therefore untouched below. Decide this *before* writing: once
+            # short_description is filled in, `max(len)` could otherwise
+            # pick the new machine draft as "the" content and (wrongly)
+            # count it as reviewed just because content_enrichment_status
+            # was left alone (this let 691 template one-liners slip past the
+            # gate in production once — see the fix commit for the story).
+            already_had_real_content = (
+                meaningful_text_ignoring_status(
+                    name=place.name,
+                    short_description=place.short_description,
+                    description=place.description,
+                )
+                is not None
+            )
             place.proposed_slug = draft.proposed_slug
             if not place.short_description:
                 place.short_description = draft.short_description
-            # publication_readiness._meaningful_text() takes the LONGER of
-            # description/short_description, so a status flip only matters
-            # when description itself was actually (re)written here — an
-            # already-substantive OSM/editorial description must not lose
-            # its publication-readiness just because the still-empty
-            # short_description got a machine draft alongside it (this
-            # regressed 141 gate-ready places to 0 in production once).
-            description_was_empty = not place.description
-            if description_was_empty:
+            if not place.description:
                 place.description = draft.description
             # Promote readable slug only for still-technical OSM drafts.
             if place.slug.startswith("osm-") and place.publication_status == "draft":
                 place.slug = draft.proposed_slug
-            if description_was_empty:
+            if not already_had_real_content:
                 place.content_enrichment_status = draft.status
                 place.content_enrichment = draft.provenance
             place.updated_at = datetime.now(UTC)

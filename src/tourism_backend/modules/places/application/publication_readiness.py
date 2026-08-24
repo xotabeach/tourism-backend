@@ -67,15 +67,18 @@ def _is_usable_name(raw: str | None) -> bool:
     return not (name.startswith("(") and name.endswith(")"))
 
 
-def _meaningful_text(facts: PlacePublicationFacts) -> str | None:
-    """Longest human-written text, or None when only filler is present."""
-    if facts.content_enrichment_status == GENERATED_DRAFT:
-        # Machine draft not yet read by a human — does not count as content.
-        return None
+def meaningful_text_ignoring_status(
+    *, name: str | None, short_description: str | None, description: str | None
+) -> str | None:
+    """Longest candidate clearing the content bar, without the draft check.
+
+    Split out of `_meaningful_text` so `enrich_places_content.py` can ask
+    "does this place already have real content?" *before* writing a machine
+    draft into an empty field alongside it — the answer must not depend on
+    `content_enrichment_status`, which is exactly the field about to change.
+    """
     candidates = [
-        text.strip()
-        for text in (facts.description, facts.short_description)
-        if text and text.strip()
+        text.strip() for text in (description, short_description) if text and text.strip()
     ]
     if not candidates:
         return None
@@ -83,9 +86,21 @@ def _meaningful_text(facts: PlacePublicationFacts) -> str | None:
     if len(best) < _MIN_MEANINGFUL_TEXT_CHARS:
         return None
     # A description that merely restates the name adds nothing.
-    if facts.name and best.casefold().strip(" .·—-") == facts.name.casefold().strip():
+    if name and best.casefold().strip(" .·—-") == name.casefold().strip():
         return None
     return best
+
+
+def _meaningful_text(facts: PlacePublicationFacts) -> str | None:
+    """Longest human-written text, or None when only filler is present."""
+    if facts.content_enrichment_status == GENERATED_DRAFT:
+        # Machine draft not yet read by a human — does not count as content.
+        return None
+    return meaningful_text_ignoring_status(
+        name=facts.name,
+        short_description=facts.short_description,
+        description=facts.description,
+    )
 
 
 def publication_blockers(facts: PlacePublicationFacts) -> tuple[str, ...]:
