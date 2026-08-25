@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -67,6 +67,8 @@ from tourism_backend.modules.route_builder.application.tool_registry import (
     recommendation_accept_patch,
 )
 from tourism_backend.modules.route_builder.application.topic_guard import (
+    LLM_HISTORY_OMIT_INTENTS,
+    REDACTED_USER_TEXT,
     ai_busy_fallback,
     ai_unavailable_fallback,
     canned_reply_for_intent,
@@ -97,6 +99,38 @@ _MESSAGE_LIST_MAX = 100
 _CONTROL_ACTION_IDS = frozenset({"budget_amount", "with_children", "with_pets"})
 _MATCH_FIRST_ACTIONS = frozenset({"want_generate"})
 _CUSTOM_GENERATE_ACTIONS = frozenset({"build_custom_route"})
+
+
+def llm_history_stmt(
+    session_id: UUID,
+    *,
+    limit: int = _HISTORY_LIMIT,
+) -> Select[tuple[RoutePlanningMessage]]:
+    """Newest eligible turns first; caller reverses to chronological order.
+
+    Crisis/injection user rows are excluded here so a LIMIT 12 window is not
+    filled by redacted turns that would then be dropped in Python.
+    """
+    omitted = tuple(LLM_HISTORY_OMIT_INTENTS)
+    return (
+        select(RoutePlanningMessage)
+        .where(
+            RoutePlanningMessage.session_id == session_id,
+            RoutePlanningMessage.role.in_(("user", "assistant")),
+            or_(
+                RoutePlanningMessage.role != "user",
+                and_(
+                    or_(
+                        RoutePlanningMessage.intent.is_(None),
+                        RoutePlanningMessage.intent.notin_(omitted),
+                    ),
+                    RoutePlanningMessage.text != REDACTED_USER_TEXT,
+                ),
+            ),
+        )
+        .order_by(RoutePlanningMessage.created_at.desc())
+        .limit(limit)
+    )
 
 
 async def create_session(
@@ -549,21 +583,13 @@ async def _assistant_from_ai(
     confirmed_fields: list[str],
     settings: Settings,
 ) -> tuple[ChatTurnResult, str | None, bool, dict[str, Any], list[dict[str, str]]]:
-    history_rows = (
-        await session.scalars(
-            select(RoutePlanningMessage)
-            .where(RoutePlanningMessage.session_id == planning.id)
-            .order_by(RoutePlanningMessage.created_at.asc())
-        )
-    ).all()
+    history_rows = list((await session.scalars(llm_history_stmt(planning.id))).all())
+    history_rows.reverse()
     chat_messages: list[ChatMessage] = []
     for row in history_rows:
-        if row.role not in {"user", "assistant"}:
-            continue
         if not include_in_llm_history(role=row.role, intent=row.intent, text=row.text):
             continue
         chat_messages.append(ChatMessage(role=row.role, content=row.text))
-    chat_messages = chat_messages[-_HISTORY_LIMIT:]
 
     tool_context = await prefetch_context(
         session,

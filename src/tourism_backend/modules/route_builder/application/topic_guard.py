@@ -35,20 +35,20 @@ _AI_FALLBACK_REPLY = (
 _AI_BUSY_REPLY = (
     "ИИ-помощник сейчас занят. Подождите несколько секунд и отправьте сообщение ещё раз."
 )
-_LLM_OMIT_INTENTS = frozenset({"crisis", "injection_attempt"})
-_REDACTED_USER_TEXT = "[redacted]"
+LLM_HISTORY_OMIT_INTENTS = frozenset({"crisis", "injection_attempt"})
+REDACTED_USER_TEXT = "[redacted]"
 
 
 def persistable_user_text(intent: ChatIntent, text: str) -> str:
     """Do not persist injection/crisis payloads that would re-enter LLM history."""
-    if intent in _LLM_OMIT_INTENTS:
-        return _REDACTED_USER_TEXT
+    if intent in LLM_HISTORY_OMIT_INTENTS:
+        return REDACTED_USER_TEXT
     return text
 
 
 def include_in_llm_history(*, role: str, intent: str | None, text: str) -> bool:
     """Skip flagged user turns so redacted/raw crisis text cannot prompt the model."""
-    omitted_user = intent in _LLM_OMIT_INTENTS or text.strip() == _REDACTED_USER_TEXT
+    omitted_user = intent in LLM_HISTORY_OMIT_INTENTS or text.strip() == REDACTED_USER_TEXT
     return not (role == "user" and omitted_user)
 
 

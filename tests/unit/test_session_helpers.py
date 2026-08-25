@@ -13,6 +13,7 @@ from tourism_backend.modules.route_builder.application.session_service import (
     _provider_error_turn,
     _session_out,
     _stored_message_out,
+    llm_history_stmt,
 )
 from tourism_backend.modules.route_builder.infrastructure.models import (
     RoutePlanningMessage,
@@ -169,3 +170,16 @@ def test_provider_error_turn_distinguishes_busy_from_outage() -> None:
     assert "подождите" in busy.assistant_text.casefold()
     assert "не удалось связаться" in outage.assistant_text.casefold()
     assert busy.assistant_text != outage.assistant_text
+
+
+def test_llm_history_stmt_trims_in_sql_and_omits_flagged_user_turns() -> None:
+    from sqlalchemy.dialects import postgresql
+
+    compiled = llm_history_stmt(uuid4(), limit=12).compile(dialect=postgresql.dialect())
+    sql = str(compiled).lower()
+    bound = " ".join(str(value) for value in compiled.params.values()).lower()
+    assert "limit" in sql
+    assert "desc" in sql
+    assert "redacted" in bound
+    assert "crisis" in bound
+    assert "injection_attempt" in bound
