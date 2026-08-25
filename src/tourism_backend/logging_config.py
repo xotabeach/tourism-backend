@@ -6,6 +6,11 @@ from typing import Any
 
 from tourism_backend.config import Settings
 
+_LOG_RECORD_SKIP = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
+    "message",
+    "asctime",
+}
+
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -17,6 +22,10 @@ class JsonFormatter(logging.Formatter):
         }
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
+        for key, value in record.__dict__.items():
+            if key in _LOG_RECORD_SKIP or key.startswith("_"):
+                continue
+            payload[key] = value
         return json.dumps(payload, ensure_ascii=False)
 
 

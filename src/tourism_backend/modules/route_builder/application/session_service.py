@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -86,6 +88,8 @@ from tourism_backend.modules.subscriptions.application.entitlements import requi
 from tourism_backend.modules.subscriptions.application.service import (
     refresh_user_travel_plus,
 )
+
+logger = logging.getLogger(__name__)
 
 _HISTORY_LIMIT = 12
 _SESSION_LIST_MAX = 50
@@ -607,6 +611,9 @@ async def _assistant_from_ai(
         except Exception:  # noqa: BLE001,S110 — RAG must never break the chat turn
             pass
 
+    rag_hit = bool(tool_context.get("knowledge"))
+    started = time.perf_counter()
+
     async def _once(provider: Any, ctx: dict[str, Any]) -> ChatTurnResult:
         return cast(
             ChatTurnResult,
@@ -622,6 +629,7 @@ async def _assistant_from_ai(
     if not settings.ai_planning_enabled:
         provider: Any = MockAIPlanningProvider()
         result = await _once(provider, tool_context)
+        tools_round = 1 if parse_tool_calls(list(result.tool_requests)) else 0
         result, tool_context, explicit_places = await _run_tool_rounds(
             session,
             provider=provider,
@@ -631,12 +639,21 @@ async def _assistant_from_ai(
             chat_messages=chat_messages,
             place_hints=place_hints,
             tool_context=tool_context,
+        )
+        _log_ai_chat_turn(
+            provider=result.provider,
+            latency_ms=_elapsed_ms(started),
+            structured_parse=result.structured_parse,
+            tools_round=tools_round,
+            rag_hit=rag_hit,
+            outage_fallback=True,
         )
         return result, result.provider, True, tool_context, explicit_places
 
     try:
         provider = get_ai_planning_provider(settings)
         result = await _once(provider, tool_context)
+        tools_round = 1 if parse_tool_calls(list(result.tool_requests)) else 0
         result, tool_context, explicit_places = await _run_tool_rounds(
             session,
             provider=provider,
@@ -647,10 +664,53 @@ async def _assistant_from_ai(
             place_hints=place_hints,
             tool_context=tool_context,
         )
+        _log_ai_chat_turn(
+            provider=result.provider,
+            latency_ms=_elapsed_ms(started),
+            structured_parse=result.structured_parse,
+            tools_round=tools_round,
+            rag_hit=rag_hit,
+            outage_fallback=False,
+        )
         return result, result.provider, False, tool_context, explicit_places
     except Exception as exc:  # noqa: BLE001 — soft fallback for home-lab outages
         turn = _provider_error_turn(exc, confirmed_fields)
+        busy = isinstance(exc, AIProviderBusyError)
+        _log_ai_chat_turn(
+            provider="lmstudio" if busy else "fallback",
+            latency_ms=_elapsed_ms(started),
+            structured_parse="fallback",
+            tools_round=0,
+            rag_hit=rag_hit,
+            outage_fallback=not busy,
+        )
         return turn, None, True, tool_context, []
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
+
+
+def _log_ai_chat_turn(
+    *,
+    provider: str | None,
+    latency_ms: int,
+    structured_parse: str,
+    tools_round: int,
+    rag_hit: bool,
+    outage_fallback: bool,
+) -> None:
+    logger.info(
+        "ai_chat_turn",
+        extra={
+            "provider": provider or "none",
+            "latency_ms": latency_ms,
+            "structured_parse": structured_parse,
+            "tools_round": tools_round,
+            "rag_hit": rag_hit,
+            "outage_fallback": outage_fallback,
+        },
+    )
 
 
 def _provider_error_turn(exc: BaseException, confirmed_fields: list[str]) -> ChatTurnResult:
@@ -726,6 +786,7 @@ async def _run_tool_rounds(
             action_ids=follow.action_ids,
             tool_requests=(),
             provider=follow.provider,
+            structured_parse=follow.structured_parse,
         ),
         tool_context,
         explicit_places,
