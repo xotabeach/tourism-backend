@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from redis.asyncio import Redis
-from sqlalchemy import select, update
+from sqlalchemy import Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -347,15 +347,24 @@ async def verify_otp(
     return tokens
 
 
+def refresh_session_lock_stmt(digest: str) -> Select[tuple[AuthRefreshSession]]:
+    """Lock the refresh-session row before rotate so concurrent refresh cannot
+    issue two replacements for the same digest (M-4)."""
+    return (
+        select(AuthRefreshSession)
+        .where(AuthRefreshSession.token_digest == digest)
+        .limit(1)
+        .with_for_update()
+    )
+
+
 async def refresh_tokens(
     session: AsyncSession,
     settings: Settings,
     refresh_token: str,
 ) -> TokenPairOut:
     digest = digest_token(refresh_token)
-    result = await session.execute(
-        select(AuthRefreshSession).where(AuthRefreshSession.token_digest == digest).limit(1)
-    )
+    result = await session.execute(refresh_session_lock_stmt(digest))
     row = result.scalar_one_or_none()
     now = datetime.now(UTC)
     if row is None:
