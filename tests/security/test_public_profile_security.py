@@ -216,7 +216,7 @@ async def test_users_leaderboard_is_public_and_ordered_by_points(
     engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
     async with engine.begin() as conn:
         await conn.execute(
-            text("UPDATE users SET travel_points = 50 WHERE id = :id"),
+            text("UPDATE users SET travel_points = 4999 WHERE id = :id"),
             {"id": low_id},
         )
         await conn.execute(

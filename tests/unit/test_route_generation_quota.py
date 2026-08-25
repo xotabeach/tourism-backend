@@ -41,7 +41,8 @@ async def test_require_generation_quota_raises_when_weekly_exhausted(
     monkeypatch.setattr(quota_mod, "count_generations_since", _fake_count)
 
     class _Session:
-        pass
+        async def scalar(self, _stmt: object) -> object:
+            return uuid4()
 
     with pytest.raises(AppError) as exc:
         await quota_mod.require_generation_quota(
