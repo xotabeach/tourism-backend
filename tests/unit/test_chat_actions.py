@@ -96,6 +96,28 @@ def test_known_constraints_and_merge() -> None:
     ]
 
 
+def test_llm_patch_does_not_overwrite_confirmed_city() -> None:
+    """AI-7: model constraint_patch must not silently rewrite locked fields."""
+    merged = merge_constraint_patch(
+        {"city": "Ялта", "people": 2},
+        {"city": "Севастополь", "people": 4},
+        previously_confirmed=["city"],
+        protect_confirmed=True,
+    )
+    assert merged["city"] == "Ялта"
+    assert merged["people"] == 4
+
+
+def test_chip_patch_can_overwrite_confirmed_city() -> None:
+    merged = merge_constraint_patch(
+        {"city": "Ялта"},
+        {"city": "Севастополь"},
+        previously_confirmed=["city"],
+        protect_confirmed=False,
+    )
+    assert merged["city"] == "Севастополь"
+
+
 def test_form_draft_excludes_confirmed_and_placeholder_city() -> None:
     from tourism_backend.modules.route_builder.application.chat_actions import (
         form_draft_constraints,

@@ -477,6 +477,7 @@ async def post_message(
                 constraints_dict,
                 turn.proposed_constraints,
                 previously_confirmed=confirmed,
+                protect_confirmed=True,
             )
             touched = fields_touched_by_patch(turn.proposed_constraints)
             confirmed = sanitize_confirmed_fields([*confirmed, *touched])

@@ -324,6 +324,7 @@ def merge_constraint_patch(
     patch: dict[str, Any] | None,
     *,
     previously_confirmed: list[str] | None = None,
+    protect_confirmed: bool = False,
 ) -> dict[str, Any]:
     """Merge allowlisted patch into working constraints.
 
@@ -331,6 +332,10 @@ def merge_constraint_patch(
     win for newly confirmed list fields: the first ``interests_add`` while
     ``interests`` is not yet confirmed replaces the draft list instead of
     appending to it (so form «природа» does not become a chat fact).
+
+    When ``protect_confirmed`` is True (LLM ``constraint_patch``), keys already
+    in ``previously_confirmed`` stay as the user left them — chips/sliders leave
+    this False so an explicit tap can still change those fields.
     """
     if not patch:
         return dict(constraints)
@@ -341,6 +346,8 @@ def merge_constraint_patch(
         if key == "interests_add":
             continue
         if key not in _CONFIRMABLE_FIELDS:
+            continue
+        if protect_confirmed and key in confirmed_before:
             continue
         merged[key] = value
     if isinstance(interests_add, list):
