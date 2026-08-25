@@ -9,7 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import AppEnvironment
 from tourism_backend.modules.identity.infrastructure.models import User
+from tourism_backend.modules.subscriptions.application.entitlements import (
+    mock_self_activate_allowed,
+)
 from tourism_backend.modules.subscriptions.infrastructure.models import (
     TravelPlusSubscription,
 )
@@ -50,6 +54,7 @@ async def activate_travel_plus(
     source: str,
     created_by_principal_id: UUID | None = None,
     commit: bool = True,
+    app_env: AppEnvironment | str | None = None,
 ) -> User:
     if plan not in PLAN_DURATIONS:
         raise AppError(
@@ -62,6 +67,12 @@ async def activate_travel_plus(
             code="validation_error",
             message="unsupported subscription source",
             status_code=422,
+        )
+    if source == "mock_checkout" and not mock_self_activate_allowed(app_env):
+        raise AppError(
+            code="mock_checkout_disabled",
+            message="Самоактивация Тревел+ недоступна в этом окружении",
+            status_code=403,
         )
 
     user = await session.get(User, user_id)

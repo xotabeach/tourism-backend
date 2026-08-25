@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import AppEnvironment
 from tourism_backend.modules.subscriptions.application.entitlements import (
     FREE_POLICY,
     TRAVEL_PLUS_POLICY,
+    mock_self_activate_allowed,
     policy_for_user,
     require_ai_chat,
 )
@@ -47,3 +49,22 @@ def test_require_ai_chat_blocks_free() -> None:
         require_ai_chat(_UserFlag(travel_plus_active=False))
     assert exc.value.code == "travel_plus_required"
     assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("env", "allowed"),
+    [
+        (AppEnvironment.LOCAL, True),
+        (AppEnvironment.TEST, True),
+        (AppEnvironment.STAGING, False),
+        (AppEnvironment.PRODUCTION, False),
+        (None, False),
+        ("production", False),
+        ("test", True),
+    ],
+)
+def test_mock_self_activate_allowed_only_local_and_test(
+    env: AppEnvironment | str | None,
+    allowed: bool,
+) -> None:
+    assert mock_self_activate_allowed(env) is allowed

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import AppEnvironment
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.subscriptions.application import service as travel_plus
 
@@ -41,6 +42,7 @@ async def test_activate_rejects_bad_plan(session: AsyncSession) -> None:
             user_id=user.id,
             plan="lifetime",
             source="mock_checkout",
+            app_env=AppEnvironment.TEST,
             commit=False,
         )
     assert exc.value.status_code == 422
@@ -83,6 +85,7 @@ async def test_activate_cancel_and_refresh_expiry(session: AsyncSession) -> None
         user_id=user.id,
         plan="monthly",
         source="mock_checkout",
+        app_env=AppEnvironment.TEST,
         commit=True,
     )
     await session.refresh(user)
@@ -93,6 +96,22 @@ async def test_activate_cancel_and_refresh_expiry(session: AsyncSession) -> None
     refreshed = await travel_plus.refresh_user_travel_plus(session, user)
     assert refreshed.travel_plus_active is False
     assert refreshed.travel_plus_plan is None
+
+
+@pytest.mark.asyncio
+async def test_activate_rejects_mock_checkout_outside_local_test(session: AsyncSession) -> None:
+    user = await _user(session)
+    with pytest.raises(AppError) as exc:
+        await travel_plus.activate_travel_plus(
+            session,
+            user_id=user.id,
+            plan="monthly",
+            source="mock_checkout",
+            app_env=AppEnvironment.PRODUCTION,
+            commit=False,
+        )
+    assert exc.value.code == "mock_checkout_disabled"
+    assert exc.value.status_code == 403
 
 
 @pytest.mark.asyncio

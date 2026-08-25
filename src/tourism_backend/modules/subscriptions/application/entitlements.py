@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import AppEnvironment
 
 
 class HasTravelPlusFlag(Protocol):
@@ -56,6 +57,18 @@ TRAVEL_PLUS_POLICY = QuotaPolicy(
     travel_points_multiplier=1.5,
     offline_favorites_extended=True,
 )
+
+
+def mock_self_activate_allowed(app_env: AppEnvironment | str | None) -> bool:
+    """Self-serve mock checkout is a local/test convenience, never staging/prod.
+
+    Real billing is not as-built; the HTTP activate path must not grant Travel+
+    on internet-facing environments. Admin grants still use source='admin'.
+    """
+    if app_env is None:
+        return False
+    value = app_env.value if isinstance(app_env, AppEnvironment) else app_env
+    return value in {AppEnvironment.LOCAL.value, AppEnvironment.TEST.value}
 
 
 def policy_for_user(user: HasTravelPlusFlag) -> QuotaPolicy:

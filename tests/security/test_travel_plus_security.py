@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -203,3 +204,24 @@ async def test_get_me_expires_stale_travel_plus(live_client: AsyncClient) -> Non
     assert body["travel_plus_active"] is False
     assert body["travel_plus_plan"] is None
     assert body["travel_plus_expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_travel_plus_activate_rejected_when_mock_checkout_disabled(
+    live_client: AsyncClient,
+) -> None:
+    """M-1: HTTP activate path uses the entitlements gate (staging/prod)."""
+    phone = f"+7906{uuid4().int % 10_000_000:07d}"
+    tokens = await _login(live_client, phone=phone)
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    with patch(
+        "tourism_backend.modules.subscriptions.presentation.router.mock_self_activate_allowed",
+        return_value=False,
+    ):
+        denied = await live_client.post(
+            "/api/v1/me/travel-plus/activate",
+            headers=headers,
+            json={"plan": "monthly"},
+        )
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "mock_checkout_disabled"
