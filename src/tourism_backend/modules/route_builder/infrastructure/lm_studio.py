@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 import httpx
 
 from tourism_backend.modules.route_builder.application.ai import (
+    AIProviderBusyError,
     AIProviderProbeResult,
     ChatMessage,
     ChatTurnResult,
@@ -75,6 +77,28 @@ _CONTENT_DRAFT_GROUNDED_SYSTEM_PROMPT = (
     "без канцелярита и вики-штампов, 4-8 предложений на русском, до 1200 символов.\n"
     "НЕ добавляй фактов (часы работы, цены, даты, события), которых нет в source_text."
 )
+
+_INFERENCE_GATE = asyncio.Lock()
+_INFERENCE_IN_FLIGHT = False
+
+
+async def acquire_inference_slot() -> None:
+    """Fail fast if another LM Studio call is already using the local GPU."""
+    global _INFERENCE_IN_FLIGHT
+    async with _INFERENCE_GATE:
+        if _INFERENCE_IN_FLIGHT:
+            raise AIProviderBusyError("lm_studio_busy")
+        _INFERENCE_IN_FLIGHT = True
+
+
+async def release_inference_slot() -> None:
+    global _INFERENCE_IN_FLIGHT
+    _INFERENCE_IN_FLIGHT = False
+
+
+def reset_inference_gate_for_tests() -> None:
+    global _INFERENCE_IN_FLIGHT
+    _INFERENCE_IN_FLIGHT = False
 
 
 class LMStudioProvider:
@@ -192,7 +216,9 @@ class LMStudioProvider:
             "",
         )
         structured = parse_structured_turn(content, confirmed_fields=confirmed)
+        parse_status = "ok"
         if structured is None:
+            parse_status = "fallback"
             structured = fallback_structured_turn(
                 confirmed_fields=confirmed,
                 user_snippet=last_user,
@@ -207,6 +233,7 @@ class LMStudioProvider:
             action_ids=structured.action_ids,
             tool_requests=structured.tool_requests,
             provider="lmstudio",
+            structured_parse=parse_status,
         )
 
     async def draft_place_content(
@@ -266,25 +293,29 @@ class LMStudioProvider:
         messages: list[ChatMessage],
         max_tokens: int,
     ) -> str:
-        response = await client.post(
-            "chat/completions",
-            json={
-                "model": self._model,
-                "messages": [
-                    {"role": message.role, "content": message.content} for message in messages
-                ],
-                "temperature": 0.3,
-                "max_tokens": max_tokens,
-                "stream": False,
-                "reasoning_effort": "none",
-            },
-        )
-        response.raise_for_status()
-        payload: Any = response.json()
+        await acquire_inference_slot()
         try:
-            content = payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ValueError("LM Studio chat completion returned an invalid payload") from exc
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError("LM Studio chat completion returned empty content")
-        return content.strip()
+            response = await client.post(
+                "chat/completions",
+                json={
+                    "model": self._model,
+                    "messages": [
+                        {"role": message.role, "content": message.content} for message in messages
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": max_tokens,
+                    "stream": False,
+                    "reasoning_effort": "none",
+                },
+            )
+            response.raise_for_status()
+            payload: Any = response.json()
+            try:
+                content = payload["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise ValueError("LM Studio chat completion returned an invalid payload") from exc
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("LM Studio chat completion returned empty content")
+            return content.strip()
+        finally:
+            await release_inference_slot()

@@ -1,6 +1,7 @@
 """Unit tests for route-builder topic guard."""
 
 from tourism_backend.modules.route_builder.application.topic_guard import (
+    ai_busy_fallback,
     canned_reply_for_intent,
     classify_chat_intent,
     include_in_llm_history,
@@ -35,3 +36,9 @@ def test_persistable_user_text_redacts_injection_and_crisis() -> None:
     assert include_in_llm_history(role="user", intent="crisis", text="[redacted]") is False
     assert include_in_llm_history(role="user", intent="greeting", text="привет") is True
     assert include_in_llm_history(role="assistant", intent="injection_attempt", text="ok") is True
+
+
+def test_ai_busy_fallback_asks_user_to_wait() -> None:
+    text = ai_busy_fallback()
+    assert "занят" in text.casefold()
+    assert "подождите" in text.casefold()

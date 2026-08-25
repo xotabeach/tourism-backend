@@ -26,6 +26,11 @@ class ChatTurnResult:
     action_ids: tuple[str, ...] = ()
     tool_requests: tuple[dict[str, Any], ...] = ()
     provider: str = "mock"
+    structured_parse: str = "ok"
+
+
+class AIProviderBusyError(Exception):
+    """Raised when the in-process LM Studio slot is already serving a turn."""
 
 
 @dataclass(frozen=True, slots=True)

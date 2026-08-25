@@ -32,6 +32,9 @@ _AI_FALLBACK_REPLY = (
     "поездки вручную или подобрать маршрут по уже выбранным фильтрам — "
     "напишите «подбери маршрут»."
 )
+_AI_BUSY_REPLY = (
+    "ИИ-помощник сейчас занят. Подождите несколько секунд и отправьте сообщение ещё раз."
+)
 _LLM_OMIT_INTENTS = frozenset({"crisis", "injection_attempt"})
 _REDACTED_USER_TEXT = "[redacted]"
 
@@ -81,6 +84,11 @@ def canned_reply_for_intent(intent: ChatIntent) -> str:
 
 def ai_unavailable_fallback() -> str:
     return _AI_FALLBACK_REPLY
+
+
+def ai_busy_fallback() -> str:
+    """Fail-fast copy when the in-process LM Studio slot is already in use."""
+    return _AI_BUSY_REPLY
 
 
 def _looks_like_crisis(text: str) -> bool:

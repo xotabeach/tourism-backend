@@ -17,7 +17,11 @@ from tourism_backend.modules.knowledge.infrastructure.retriever import (
     TourismKnowledgeRetriever,
 )
 from tourism_backend.modules.route_builder.application import generate_service, match_service
-from tourism_backend.modules.route_builder.application.ai import ChatMessage, ChatTurnResult
+from tourism_backend.modules.route_builder.application.ai import (
+    AIProviderBusyError,
+    ChatMessage,
+    ChatTurnResult,
+)
 from tourism_backend.modules.route_builder.application.chat_actions import (
     clarification_action_blocks,
     field_for_action,
@@ -61,6 +65,7 @@ from tourism_backend.modules.route_builder.application.tool_registry import (
     recommendation_accept_patch,
 )
 from tourism_backend.modules.route_builder.application.topic_guard import (
+    ai_busy_fallback,
     ai_unavailable_fallback,
     canned_reply_for_intent,
     classify_chat_intent,
@@ -643,19 +648,24 @@ async def _assistant_from_ai(
             tool_context=tool_context,
         )
         return result, result.provider, False, tool_context, explicit_places
-    except Exception:  # noqa: BLE001 — soft fallback for home-lab outages
-        return (
-            ChatTurnResult(
-                assistant_text=ai_unavailable_fallback(),
-                ask_field=prefer_ready_ask_field(confirmed_fields),
-                action_ids=("want_generate",),
-                provider="fallback",
-            ),
-            None,
-            True,
-            tool_context,
-            [],
-        )
+    except Exception as exc:  # noqa: BLE001 — soft fallback for home-lab outages
+        turn = _provider_error_turn(exc, confirmed_fields)
+        return turn, None, True, tool_context, []
+
+
+def _provider_error_turn(exc: BaseException, confirmed_fields: list[str]) -> ChatTurnResult:
+    """Map LM Studio failures to a canned assistant turn.
+
+    A busy GPU must not look like a full outage: the user can retry immediately
+    instead of hanging on the 60s HTTP timeout and then seeing the offline copy.
+    """
+    busy = isinstance(exc, AIProviderBusyError)
+    return ChatTurnResult(
+        assistant_text=ai_busy_fallback() if busy else ai_unavailable_fallback(),
+        ask_field=prefer_ready_ask_field(confirmed_fields),
+        action_ids=("want_generate",),
+        provider="fallback",
+    )
 
 
 async def _run_tool_rounds(

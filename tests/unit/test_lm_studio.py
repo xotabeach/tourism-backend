@@ -4,8 +4,13 @@ import httpx
 import pytest
 
 from tourism_backend.config import Settings, validate_settings
-from tourism_backend.modules.route_builder.application.ai import ChatMessage
-from tourism_backend.modules.route_builder.infrastructure.lm_studio import LMStudioProvider
+from tourism_backend.modules.route_builder.application.ai import AIProviderBusyError, ChatMessage
+from tourism_backend.modules.route_builder.infrastructure.lm_studio import (
+    LMStudioProvider,
+    acquire_inference_slot,
+    release_inference_slot,
+    reset_inference_gate_for_tests,
+)
 
 
 def _provider(handler: httpx.MockTransport) -> LMStudioProvider:
@@ -16,6 +21,13 @@ def _provider(handler: httpx.MockTransport) -> LMStudioProvider:
         timeout_seconds=5,
         transport=handler,
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_lm_studio_gate() -> None:
+    reset_inference_gate_for_tests()
+    yield
+    reset_inference_gate_for_tests()
 
 
 @pytest.mark.asyncio
@@ -85,6 +97,39 @@ async def test_lm_studio_chat_turn_sends_reasoning_effort_none() -> None:
     assert "длительность" in result.assistant_text
     assert result.ask_field == "duration"
     assert "duration_d1_2" in result.action_ids
+    assert result.structured_parse == "ok"
+
+
+@pytest.mark.asyncio
+async def test_lm_studio_chat_turn_fails_fast_when_slot_busy() -> None:
+    """Second in-process caller must not wait on the 60s HTTP timeout."""
+    await acquire_inference_slot()
+    try:
+        with pytest.raises(AIProviderBusyError, match="lm_studio_busy"):
+            await _provider(httpx.MockTransport(lambda _request: httpx.Response(500))).chat_turn(
+                messages=[ChatMessage(role="user", content="Ялта")],
+                constraints={"city": "Ялта"},
+                confirmed_fields=["city"],
+            )
+    finally:
+        await release_inference_slot()
+
+
+@pytest.mark.asyncio
+async def test_lm_studio_chat_turn_marks_unparseable_json_as_fallback() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "не JSON, просто текст"}}]},
+        )
+
+    result = await _provider(httpx.MockTransport(handler)).chat_turn(
+        messages=[ChatMessage(role="user", content="Хочу спокойный день")],
+        constraints={"city": "Ялта"},
+        confirmed_fields=["city"],
+    )
+    assert result.structured_parse == "fallback"
+    assert result.provider == "lmstudio"
 
 
 @pytest.mark.asyncio

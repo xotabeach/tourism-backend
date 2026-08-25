@@ -5,10 +5,12 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from tourism_backend.modules.knowledge.infrastructure.models import KnowledgeChunk
+from tourism_backend.modules.route_builder.application.ai import AIProviderBusyError
 from tourism_backend.modules.route_builder.application.session_service import (
     _catalog_match_block,
     _compose_assistant_blocks,
     _parse_blocks,
+    _provider_error_turn,
     _session_out,
     _stored_message_out,
 )
@@ -158,3 +160,12 @@ def test_control_patch_helpers() -> None:
     assert _control_patch("with_children", None) == {"with_children": True}
     assert _control_patch("with_pets", None) == {"with_pets": True}
     assert _control_patch("unknown", 1) is None
+
+
+def test_provider_error_turn_distinguishes_busy_from_outage() -> None:
+    busy = _provider_error_turn(AIProviderBusyError("lm_studio_busy"), ["city"])
+    outage = _provider_error_turn(RuntimeError("connection reset"), ["city"])
+    assert "занят" in busy.assistant_text.casefold()
+    assert "подождите" in busy.assistant_text.casefold()
+    assert "не удалось связаться" in outage.assistant_text.casefold()
+    assert busy.assistant_text != outage.assistant_text
