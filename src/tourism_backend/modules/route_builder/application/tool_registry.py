@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from geoalchemy2 import Geometry
-from sqlalchemy import cast, or_, select
+from geoalchemy2 import Geography
+from sqlalchemy import Select, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
@@ -409,10 +409,10 @@ async def _find_places_near_point(
 ) -> dict[str, Any]:
     """Find published places near a lat/lng point (radius in meters).
 
-    Uses a cheap bounding-box pre-filter over the PostGIS point column, then a
-    haversine distance sort. Kept additive to structured SQL — never sent to the
-    model as facts beyond the returned allowlisted rows.
+    Distance filter and row cap run in PostGIS (``ST_DWithin`` + ``LIMIT``)
+    so a growing catalog cannot load a bbox into Python for haversine.
     """
+    _ = constraints
     lat = args.get("lat")
     lng = args.get("lng")
     if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
@@ -428,58 +428,44 @@ async def _find_places_near_point(
         limit = 6
     limit = max(1, min(limit, _MAX_PLACES))
 
-    # Approx 1 deg lat ~ 111 km, 1 deg lng scaled by cos(lat).
-    import math
-
-    d_lat = radius_m / 111_000.0
-    d_lng = radius_m / (111_000.0 * max(0.2, math.cos(math.radians(lat))))
-    lat_min, lat_max = lat - d_lat, lat + d_lat
-    lng_min, lng_max = lng - d_lng, lng + d_lng
-
-    from geoalchemy2.functions import ST_X, ST_Y
-
-    geom = cast(Place.location, Geometry)
-
-    geom = cast(Place.location, Geometry)
     rows = (
-        await session.execute(
-            select(Place, ST_X(geom), ST_Y(geom)).where(
-                Place.publication_status == "published",
-                or_(
-                    Place.temporary_closure_status.is_(None),
-                    Place.temporary_closure_status == "none",
-                ),
-                ST_Y(geom) >= lat_min,
-                ST_Y(geom) <= lat_max,
-                ST_X(geom) >= lng_min,
-                ST_X(geom) <= lng_max,
-            )
+        await session.scalars(
+            places_near_point_stmt(lat=float(lat), lng=float(lng), radius_m=radius_m, limit=limit)
         )
     ).all()
-    results: list[tuple[float, str, str, str | None]] = []
-    for place, plng, plat in rows:
-        if plng is None or plat is None:
-            continue
-        d = _haversine_km(lat, lng, float(plat), float(plng))
-        if d * 1000 <= radius_m:
-            results.append(
-                (d, str(place.id), place.name[:80], (place.short_description or "")[:120])
-            )
-    results.sort(key=lambda item: item[0])
     places = [
-        {"place_id": pid, "title": name, "subtitle": sub or None}
-        for _, pid, name, sub in results[:limit]
+        {
+            "place_id": str(place.id),
+            "title": place.name[:80],
+            "subtitle": (place.short_description or "")[:120] or None,
+        }
+        for place in rows
     ]
     return {"places": places, "near_lat": lat, "near_lng": lng, "radius_m": radius_m}
 
 
-def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    import math
-
-    r = 6371.0
-    p1, p2, dlng = math.radians(lat1), math.radians(lat2), math.radians(lng2 - lng1)
-    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
+def places_near_point_stmt(
+    *,
+    lat: float,
+    lng: float,
+    radius_m: int,
+    limit: int,
+) -> Select[tuple[Place]]:
+    """Published, open places within ``radius_m`` of a WGS84 point, nearest first."""
+    origin = cast(func.ST_SetSRID(func.ST_MakePoint(lng, lat), 4326), Geography)
+    return (
+        select(Place)
+        .where(
+            Place.publication_status == "published",
+            or_(
+                Place.temporary_closure_status.is_(None),
+                Place.temporary_closure_status == "none",
+            ),
+            func.ST_DWithin(Place.location, origin, radius_m),
+        )
+        .order_by(func.ST_Distance(Place.location, origin))
+        .limit(limit)
+    )
 
 
 def _seasonal_recommendations(

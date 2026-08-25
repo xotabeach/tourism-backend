@@ -224,6 +224,25 @@ async def test_search_places_without_city() -> None:
     assert ctx["place_candidates"] == []
 
 
+def test_places_near_point_stmt_uses_st_dwithin_and_limit() -> None:
+    from sqlalchemy.dialects import postgresql
+
+    from tourism_backend.modules.route_builder.application.tool_registry import (
+        places_near_point_stmt,
+    )
+
+    compiled = str(
+        places_near_point_stmt(lat=44.495, lng=34.166, radius_m=3000, limit=6).compile(
+            dialect=postgresql.dialect()
+        )
+    ).lower()
+    assert "st_dwithin" in compiled
+    assert "limit" in compiled
+    assert "st_distance" in compiled
+    assert "st_x(" not in compiled
+    assert "st_y(" not in compiled
+
+
 def test_compose_blocks_ignores_stale_prefetch_place_candidates() -> None:
     """Regression: prefetch grounding data must not leak into every reply's
     blocks — otherwise a clarifying question ("какой вид отдыха?") re-attaches
