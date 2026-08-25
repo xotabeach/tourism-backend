@@ -11,16 +11,38 @@ from tourism_backend.modules.identity.application.travel_points import grant_due
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.routes.infrastructure.models import Route
 
+_PUBLIC_CATALOG_ROUTE = (
+    Route.source.in_(("editorial", "user_created")),
+    Route.visibility == "public",
+    Route.lifecycle_status == "active",
+    Route.publication_status == "published",
+)
+
+
+def is_catalog_favorite_route(route: Route) -> bool:
+    """Same publication rules as the public catalog (M-3)."""
+    return (
+        route.source in {"editorial", "user_created"}
+        and route.visibility == "public"
+        and route.lifecycle_status == "active"
+        and route.publication_status == "published"
+    )
+
 
 async def list_favorites(session: AsyncSession, user_id: UUID) -> FavoritesOut:
     places = await session.execute(
         select(FavoritePlace.place_id)
-        .where(FavoritePlace.user_id == user_id)
+        .join(Place, Place.id == FavoritePlace.place_id)
+        .where(
+            FavoritePlace.user_id == user_id,
+            Place.publication_status == "published",
+        )
         .order_by(FavoritePlace.created_at.desc())
     )
     routes = await session.execute(
         select(FavoriteRoute.route_id)
-        .where(FavoriteRoute.user_id == user_id)
+        .join(Route, Route.id == FavoriteRoute.route_id)
+        .where(FavoriteRoute.user_id == user_id, *_PUBLIC_CATALOG_ROUTE)
         .order_by(FavoriteRoute.created_at.desc())
     )
     return FavoritesOut(
@@ -51,12 +73,7 @@ async def remove_favorite_place(session: AsyncSession, user_id: UUID, place_id: 
 
 async def add_favorite_route(session: AsyncSession, user_id: UUID, route_id: UUID) -> None:
     route = await session.get(Route, route_id)
-    if (
-        route is None
-        or route.source not in {"editorial", "user_created"}
-        or route.visibility != "public"
-        or route.lifecycle_status != "active"
-    ):
+    if route is None or not is_catalog_favorite_route(route):
         raise AppError(code="not_found", message="Route not found", status_code=404)
 
     existing = await session.get(FavoriteRoute, (user_id, route_id))
