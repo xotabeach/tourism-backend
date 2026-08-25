@@ -45,9 +45,7 @@ def test_ai_chat_turn_logger_extra_survives_json_formatter() -> None:
         def emit(self, record: logging.LogRecord) -> None:
             captured.append(record)
 
-    logger = logging.getLogger(
-        "tourism_backend.modules.route_builder.application.session_service"
-    )
+    logger = logging.getLogger("tourism_backend.modules.route_builder.application.session_service")
     handler = _Capture()
     logger.addHandler(handler)
     previous_level = logger.level
