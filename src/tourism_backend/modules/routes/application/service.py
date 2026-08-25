@@ -11,7 +11,7 @@ from sqlalchemy.sql.selectable import Exists
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.favorites.infrastructure.models import FavoriteRoute
 from tourism_backend.modules.geography.infrastructure.models import Region
-from tourism_backend.modules.identity.infrastructure.models import User
+from tourism_backend.modules.identity.infrastructure.models import TravelRank, User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
@@ -144,7 +144,7 @@ async def _cover_urls_for_routes(
 async def _author_fields_for_routes(
     session: AsyncSession,
     routes: list[Route],
-) -> dict[UUID, tuple[UUID | None, str | None, str | None, bool]]:
+) -> dict[UUID, tuple[UUID | None, str | None, str | None, bool, str | None]]:
     """Map route.id -> owner identity fields used by every route card."""
     owner_ids = [route.owner_user_id for route in routes if route.owner_user_id is not None]
     users: dict[UUID, User] = {}
@@ -157,21 +157,51 @@ async def _author_fields_for_routes(
         entity_ids=list(users.keys()),
         role="avatar",
     )
-    result: dict[UUID, tuple[UUID | None, str | None, str | None, bool]] = {}
+    ranks = await _rank_titles(session, list(users.values()))
+    result: dict[UUID, tuple[UUID | None, str | None, str | None, bool, str | None]] = {}
     for route in routes:
         owner_id = route.owner_user_id
         label: str | None
         avatar: str | None
+        rank_title: str | None
         if owner_id is not None and owner_id in users:
             label = users[owner_id].display_name
             avatar = avatars.get(owner_id)
             is_expert = users[owner_id].is_expert
+            rank_title = ranks.get(owner_id)
         else:
+            # Editorial route: no owning user, so no travel rank to show.
             label = route.author_label
             avatar = None
             is_expert = False
-        result[route.id] = (owner_id, label, avatar, is_expert)
+            rank_title = None
+        result[route.id] = (owner_id, label, avatar, is_expert, rank_title)
     return result
+
+
+async def _rank_titles(session: AsyncSession, users: list[User]) -> dict[UUID, str]:
+    """Travel rank title per user, by ``travel_points``.
+
+    Same resolution as the review services use, kept here rather than shared
+    so the routes module does not reach into another module's application
+    layer for it.
+    """
+    if not users:
+        return {}
+    ranks_sorted = sorted(
+        (await session.scalars(select(TravelRank))).all(),
+        key=lambda rank: rank.min_points,
+        reverse=True,
+    )
+    out: dict[UUID, str] = {}
+    for user in users:
+        title = "Новичок"
+        for rank in ranks_sorted:
+            if user.travel_points >= rank.min_points:
+                title = rank.title
+                break
+        out[user.id] = title
+    return out
 
 
 def _to_list_item(
@@ -183,6 +213,7 @@ def _to_list_item(
     author_label: str | None = None,
     author_avatar_url: str | None = None,
     author_is_expert: bool = False,
+    author_rank_title: str | None = None,
 ) -> RouteListItemOut:
     return RouteListItemOut(
         id=route.id,
@@ -208,6 +239,7 @@ def _to_list_item(
         owner_user_id=owner_user_id,
         author_avatar_url=author_avatar_url,
         author_is_expert=author_is_expert,
+        author_rank_title=author_rank_title,
     )
 
 
@@ -243,7 +275,7 @@ async def _list_from_stmt(
     authors = await _author_fields_for_routes(session, routes)
     items = []
     for route in routes:
-        owner_id, label, avatar, is_expert = authors[route.id]
+        owner_id, label, avatar, is_expert, rank_title = authors[route.id]
         items.append(
             _to_list_item(
                 route,
@@ -253,6 +285,7 @@ async def _list_from_stmt(
                 author_label=label,
                 author_avatar_url=avatar,
                 author_is_expert=is_expert,
+                author_rank_title=rank_title,
             )
         )
     return RouteListOut(items=items, total=total, limit=limit, offset=offset)
@@ -383,7 +416,7 @@ async def _route_detail_from_model(
     ]
     covers = await _cover_urls_for_routes(session, [route.id])
     authors = await _author_fields_for_routes(session, [route])
-    owner_id, label, avatar, is_expert = authors[route.id]
+    owner_id, label, avatar, is_expert, rank_title = authors[route.id]
     base = _to_list_item(
         route,
         len(stops),
@@ -392,6 +425,7 @@ async def _route_detail_from_model(
         author_label=label,
         author_avatar_url=avatar,
         author_is_expert=is_expert,
+        author_rank_title=rank_title,
     )
     return RouteDetailOut(
         **base.model_dump(),

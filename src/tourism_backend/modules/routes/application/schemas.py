@@ -114,6 +114,9 @@ class RouteListItemOut(BaseModel):
     owner_user_id: UUID | None = None
     author_avatar_url: str | None = None
     author_is_expert: bool = False
+    #: Travel rank of the owning user, resolved from ``travel_points``.
+    #: ``None`` for editorial routes, which have no owning user.
+    author_rank_title: str | None = None
 
 
 class RouteDetailOut(RouteListItemOut):

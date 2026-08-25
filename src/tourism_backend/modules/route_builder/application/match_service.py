@@ -184,7 +184,7 @@ async def _list_items_by_ids(
     authors = await routes_service._author_fields_for_routes(session, ordered)  # noqa: SLF001
     items: dict[UUID, RouteListItemOut] = {}
     for route in ordered:
-        owner_id, label, avatar, is_expert = authors[route.id]
+        owner_id, label, avatar, is_expert, rank_title = authors[route.id]
         items[route.id] = routes_service._to_list_item(  # noqa: SLF001
             route,
             counts.get(route.id, 0),
@@ -193,5 +193,6 @@ async def _list_items_by_ids(
             author_label=label,
             author_avatar_url=avatar,
             author_is_expert=is_expert,
+            author_rank_title=rank_title,
         )
     return items
