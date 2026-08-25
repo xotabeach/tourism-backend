@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import Select, exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,8 @@ from tourism_backend.modules.media.infrastructure.models import (
     ROLES,
     MediaAttachment,
 )
+from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.routes.infrastructure.models import Route
 
 
 def public_path_from_storage_key(storage_key: str) -> str:
@@ -225,23 +227,40 @@ class ReusableCover:
         self.content_type = content_type
 
 
-async def list_reusable_covers(session: AsyncSession, *, limit: int = 40) -> list[ReusableCover]:
-    """Active route/place covers that can be reused as default profile media."""
-    rows = (
-        await session.execute(
-            select(
-                MediaAttachment.storage_key,
-                MediaAttachment.public_path,
-                MediaAttachment.content_type,
-            )
-            .where(
-                MediaAttachment.status == "active",
-                MediaAttachment.role == "cover",
-                MediaAttachment.entity_type.in_(("route", "place")),
-            )
-            .limit(limit)
+def reusable_covers_stmt(*, limit: int = 40) -> Select[tuple[str, str, str | None]]:
+    """Active covers whose parent place/route is in the public catalog (M-2)."""
+    published_place = exists().where(
+        Place.id == MediaAttachment.entity_id,
+        Place.publication_status == "published",
+    )
+    published_route = exists().where(
+        Route.id == MediaAttachment.entity_id,
+        or_(Route.source == "editorial", Route.source == "user_created"),
+        Route.visibility == "public",
+        Route.lifecycle_status == "active",
+        Route.publication_status == "published",
+    )
+    return (
+        select(
+            MediaAttachment.storage_key,
+            MediaAttachment.public_path,
+            MediaAttachment.content_type,
         )
-    ).all()
+        .where(
+            MediaAttachment.status == "active",
+            MediaAttachment.role == "cover",
+            or_(
+                (MediaAttachment.entity_type == "place") & published_place,
+                (MediaAttachment.entity_type == "route") & published_route,
+            ),
+        )
+        .limit(limit)
+    )
+
+
+async def list_reusable_covers(session: AsyncSession, *, limit: int = 40) -> list[ReusableCover]:
+    """Active published route/place covers that can be reused as default profile media."""
+    rows = (await session.execute(reusable_covers_stmt(limit=limit))).all()
     return [
         ReusableCover(storage_key=key, public_path=path, content_type=content_type)
         for key, path, content_type in rows
