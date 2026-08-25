@@ -32,9 +32,24 @@ _AI_FALLBACK_REPLY = (
     "поездки вручную или подобрать маршрут по уже выбранным фильтрам — "
     "напишите «подбери маршрут»."
 )
+_LLM_OMIT_INTENTS = frozenset({"crisis", "injection_attempt"})
+_REDACTED_USER_TEXT = "[redacted]"
 
 
-def classify_chat_intent(raw: str) -> ChatIntent:
+def persistable_user_text(intent: ChatIntent, text: str) -> str:
+    """Do not persist injection/crisis payloads that would re-enter LLM history."""
+    if intent in _LLM_OMIT_INTENTS:
+        return _REDACTED_USER_TEXT
+    return text
+
+
+def include_in_llm_history(*, role: str, intent: str | None, text: str) -> bool:
+    """Skip flagged user turns so redacted/raw crisis text cannot prompt the model."""
+    omitted_user = intent in _LLM_OMIT_INTENTS or text.strip() == _REDACTED_USER_TEXT
+    return not (role == "user" and omitted_user)
+
+
+def classify_chat_intent(raw: str, *, generate_confirm_ok: bool = False) -> ChatIntent:
     text = raw.casefold().replace("ё", "е").strip()
     if not text:
         return "on_topic_travel"
@@ -42,7 +57,9 @@ def classify_chat_intent(raw: str) -> ChatIntent:
         return "crisis"
     if _looks_like_injection(text):
         return "injection_attempt"
-    if _looks_like_generate(text):
+    if _looks_like_generate_command(text):
+        return "generate"
+    if generate_confirm_ok and _looks_like_confirm_generate(text):
         return "generate"
     if _looks_like_greeting(text):
         return "greeting"
@@ -92,7 +109,7 @@ def _looks_like_injection(text: str) -> bool:
     return any(marker in text for marker in markers)
 
 
-def _looks_like_generate(text: str) -> bool:
+def _looks_like_generate_command(text: str) -> bool:
     markers = (
         "подбери маршрут",
         "подобрать маршрут",
@@ -106,9 +123,7 @@ def _looks_like_generate(text: str) -> bool:
         "собери предложение",
         "собери черновик",
     )
-    if any(marker in text for marker in markers):
-        return True
-    return _looks_like_confirm_generate(text)
+    return any(marker in text for marker in markers)
 
 
 def _looks_like_confirm_generate(text: str) -> bool:

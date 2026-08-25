@@ -64,6 +64,8 @@ from tourism_backend.modules.route_builder.application.topic_guard import (
     ai_unavailable_fallback,
     canned_reply_for_intent,
     classify_chat_intent,
+    include_in_llm_history,
+    persistable_user_text,
 )
 from tourism_backend.modules.route_builder.infrastructure.ai_factory import (
     get_ai_planning_provider,
@@ -311,7 +313,10 @@ async def post_message(
                             touched = sanitize_confirmed_fields([*touched, field])
                         confirmed = sanitize_confirmed_fields([*confirmed, *touched])
 
-    intent = classify_chat_intent(payload.text)
+    intent = classify_chat_intent(
+        payload.text,
+        generate_confirm_ok=prefer_ready_ask_field(confirmed) == "ready",
+    )
     flow: str = intent
     canonical_action = normalize_action_id(payload.action_id) if payload.action_id else None
     is_control_only = payload.action_id in _CONTROL_ACTION_IDS and payload.control_value is not None
@@ -338,7 +343,7 @@ async def post_message(
         session_id=planning.id,
         user_id=user_id,
         role="user",
-        text=payload.text,
+        text=persistable_user_text(intent, payload.text),
         intent=intent,
         proposal_id=None,
         payload=user_payload,
@@ -544,6 +549,8 @@ async def _assistant_from_ai(
     chat_messages: list[ChatMessage] = []
     for row in history_rows:
         if row.role not in {"user", "assistant"}:
+            continue
+        if not include_in_llm_history(role=row.role, intent=row.intent, text=row.text):
             continue
         chat_messages.append(ChatMessage(role=row.role, content=row.text))
     chat_messages = chat_messages[-_HISTORY_LIMIT:]
