@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.route_builder.application.schemas import QuotaSnapshotOut
 from tourism_backend.modules.route_builder.infrastructure.models import RouteGenerationEvent
 from tourism_backend.modules.subscriptions.application.entitlements import QuotaPolicy
@@ -40,6 +41,11 @@ async def count_generations_since(
     return int(value or 0)
 
 
+def user_quota_lock_stmt(user_id: UUID) -> Select[tuple[UUID]]:
+    """Serialize per-user generation so check-then-insert cannot overshoot (AI-5)."""
+    return select(User.id).where(User.id == user_id).with_for_update()
+
+
 async def require_generation_quota(
     session: AsyncSession,
     *,
@@ -47,6 +53,9 @@ async def require_generation_quota(
     policy: QuotaPolicy,
     now: datetime | None = None,
 ) -> None:
+    locked = await session.scalar(user_quota_lock_stmt(user_id))
+    if locked is None:
+        raise AppError(code="unauthorized", message="Authentication required", status_code=401)
     moment = now or datetime.now(UTC)
     if policy.max_daily_generations is not None:
         used = await count_generations_since(

@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
-from uuid import uuid4
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tourism_backend.config import Settings
 from tourism_backend.db.redis import create_redis_client
 from tourism_backend.main import create_app
+from tourism_backend.modules.route_builder.infrastructure.models import RouteGenerationEvent
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -184,3 +187,48 @@ async def test_chat_generate_requires_travel_plus_then_accept(
     )
     assert again.status_code == 200
     assert again.json()["route_id"] == accepted_body["route_id"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_generate_cannot_exceed_weekly_quota(
+    live_client: AsyncClient,
+) -> None:
+    """AI-5: check-then-insert without a row lock overshoots under retry storms."""
+    phone = f"+7906{uuid4().int % 10_000_000:07d}"
+    tokens = await _login(live_client, phone)
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    me = await live_client.get("/api/v1/me", headers=headers)
+    user_id = UUID(me.json()["id"])
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    now = datetime.now(UTC)
+    async with factory() as session:
+        for _ in range(4):
+            session.add(
+                RouteGenerationEvent(
+                    id=uuid4(),
+                    user_id=user_id,
+                    channel="form",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        await session.commit()
+    await engine.dispose()
+
+    payload = {
+        "channel": "form",
+        "params": {"city": "Ялта", "duration": "d3_5", "interests": ["Пляж"], "pace": "calm"},
+    }
+    first, second, third = await asyncio.gather(
+        live_client.post("/api/v1/route-builder/generate", headers=headers, json=payload),
+        live_client.post("/api/v1/route-builder/generate", headers=headers, json=payload),
+        live_client.post("/api/v1/route-builder/generate", headers=headers, json=payload),
+    )
+    statuses = [first.status_code, second.status_code, third.status_code]
+    assert statuses.count(200) == 1, (first.text, second.text, third.text)
+    assert statuses.count(429) == 2
+    for response in (first, second, third):
+        if response.status_code == 429:
+            assert response.json()["error"]["code"] == "generation_quota_exceeded"
