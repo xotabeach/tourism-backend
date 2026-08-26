@@ -196,3 +196,71 @@ async def test_support_ticket_ownership(live_client: AsyncClient) -> None:
 
     unauth = await live_client.get("/api/v1/support/tickets")
     assert unauth.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_support_ticket_attachments(live_client: AsyncClient) -> None:
+    phone_a = f"+7907{uuid4().int % 10_000_000:07d}"
+    phone_b = f"+7908{uuid4().int % 10_000_000:07d}"
+    tokens_a = await _login(live_client, phone=phone_a, name="A")
+    tokens_b = await _login(live_client, phone=phone_b, name="B")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+
+    created = await live_client.post(
+        "/api/v1/support/tickets",
+        headers=headers_a,
+        json={
+            "kind": "app_error",
+            "subject": "Вылетает",
+            "body": "Приложение вылетает на главном экране",
+        },
+    )
+    assert created.status_code == 200, created.text
+    ticket_id = created.json()["id"]
+
+    foreign = await live_client.post(
+        f"/api/v1/support/tickets/{ticket_id}/attachments",
+        headers=headers_b,
+        files={"file": ("a.png", _png_bytes(), "image/png")},
+    )
+    assert foreign.status_code == 404
+
+    bad = await live_client.post(
+        f"/api/v1/support/tickets/{ticket_id}/attachments",
+        headers=headers_a,
+        files={"file": ("x.bin", b"not-an-image" + b"0" * 100, "application/octet-stream")},
+    )
+    assert bad.status_code == 400
+
+    uploaded = await live_client.post(
+        f"/api/v1/support/tickets/{ticket_id}/attachments",
+        headers=headers_a,
+        files={"file": ("a.png", _png_bytes(), "image/png")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    attachment = uploaded.json()
+    assert attachment["url"].startswith("/media/support/")
+    assert attachment["url"].endswith(".webp")
+
+    fetched = await live_client.get(
+        f"/api/v1/support/tickets/{ticket_id}",
+        headers=headers_a,
+    )
+    assert fetched.status_code == 200, fetched.text
+    assert [item["id"] for item in fetched.json()["attachments"]] == [attachment["id"]]
+
+    for _ in range(2):
+        extra = await live_client.post(
+            f"/api/v1/support/tickets/{ticket_id}/attachments",
+            headers=headers_a,
+            files={"file": ("a.png", _png_bytes(), "image/png")},
+        )
+        assert extra.status_code == 200, extra.text
+
+    over_limit = await live_client.post(
+        f"/api/v1/support/tickets/{ticket_id}/attachments",
+        headers=headers_a,
+        files={"file": ("a.png", _png_bytes(), "image/png")},
+    )
+    assert over_limit.status_code == 409

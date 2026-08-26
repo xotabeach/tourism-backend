@@ -1,10 +1,12 @@
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, File, UploadFile
 
 from tourism_backend.api.deps import CurrentUserId, DbSession
 from tourism_backend.modules.support.application import service as support_service
 from tourism_backend.modules.support.application.schemas import (
+    SupportAttachmentOut,
     SupportMessageCreateIn,
     SupportMessageOut,
     SupportTicketCreateIn,
@@ -36,6 +38,16 @@ async def get_ticket(
     user_id: CurrentUserId,
 ) -> SupportTicketOut:
     return await support_service.get_ticket(session, user_id, ticket_id)
+
+
+@router.post("/tickets/{ticket_id}/attachments", response_model=SupportAttachmentOut)
+async def add_attachment(
+    ticket_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    file: Annotated[UploadFile, File()],
+) -> SupportAttachmentOut:
+    return await support_service.add_attachment(session, user_id, ticket_id, file)
 
 
 @router.post("/tickets/{ticket_id}/messages", response_model=SupportMessageOut)

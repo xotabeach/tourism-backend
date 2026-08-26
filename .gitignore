@@ -18,6 +18,7 @@ htmlcov/
 data/media/profiles/
 data/media/places/
 data/media/reviews/
+data/media/support/
 
 # Operating systems and editors
 .DS_Store

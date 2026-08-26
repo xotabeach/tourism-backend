@@ -1,11 +1,18 @@
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from fastapi import UploadFile
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.media.infrastructure.models import MediaAttachment
+from tourism_backend.modules.support.application.attachments import (
+    delete_support_attachment,
+    save_support_attachment,
+)
 from tourism_backend.modules.support.application.schemas import (
+    SupportAttachmentOut,
     SupportMessageCreateIn,
     SupportMessageOut,
     SupportTicketCreateIn,
@@ -20,6 +27,7 @@ _ASSISTANT_WELCOME = (
 )
 
 _HUMAN_AUTHORS = frozenset({"user", "operator"})
+_MAX_TICKET_ATTACHMENTS = 3
 
 
 def _touch_ticket_on_message(
@@ -43,7 +51,36 @@ def _message_out(message: SupportMessage) -> SupportMessageOut:
     )
 
 
-def _ticket_out(ticket: SupportTicket, messages: list[SupportMessage]) -> SupportTicketOut:
+def _attachment_out(attachment: MediaAttachment) -> SupportAttachmentOut:
+    return SupportAttachmentOut(
+        id=str(attachment.id),
+        url=attachment.public_path,
+        width=attachment.width,
+        height=attachment.height,
+    )
+
+
+async def _load_attachments(session: AsyncSession, ticket_id: UUID) -> list[SupportAttachmentOut]:
+    rows = (
+        await session.scalars(
+            select(MediaAttachment)
+            .where(
+                MediaAttachment.entity_type == "support_ticket",
+                MediaAttachment.entity_id == ticket_id,
+                MediaAttachment.role == "gallery",
+                MediaAttachment.status == "active",
+            )
+            .order_by(MediaAttachment.sort_order, MediaAttachment.created_at)
+        )
+    ).all()
+    return [_attachment_out(row) for row in rows]
+
+
+def _ticket_out(
+    ticket: SupportTicket,
+    messages: list[SupportMessage],
+    attachments: list[SupportAttachmentOut] | None = None,
+) -> SupportTicketOut:
     return SupportTicketOut(
         id=str(ticket.id),
         kind=ticket.kind,  # type: ignore[arg-type]
@@ -53,6 +90,7 @@ def _ticket_out(ticket: SupportTicket, messages: list[SupportMessage]) -> Suppor
         created_at=ticket.created_at,
         updated_at=ticket.updated_at,
         messages=[_message_out(m) for m in messages],
+        attachments=attachments or [],
     )
 
 
@@ -128,7 +166,8 @@ async def list_tickets(session: AsyncSession, user_id: UUID) -> SupportTicketLis
             .limit(200)
         )
         messages = list(msg_result.scalars().all())
-        items.append(_ticket_out(ticket, messages))
+        attachments = await _load_attachments(session, ticket.id)
+        items.append(_ticket_out(ticket, messages, attachments))
     return SupportTicketListOut(items=items)
 
 
@@ -148,7 +187,67 @@ async def get_ticket(
         .limit(200)
     )
     messages = list(msg_result.scalars().all())
-    return _ticket_out(ticket, messages)
+    attachments = await _load_attachments(session, ticket.id)
+    return _ticket_out(ticket, messages, attachments)
+
+
+async def add_attachment(
+    session: AsyncSession,
+    user_id: UUID,
+    ticket_id: UUID,
+    upload: UploadFile,
+) -> SupportAttachmentOut:
+    ticket = await session.get(SupportTicket, ticket_id)
+    if ticket is None or ticket.user_id != user_id:
+        raise AppError(code="not_found", message="Ticket not found", status_code=404)
+
+    count = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(MediaAttachment)
+            .where(
+                MediaAttachment.entity_type == "support_ticket",
+                MediaAttachment.entity_id == ticket_id,
+                MediaAttachment.role == "gallery",
+                MediaAttachment.status == "active",
+            )
+        )
+        or 0
+    )
+    if count >= _MAX_TICKET_ATTACHMENTS:
+        raise AppError(
+            code="support_attachment_limit",
+            message=f"К обращению можно прикрепить не больше {_MAX_TICKET_ATTACHMENTS} фото",
+            status_code=409,
+        )
+
+    saved = await save_support_attachment(upload, ticket_id=ticket_id)
+    now = datetime.now(UTC)
+    attachment = MediaAttachment(
+        id=uuid4(),
+        entity_type="support_ticket",
+        entity_id=ticket_id,
+        role="gallery",
+        storage_key=saved.storage_key,
+        public_path=saved.public_path,
+        content_type=saved.content_type,
+        byte_size=saved.byte_size,
+        width=saved.width,
+        height=saved.height,
+        checksum_sha256=saved.checksum_sha256,
+        status="active",
+        uploaded_by_user_id=user_id,
+        sort_order=count,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(attachment)
+    try:
+        await session.commit()
+    except Exception:
+        delete_support_attachment(saved.storage_key, ticket_id=ticket_id)
+        raise
+    return _attachment_out(attachment)
 
 
 async def add_message(

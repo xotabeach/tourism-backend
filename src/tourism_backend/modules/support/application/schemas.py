@@ -48,6 +48,15 @@ class SupportMessageOut(BaseModel):
     created_at: datetime
 
 
+class SupportAttachmentOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    url: str
+    width: int | None
+    height: int | None
+
+
 class SupportTicketOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -59,6 +68,7 @@ class SupportTicketOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     messages: list[SupportMessageOut] = Field(default_factory=list)
+    attachments: list[SupportAttachmentOut] = Field(default_factory=list)
 
 
 class SupportTicketListOut(BaseModel):
