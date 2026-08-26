@@ -8,11 +8,16 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tourism_backend.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+
+PREFERENCE_CATEGORIES = ("Море", "Горы", "Еда", "Лес")
+PREFERENCE_DIFFICULTIES = ("easy", "moderate", "hard")
 
 
 class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -22,6 +27,10 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         CheckConstraint(
             "travel_plus_plan IS NULL OR travel_plus_plan IN ('monthly', 'yearly')",
             name="travel_plus_plan",
+        ),
+        CheckConstraint(
+            "preferred_difficulty IS NULL OR preferred_difficulty IN ('easy', 'moderate', 'hard')",
+            name="preferred_difficulty",
         ),
     )
 
@@ -82,6 +91,24 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
         default=UUID("00000000-0000-0000-0000-000000000101"),
         server_default="00000000-0000-0000-0000-000000000101",
+    )
+    preferred_categories: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    preferred_difficulty: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    travels_with_kids: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    travels_with_pets: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    preferences_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
 
 

@@ -9,6 +9,7 @@ from tourism_backend.modules.identity.application.schemas import (
     LogoutIn,
     MeOut,
     MePatchIn,
+    MePreferencesIn,
     OtpRequestIn,
     OtpStartIn,
     OtpStartOut,
@@ -110,6 +111,15 @@ async def patch_me(
     user_id: CurrentUserId,
 ) -> MeOut:
     return await identity_service.patch_me(session, user_id, payload)
+
+
+@router.patch("/me/preferences", response_model=MeOut)
+async def patch_me_preferences(
+    payload: MePreferencesIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> MeOut:
+    return await identity_service.patch_preferences(session, user_id, payload)
 
 
 @router.post("/me/phone/otp/request", status_code=status.HTTP_204_NO_CONTENT)

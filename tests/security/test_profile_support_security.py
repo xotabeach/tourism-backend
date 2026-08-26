@@ -264,3 +264,46 @@ async def test_support_ticket_attachments(live_client: AsyncClient) -> None:
         files={"file": ("a.png", _png_bytes(), "image/png")},
     )
     assert over_limit.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_patch_preferences(live_client: AsyncClient) -> None:
+    phone = f"+7909{uuid4().int % 10_000_000:07d}"
+    tokens = await _login(live_client, phone=phone)
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    before = await live_client.get("/api/v1/me", headers=headers)
+    assert before.status_code == 200, before.text
+    assert before.json()["preferred_categories"] == []
+    assert before.json()["preferences_updated_at"] is None
+
+    patched = await live_client.patch(
+        "/api/v1/me/preferences",
+        headers=headers,
+        json={
+            "preferred_categories": ["Море", "Горы"],
+            "preferred_difficulty": "moderate",
+            "travels_with_kids": True,
+            "travels_with_pets": False,
+        },
+    )
+    assert patched.status_code == 200, patched.text
+    body = patched.json()
+    assert body["preferred_categories"] == ["Море", "Горы"]
+    assert body["preferred_difficulty"] == "moderate"
+    assert body["travels_with_kids"] is True
+    assert body["travels_with_pets"] is False
+    assert body["preferences_updated_at"] is not None
+
+    invalid = await live_client.patch(
+        "/api/v1/me/preferences",
+        headers=headers,
+        json={"preferred_categories": ["Не категория"]},
+    )
+    assert invalid.status_code == 422
+
+    unauth = await live_client.patch(
+        "/api/v1/me/preferences",
+        json={"preferred_categories": []},
+    )
+    assert unauth.status_code == 401

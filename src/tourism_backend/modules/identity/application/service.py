@@ -22,6 +22,7 @@ from tourism_backend.modules.identity.application.crypto import (
 from tourism_backend.modules.identity.application.schemas import (
     MeOut,
     MePatchIn,
+    MePreferencesIn,
     OtpRequestIn,
     OtpStartIn,
     OtpStartOut,
@@ -468,6 +469,21 @@ async def patch_me(session: AsyncSession, user_id: UUID, payload: MePatchIn) -> 
     return await _me_out(session, user)
 
 
+async def patch_preferences(
+    session: AsyncSession, user_id: UUID, payload: MePreferencesIn
+) -> MeOut:
+    user = await session.get(User, user_id)
+    if user is None:
+        raise AppError(code="unauthorized", message="Authentication required", status_code=401)
+    user.preferred_categories = payload.preferred_categories
+    user.preferred_difficulty = payload.preferred_difficulty
+    user.travels_with_kids = payload.travels_with_kids
+    user.travels_with_pets = payload.travels_with_pets
+    user.preferences_updated_at = datetime.now(UTC)
+    await session.commit()
+    return await _me_out(session, user)
+
+
 async def _me_out(session: AsyncSession, user: User) -> MeOut:
     from tourism_backend.modules.subscriptions.application.entitlements import (
         policy_for_user,
@@ -486,6 +502,7 @@ async def _me_out(session: AsyncSession, user: User) -> MeOut:
         role="cover",
     )
     expires = user.travel_plus_expires_at
+    updated = user.preferences_updated_at
     policy = policy_for_user(user)
     return MeOut(
         id=str(user.id),
@@ -503,6 +520,11 @@ async def _me_out(session: AsyncSession, user: User) -> MeOut:
         max_route_points=policy.max_route_points,
         alternatives_count=policy.alternatives_count,
         advanced_filters_enabled=policy.advanced_filters_enabled,
+        preferred_categories=list(user.preferred_categories or []),
+        preferred_difficulty=user.preferred_difficulty,
+        travels_with_kids=user.travels_with_kids,
+        travels_with_pets=user.travels_with_pets,
+        preferences_updated_at=updated.isoformat() if updated is not None else None,
     )
 
 

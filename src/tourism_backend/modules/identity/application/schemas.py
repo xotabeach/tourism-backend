@@ -1,4 +1,5 @@
 import re
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -7,6 +8,9 @@ from tourism_backend.modules.identity.application.display_name import (
     DISPLAY_NAME_MIN_LENGTH,
     validate_display_name,
 )
+from tourism_backend.modules.identity.infrastructure.models import PREFERENCE_CATEGORIES
+
+PreferenceDifficulty = Literal["easy", "moderate", "hard"]
 
 _PHONE_RE = re.compile(r"^\+7\d{10}$")
 
@@ -143,6 +147,11 @@ class MeOut(BaseModel):
     max_route_points: int = 5
     alternatives_count: int = 1
     advanced_filters_enabled: bool = False
+    preferred_categories: list[str] = Field(default_factory=list)
+    preferred_difficulty: str | None = None
+    travels_with_kids: bool = False
+    travels_with_pets: bool = False
+    preferences_updated_at: str | None = None
 
 
 class MePatchIn(BaseModel):
@@ -174,6 +183,24 @@ class MePatchIn(BaseModel):
         ):
             raise ValueError("at least one field is required")
         return self
+
+
+class MePreferencesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preferred_categories: list[str] = Field(default_factory=list, max_length=4)
+    preferred_difficulty: PreferenceDifficulty | None = None
+    travels_with_kids: bool = False
+    travels_with_pets: bool = False
+
+    @field_validator("preferred_categories")
+    @classmethod
+    def _known_categories(cls, value: list[str]) -> list[str]:
+        unknown = set(value) - set(PREFERENCE_CATEGORIES)
+        if unknown:
+            raise ValueError(f"unknown categories: {sorted(unknown)}")
+        # Dedupe while keeping the submitted order.
+        return list(dict.fromkeys(value))
 
 
 class PhoneChangeRequestIn(BaseModel):
