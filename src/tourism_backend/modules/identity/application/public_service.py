@@ -152,11 +152,16 @@ async def list_leaderboard(
     offset: int,
 ) -> PublicUserListOut:
     await grant_due_travel_points(session)
-    total = int(await session.scalar(select(func.count()).select_from(User)) or 0)
+    # Experts accrue points far faster than regular travelers (route
+    # authoring, reviews) and would dominate every leaderboard slot,
+    # defeating the point of a ranking meant for ordinary users.
+    non_expert = User.is_expert.is_(False)
+    total = int(await session.scalar(select(func.count()).select_from(User).where(non_expert)) or 0)
     users = list(
         (
             await session.scalars(
                 select(User)
+                .where(non_expert)
                 .order_by(User.travel_points.desc(), User.created_at, User.id)
                 .offset(offset)
                 .limit(limit)

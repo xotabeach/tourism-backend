@@ -263,6 +263,60 @@ async def test_users_leaderboard_is_public_and_ordered_by_points(
 
 
 @pytest.mark.asyncio
+async def test_users_leaderboard_excludes_experts(
+    live_client: AsyncClient,
+) -> None:
+    """Experts accrue points far faster than regular travelers and would
+    dominate every leaderboard slot, defeating its purpose as a ranking for
+    ordinary users."""
+    marker = uuid4().hex[:6]
+    regular = await _login(
+        live_client,
+        phone=f"+7910{uuid4().int % 10_000_000:07d}",
+        name=f"Regular {marker}",
+    )
+    expert = await _login(
+        live_client,
+        phone=f"+7911{uuid4().int % 10_000_000:07d}",
+        name=f"Expert {marker}",
+    )
+    regular_id = (
+        await live_client.get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {regular['access_token']}"},
+        )
+    ).json()["id"]
+    expert_id = (
+        await live_client.get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {expert['access_token']}"},
+        )
+    ).json()["id"]
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE users SET travel_points = 100 WHERE id = :id"),
+            {"id": regular_id},
+        )
+        await conn.execute(
+            text("UPDATE users SET travel_points = 999999, is_expert = true WHERE id = :id"),
+            {"id": expert_id},
+        )
+    await engine.dispose()
+
+    response = await live_client.get(
+        "/api/v1/users/leaderboard",
+        params={"limit": 100, "offset": 0},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    ids = [item["id"] for item in body["items"]]
+    assert regular_id in ids
+    assert expert_id not in ids
+
+
+@pytest.mark.asyncio
 async def test_profile_subscriptions_return_liked_users_without_pii(
     live_client: AsyncClient,
 ) -> None:
