@@ -11,7 +11,12 @@ from tourism_backend.modules.identity.application.public_schemas import (
     PublicUserOut,
 )
 from tourism_backend.modules.identity.application.travel_points import grant_due_travel_points
-from tourism_backend.modules.identity.infrastructure.models import ProfileLike, TravelRank, User
+from tourism_backend.modules.identity.infrastructure.models import (
+    EXPERT_RANK_ID,
+    ProfileLike,
+    TravelRank,
+    User,
+)
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.routes.application import service as routes_service
 from tourism_backend.modules.routes.application.schemas import RouteListOut
@@ -20,10 +25,24 @@ from tourism_backend.modules.routes.application.schemas import RouteListOut
 async def _rank_for_points(session: AsyncSession, points: int) -> TravelRank | None:
     rank: TravelRank | None = await session.scalar(
         select(TravelRank)
-        .where(TravelRank.min_points <= points)
+        .where(TravelRank.min_points <= points, TravelRank.id != EXPERT_RANK_ID)
         .order_by(TravelRank.min_points.desc())
         .limit(1)
     )
+    return rank
+
+
+async def _resolve_rank(session: AsyncSession, user: User) -> TravelRank | None:
+    """Experts carry an admin-granted rank — never recomputed from points."""
+    if user.is_expert:
+        expert_rank = await session.get(TravelRank, EXPERT_RANK_ID)
+        if expert_rank is not None:
+            if user.rank_id != EXPERT_RANK_ID:
+                user.rank_id = EXPERT_RANK_ID
+            return expert_rank
+    rank = await _rank_for_points(session, user.travel_points)
+    if rank is not None and user.rank_id != rank.id:
+        user.rank_id = rank.id
     return rank
 
 
@@ -48,9 +67,7 @@ async def _public_user(
     followers_count: int = 0,
     following_count: int = 0,
 ) -> PublicUserOut:
-    rank = await _rank_for_points(session, user.travel_points)
-    if rank is not None and user.rank_id != rank.id:
-        user.rank_id = rank.id
+    rank = await _resolve_rank(session, user)
     return PublicUserOut(
         id=str(user.id),
         display_name=user.display_name,
@@ -152,10 +169,10 @@ async def list_leaderboard(
     offset: int,
 ) -> PublicUserListOut:
     await grant_due_travel_points(session)
-    # Experts accrue points far faster than regular travelers (route
-    # authoring, reviews) and would dominate every leaderboard slot,
-    # defeating the point of a ranking meant for ordinary users.
-    non_expert = User.is_expert.is_(False)
+    # Эксперт is an admin-granted rank, not a points-earned one — excluding
+    # it here is a rank check, not an ad-hoc flag filter, so it can't drift
+    # out of sync with who's actually on that rank.
+    non_expert = User.rank_id != EXPERT_RANK_ID
     total = int(await session.scalar(select(func.count()).select_from(User).where(non_expert)) or 0)
     users = list(
         (

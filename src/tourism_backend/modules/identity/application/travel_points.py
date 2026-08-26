@@ -8,7 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.modules.favorites.infrastructure.models import FavoriteRoute
-from tourism_backend.modules.identity.infrastructure.models import ProfileLike, TravelRank, User
+from tourism_backend.modules.identity.infrastructure.models import (
+    EXPERT_RANK_ID,
+    ProfileLike,
+    TravelRank,
+    User,
+)
 from tourism_backend.modules.routes.infrastructure.models import Route
 
 AWARD_DELAY = timedelta(hours=6)
@@ -16,9 +21,12 @@ AWARD_POINTS = 5
 
 
 async def _sync_rank(session: AsyncSession, user: User) -> None:
+    if user.is_expert:
+        # Admin-granted rank — never recomputed from points.
+        return
     rank = await session.scalar(
         select(TravelRank)
-        .where(TravelRank.min_points <= user.travel_points)
+        .where(TravelRank.min_points <= user.travel_points, TravelRank.id != EXPERT_RANK_ID)
         .order_by(TravelRank.min_points.desc())
         .limit(1)
     )

@@ -112,6 +112,15 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
 
+#: The "Эксперт" rank — admin-granted only (see admin.user_grant_expert /
+#: admin.user_revoke_expert), never reachable through travel_points. Its
+#: min_points is set far above anything reachable, and rank-sync code paths
+#: additionally skip recomputing rank_id from points while is_expert is set,
+#: so an admin-granted expert can never be silently demoted or promoted into
+#: this rank by the points system.
+EXPERT_RANK_ID = UUID("00000000-0000-0000-0000-000000000106")
+
+
 class TravelRank(Base):
     __tablename__ = "travel_ranks"
 

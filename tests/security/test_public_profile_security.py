@@ -300,7 +300,10 @@ async def test_users_leaderboard_excludes_experts(
             {"id": regular_id},
         )
         await conn.execute(
-            text("UPDATE users SET travel_points = 999999, is_expert = true WHERE id = :id"),
+            text(
+                "UPDATE users SET travel_points = 999999, is_expert = true, "
+                "rank_id = '00000000-0000-0000-0000-000000000106' WHERE id = :id"
+            ),
             {"id": expert_id},
         )
     await engine.dispose()

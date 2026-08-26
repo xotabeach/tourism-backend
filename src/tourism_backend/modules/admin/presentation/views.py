@@ -66,6 +66,7 @@ from tourism_backend.modules.identity.application.display_name import (
 )
 from tourism_backend.modules.identity.application.schemas import normalize_ru_phone
 from tourism_backend.modules.identity.infrastructure.models import (
+    EXPERT_RANK_ID,
     AuthOtpChallenge,
     AuthPhoneChangeChallenge,
     TravelRank,
@@ -157,6 +158,23 @@ _AUTHOR_RU = {
     "assistant": "Ассистент",
     "system": "Система",
 }
+
+
+async def _rank_id_for_expert_toggle(session: Any, *, user: User, is_expert: bool) -> UUID:
+    """Rank to assign alongside an is_expert change.
+
+    Granting expert moves the user onto the dedicated "Эксперт" rank;
+    revoking it falls back to whatever their travel_points actually earn.
+    """
+    if is_expert:
+        return EXPERT_RANK_ID
+    fallback = await session.scalar(
+        select(TravelRank)
+        .where(TravelRank.min_points <= user.travel_points, TravelRank.id != EXPERT_RANK_ID)
+        .order_by(TravelRank.min_points.desc())
+        .limit(1)
+    )
+    return fallback.id if fallback is not None else user.rank_id
 
 
 def _read_upload_bytes(value: Any) -> bytes | None:
@@ -309,6 +327,9 @@ class UserAdmin(ModelView, model=User):
                     if user.is_expert == is_expert:
                         continue
                     user.is_expert = is_expert
+                    user.rank_id = await _rank_id_for_expert_toggle(
+                        session, user=user, is_expert=is_expert
+                    )
                     user.updated_at = changed_at
                     session.add(
                         UserExpertStatusEvent(
@@ -550,6 +571,9 @@ class UserAdmin(ModelView, model=User):
             user.is_expert = next_is_expert
             user.updated_at = datetime.now(UTC)
             if previous_is_expert != next_is_expert:
+                user.rank_id = await _rank_id_for_expert_toggle(
+                    session, user=user, is_expert=next_is_expert
+                )
                 session.add(
                     UserExpertStatusEvent(
                         id=uuid4(),
