@@ -101,17 +101,17 @@ OpenAPI: `http://localhost:8000/docs`
 | --- | --- |
 | Health | `GET /health/live`, `GET /health/ready` |
 | Geography / places | `/api/v1/geography/*`, `/categories`, `/places`, отдельные place reviews + media |
-| Auth / me | `/auth/otp/*`, `/auth/refresh`, `/me` |
+| Auth / me | `/auth/otp/*`, `/auth/refresh`, `/me`, `/me/preferences` |
 | Users | `/users/search`, `/users/leaderboard`, `/users/{id}`, `/users/{id}/achievements` |
 | Routes | catalog (в т.ч. `place_id`), `/routes/mine`, drafts, submit, reviews + reply context + media |
 | Favorites | `/favorites/places/{id}`, `/favorites/routes/{id}` |
-| Support | `/support/tickets` |
+| Support | `/support/tickets`, `/support/tickets/{id}/attachments` (до 3 фото) |
 | Inbox / FCM | `/me/notifications`, `/me/device-tokens` |
 | Admin | `/admin` (cookie session; review photos, collapsed filters, expert actions) |
 
-AI planning endpoints ещё нет. OpenAI-compatible LM Studio transport и
-безопасный smoke probe уже подключены; пользовательская генерация остаётся
-выключенной до deterministic Route Builder и domain validation. Проверка:
+AI planning sessions и deterministic Route Builder уже подключены в Phase 8B;
+OpenAI-compatible LM Studio transport и безопасный smoke probe также доступны.
+Пользовательская генерация проходит через domain validation. Проверка transport:
 
 ```bash
 LM_STUDIO_BASE_URL=http://100.x.y.z:1234/v1 \
