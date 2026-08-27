@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -49,7 +49,12 @@ async def _resolve_rank(session: AsyncSession, user: User) -> TravelRank | None:
 async def _leaderboard_place(session: AsyncSession, points: int) -> int:
     ahead = int(
         await session.scalar(
-            select(func.count()).select_from(User).where(User.travel_points > points)
+            select(func.count())
+            .select_from(User)
+            .where(
+                User.travel_points > points,
+                or_(User.rank_id.is_(None), User.rank_id != EXPERT_RANK_ID),
+            )
         )
         or 0
     )
@@ -79,7 +84,7 @@ async def _public_user(
         next_rank_points=rank.next_rank_points if rank is not None else 1_000,
         leaderboard_place=place
         if place is not None
-        else await _leaderboard_place(session, user.travel_points),
+        else (None if user.is_expert else await _leaderboard_place(session, user.travel_points)),
         liked_by_me=liked_by_me,
         is_expert=user.is_expert,
         followers_count=followers_count,
@@ -172,7 +177,7 @@ async def list_leaderboard(
     # Эксперт is an admin-granted rank, not a points-earned one — excluding
     # it here is a rank check, not an ad-hoc flag filter, so it can't drift
     # out of sync with who's actually on that rank.
-    non_expert = User.rank_id != EXPERT_RANK_ID
+    non_expert = or_(User.rank_id.is_(None), User.rank_id != EXPERT_RANK_ID)
     total = int(await session.scalar(select(func.count()).select_from(User).where(non_expert)) or 0)
     users = list(
         (

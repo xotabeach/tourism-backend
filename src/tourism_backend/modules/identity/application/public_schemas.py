@@ -14,7 +14,8 @@ class PublicUserOut(BaseModel):
     rank_slug: str = "novice"
     rank_title: str = "Новичок"
     next_rank_points: int = 1000
-    leaderboard_place: int = 0
+    # Experts are intentionally outside the public leaderboard.
+    leaderboard_place: int | None = None
     liked_by_me: bool = False
     is_expert: bool = False
     followers_count: int = Field(default=0, ge=0)

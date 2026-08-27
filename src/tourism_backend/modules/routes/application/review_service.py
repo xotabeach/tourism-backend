@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import get_settings
-from tourism_backend.modules.identity.infrastructure.models import TravelRank, User
+from tourism_backend.modules.identity.infrastructure.models import EXPERT_RANK_ID, TravelRank, User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.notifications.application import service as notifications_service
@@ -65,10 +65,17 @@ async def _rank_titles(
     if not users:
         return {}
     points = {user.id: user.travel_points for user in users}
-    ranks = list((await session.scalars(select(TravelRank))).all())
+    ranks = list(
+        (await session.scalars(select(TravelRank).where(TravelRank.id != EXPERT_RANK_ID))).all()
+    )
     ranks_sorted = sorted(ranks, key=lambda r: r.min_points, reverse=True)
     out: dict[UUID, str] = {}
-    for user_id, tp in points.items():
+    for user in users:
+        user_id = user.id
+        tp = points[user_id]
+        if user.is_expert:
+            out[user_id] = "Эксперт"
+            continue
         title = "Новичок"
         for rank in ranks_sorted:
             if tp >= rank.min_points:

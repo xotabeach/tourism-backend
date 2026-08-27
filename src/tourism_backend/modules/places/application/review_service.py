@@ -5,7 +5,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
-from tourism_backend.modules.identity.infrastructure.models import TravelRank, User
+from tourism_backend.modules.identity.infrastructure.models import EXPERT_RANK_ID, TravelRank, User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.application.review_schemas import (
@@ -39,12 +39,15 @@ async def _rank_titles(session: AsyncSession, users: list[User]) -> dict[UUID, s
     if not users:
         return {}
     ranks = sorted(
-        (await session.scalars(select(TravelRank))).all(),
+        (await session.scalars(select(TravelRank).where(TravelRank.id != EXPERT_RANK_ID))).all(),
         key=lambda rank: rank.min_points,
         reverse=True,
     )
     result: dict[UUID, str] = {}
     for user in users:
+        if user.is_expert:
+            result[user.id] = "Эксперт"
+            continue
         result[user.id] = next(
             (rank.title for rank in ranks if user.travel_points >= rank.min_points),
             "Новичок",

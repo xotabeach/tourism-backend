@@ -11,7 +11,7 @@ from sqlalchemy.sql.selectable import Exists
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.favorites.infrastructure.models import FavoriteRoute
 from tourism_backend.modules.geography.infrastructure.models import Region
-from tourism_backend.modules.identity.infrastructure.models import TravelRank, User
+from tourism_backend.modules.identity.infrastructure.models import EXPERT_RANK_ID, TravelRank, User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
@@ -189,13 +189,16 @@ async def _rank_titles(session: AsyncSession, users: list[User]) -> dict[UUID, s
     if not users:
         return {}
     ranks_sorted = sorted(
-        (await session.scalars(select(TravelRank))).all(),
+        (await session.scalars(select(TravelRank).where(TravelRank.id != EXPERT_RANK_ID))).all(),
         key=lambda rank: rank.min_points,
         reverse=True,
     )
     out: dict[UUID, str] = {}
     for user in users:
         title = "Новичок"
+        if getattr(user, "is_expert", False):
+            out[user.id] = "Эксперт"
+            continue
         for rank in ranks_sorted:
             if user.travel_points >= rank.min_points:
                 title = rank.title
