@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
-from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.places.infrastructure.models import Place, RoadEvent
 from tourism_backend.modules.route_builder.application.place_picker import (
     PickedPlace,
     pick_places_for_params,
@@ -21,6 +21,10 @@ from tourism_backend.modules.route_builder.application.place_picker import (
 from tourism_backend.modules.route_builder.application.quota import (
     quota_snapshot,
     require_generation_quota,
+)
+from tourism_backend.modules.route_builder.application.route_quality import (
+    RoadEventSignal,
+    assess_route_quality,
 )
 from tourism_backend.modules.route_builder.application.routing import (
     RouteWaypoint,
@@ -39,6 +43,9 @@ from tourism_backend.modules.route_builder.application.schemas import (
     RouteMatchParamsIn,
     RouteProposalCardBlockOut,
     RouteProposalOut,
+)
+from tourism_backend.modules.route_builder.application.scoring import (
+    UserPreferenceSignals,
 )
 from tourism_backend.modules.route_builder.infrastructure.models import (
     RouteGenerationEvent,
@@ -88,15 +95,38 @@ def _estimate_duration(
     places: list[PickedPlace],
     routing: RoutingResult | None = None,
 ) -> int:
-    total = 0
-    for place in places:
-        total += place.recommended_visit_minutes or 45
+    total = _visit_duration_minutes(places)
     if routing is not None:
-        total += max(0, routing.total_duration_seconds // 60)
+        total += max(0, (routing.total_duration_seconds + 59) // 60)
     else:
         # Rough transit padding when routing was skipped (should be rare).
         total += max(0, len(places) - 1) * 25
     return total
+
+
+def _visit_duration_minutes(places: list[PickedPlace]) -> int:
+    return sum(place.recommended_visit_minutes or 45 for place in places)
+
+
+def _picked_from_place(place: Place) -> PickedPlace:
+    """Rehydrate all safety facts needed by the independent quality gate."""
+
+    return PickedPlace(
+        place_id=place.id,
+        name=place.name,
+        short_description=place.short_description,
+        recommended_visit_minutes=place.recommended_visit_minutes,
+        difficulty=place.difficulty,
+        suitable_for_children=place.is_suitable_for_children,
+        suitable_for_pets=place.is_suitable_for_pets,
+        temporary_closure_status=place.temporary_closure_status,
+        safety_warnings=tuple((place.safety_warnings or [])[:16]),
+        seasonality=tuple((place.seasonality or [])[:16]),
+        surface=place.surface,
+        accessibility=(
+            dict(place.accessibility) if isinstance(place.accessibility, dict) else None
+        ),
+    )
 
 
 def _transport_mode(params: RouteMatchParamsIn) -> TransportMode:
@@ -144,21 +174,83 @@ async def _waypoints_for_places(
     return waypoints
 
 
+async def _road_events_for_places(
+    session: AsyncSession,
+    places: list[PickedPlace],
+) -> tuple[RoadEventSignal, ...]:
+    """Load a bounded region-level event projection for route quality checks.
+
+    Road events are intentionally read-only inputs to generation. Their
+    human text and source URLs stay in the editorial table; only normalized
+    status/kind/transport/timestamps reach the quality policy and generated
+    route metadata.
+    """
+
+    if not places:
+        return ()
+    region_id = await session.scalar(select(Place.region_id).where(Place.id == places[0].place_id))
+    if region_id is None:
+        return ()
+    rows = list(
+        (
+            await session.scalars(
+                select(RoadEvent)
+                .where(
+                    RoadEvent.region_id == region_id,
+                    RoadEvent.status.in_(("active", "scheduled")),
+                )
+                .order_by(RoadEvent.starts_at, RoadEvent.id)
+                .limit(64)
+            )
+        ).all()
+    )
+    return tuple(
+        RoadEventSignal(
+            status=event.status,
+            event_kind=event.event_kind,
+            affects_transport=tuple((event.affects_transport or [])[:8]),
+            starts_at=event.starts_at,
+            ends_at=event.ends_at,
+        )
+        for event in rows
+    )
+
+
 async def _route_places(
     session: AsyncSession,
     *,
     places: list[PickedPlace],
     params: RouteMatchParamsIn,
+    road_events: tuple[RoadEventSignal, ...] | None = None,
 ) -> RoutingResult:
     waypoints = await _waypoints_for_places(session, places)
+    if road_events is None:
+        road_events = await _road_events_for_places(session, places)
     provider = get_routing_provider()
     try:
-        return await provider.route(
+        routing = await provider.route(
             waypoints=waypoints,
             transport_mode=_transport_mode(params),
         )
     except RoutingError as exc:
         raise AppError(code=exc.code, message=exc.message, status_code=422) from exc
+    quality = assess_route_quality(
+        routing,
+        transport_mode=_transport_mode(params),
+        pace=params.pace,
+        stops=places,
+        season=params.season,
+        with_children=params.with_children,
+        with_pets=params.with_pets,
+        road_events=road_events,
+    )
+    if not quality.usable_for_private_draft:
+        raise AppError(
+            code="routing_quality_unusable",
+            message="Не удалось подтвердить корректную геометрию маршрута",
+            status_code=422,
+        )
+    return routing
 
 
 def _title_for(params: RouteMatchParamsIn) -> str:
@@ -298,6 +390,7 @@ async def _persist_generated_route(
     places: list[PickedPlace],
     title: str,
     routing: RoutingResult,
+    road_events: tuple[RoadEventSignal, ...] = (),
 ) -> Route:
     now = datetime.now(UTC)
     route_id = uuid4()
@@ -317,16 +410,56 @@ async def _persist_generated_route(
     description = "; ".join(description_bits)
 
     waypoints = await _waypoints_for_places(session, places)
+    quality = assess_route_quality(
+        routing,
+        transport_mode=_transport_mode(params),
+        pace=params.pace,
+        stops=places,
+        season=params.season,
+        with_children=params.with_children,
+        with_pets=params.with_pets,
+        road_events=road_events,
+    )
+    if not quality.usable_for_private_draft:
+        raise AppError(
+            code="routing_quality_unusable",
+            message="Не удалось подтвердить корректную геометрию маршрута",
+            status_code=422,
+        )
+    visit_duration_minutes = _visit_duration_minutes(places)
+    total_duration_seconds = routing.total_duration_seconds + visit_duration_minutes * 60
     accessibility = {
         "travel_pace": params.pace,
         "day_kind": params.day_kind,
         "budget_amount": params.budget_amount,
+        "filters": {
+            "interests": list(params.interests),
+            "season": params.season,
+            "transport_mode": params.transport_mode,
+            "with_children": params.with_children,
+            "with_pets": params.with_pets,
+            "paid_ok": params.paid_ok,
+            "avoid_crowds": params.avoid_crowds,
+        },
         "generated": True,
         "routing": {
             "provider": routing.provider,
             "synthetic": routing.synthetic,
-            "warnings": list(routing.warnings),
-            "total_duration_seconds": routing.total_duration_seconds,
+            "quality_status": quality.status,
+            "quality_policy_version": quality.policy_version,
+            "warnings": list(quality.warnings),
+            "movement_duration_seconds": routing.total_duration_seconds,
+            "visit_duration_minutes": visit_duration_minutes,
+            "transfer_duration_seconds": 0,
+            "buffer_duration_seconds": 0,
+            "total_duration_seconds": total_duration_seconds,
+            "geometry_available": routing.geometry_wkt is not None,
+            "elevation_gain_meters": routing.elevation_gain_meters,
+            "elevation_loss_meters": routing.elevation_loss_meters,
+            "min_altitude_meters": routing.min_altitude_meters,
+            "max_altitude_meters": routing.max_altitude_meters,
+            "max_road_angle_degrees": routing.max_road_angle_degrees,
+            "road_types": list(routing.road_types),
         },
     }
 
@@ -350,7 +483,9 @@ async def _persist_generated_route(
         pets_allowed=params.with_pets,
         seasonality=[params.season] if params.season else None,
         accessibility=accessibility,
-        geometry=WKTElement(_line_wkt(waypoints), srid=4326),
+        # A provider geometry is authoritative.  The straight-line fallback
+        # remains explicit and is marked synthetic in the routing metadata.
+        geometry=WKTElement(routing.geometry_wkt or _line_wkt(waypoints), srid=4326),
         freshness_status="unknown",
         created_at=now,
         updated_at=now,
@@ -394,8 +529,20 @@ async def generate_route(
         session,
         params=params,
         max_points=policy.max_route_points,
+        preferences=UserPreferenceSignals(
+            categories=frozenset(user.preferred_categories or ()),
+            difficulty=user.preferred_difficulty,
+            travels_with_kids=user.travels_with_kids,
+            travels_with_pets=user.travels_with_pets,
+        ),
     )
-    routing = await _route_places(session, places=places, params=params)
+    road_events = await _road_events_for_places(session, places)
+    routing = await _route_places(
+        session,
+        places=places,
+        params=params,
+        road_events=road_events,
+    )
     title = _title_for(params)
     assistant_text = _assistant_text(params, places)
     duration = _estimate_duration(places, routing)
@@ -435,6 +582,7 @@ async def generate_route(
             places=places,
             title=title,
             routing=routing,
+            road_events=road_events,
         )
         proposal.route_id = route.id
         proposal.status = "accepted"
@@ -514,14 +662,7 @@ async def accept_proposal(
         place = await session.get(Place, pid)
         if place is None:
             continue
-        loaded.append(
-            PickedPlace(
-                place_id=place.id,
-                name=place.name,
-                short_description=place.short_description,
-                recommended_visit_minutes=place.recommended_visit_minutes,
-            )
-        )
+        loaded.append(_picked_from_place(place))
     if len(loaded) < 2:
         raise AppError(
             code="insufficient_places",
@@ -529,7 +670,13 @@ async def accept_proposal(
             status_code=422,
         )
 
-    routing = await _route_places(session, places=loaded, params=params)
+    road_events = await _road_events_for_places(session, loaded)
+    routing = await _route_places(
+        session,
+        places=loaded,
+        params=params,
+        road_events=road_events,
+    )
     route = await _persist_generated_route(
         session,
         user_id=user_id,
@@ -537,6 +684,7 @@ async def accept_proposal(
         places=loaded,
         title=proposal.title,
         routing=routing,
+        road_events=road_events,
     )
     now = datetime.now(UTC)
     proposal.route_id = route.id
@@ -579,14 +727,7 @@ async def reject_proposal(
         place = await session.get(Place, pid)
         if place is None:
             continue
-        loaded.append(
-            PickedPlace(
-                place_id=place.id,
-                name=place.name,
-                short_description=place.short_description,
-                recommended_visit_minutes=place.recommended_visit_minutes,
-            )
-        )
+        loaded.append(_picked_from_place(place))
     user = await session.get(User, user_id)
     policy = policy_for_user(user) if user is not None else FREE_POLICY
     snap = await quota_snapshot(session, user_id=user_id, policy=policy)

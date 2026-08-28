@@ -295,16 +295,24 @@ async def test_users_leaderboard_excludes_experts(
 
     engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
     async with engine.begin() as conn:
+        # The integration database is intentionally persistent between local
+        # runs. Give the fixture a score above the current maximum so the
+        # assertion tests expert exclusion rather than depending on an empty
+        # leaderboard or the first 100 rows from previous runs.
+        highest_points = await conn.scalar(
+            text("SELECT COALESCE(MAX(travel_points), 0) FROM users")
+        )
+        regular_points = int(highest_points or 0) + 1
         await conn.execute(
-            text("UPDATE users SET travel_points = 100 WHERE id = :id"),
-            {"id": regular_id},
+            text("UPDATE users SET travel_points = :points WHERE id = :id"),
+            {"id": regular_id, "points": regular_points},
         )
         await conn.execute(
             text(
-                "UPDATE users SET travel_points = 999999, is_expert = true, "
+                "UPDATE users SET travel_points = :points, is_expert = true, "
                 "rank_id = '00000000-0000-0000-0000-000000000106' WHERE id = :id"
             ),
-            {"id": expert_id},
+            {"id": expert_id, "points": regular_points + 1},
         )
     await engine.dispose()
 

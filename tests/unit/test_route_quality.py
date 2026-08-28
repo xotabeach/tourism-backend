@@ -1,0 +1,236 @@
+"""Pure tests for the route quality policy."""
+
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+from tourism_backend.modules.route_builder.application.place_picker import PickedPlace
+from tourism_backend.modules.route_builder.application.route_quality import (
+    RoadEventSignal,
+    active_road_event_blockers,
+    assess_route_quality,
+)
+from tourism_backend.modules.route_builder.application.routing import (
+    RouteLegResult,
+    RoutingResult,
+)
+
+
+def _routing(**changes: object) -> RoutingResult:
+    values: dict[str, object] = {
+        "provider": "2gis",
+        "synthetic": False,
+        "legs": (
+            RouteLegResult(
+                from_index=0,
+                to_index=1,
+                distance_meters=1_200,
+                duration_seconds=900,
+                geometry_wkt="LINESTRING(34.1 44.5, 34.11 44.51)",
+            ),
+        ),
+        "total_distance_meters": 1_200,
+        "total_duration_seconds": 900,
+        "geometry_wkt": "LINESTRING(34.1 44.5, 34.11 44.51)",
+        "elevation_gain_meters": 80,
+        "max_road_angle_degrees": 8,
+    }
+    values.update(changes)
+    return RoutingResult(**values)  # type: ignore[arg-type]
+
+
+def test_synthetic_route_remains_usable_but_explicitly_unverified() -> None:
+    assessment = assess_route_quality(
+        _routing(provider="stub", synthetic=True, geometry_wkt=None),
+        transport_mode="walk",
+        pace="calm",
+    )
+
+    assert assessment.status == "unverified"
+    assert assessment.usable_for_private_draft is True
+    assert "not_navigation_grade" in assessment.warnings
+
+
+def test_provider_route_without_geometry_is_unusable() -> None:
+    assessment = assess_route_quality(
+        _routing(geometry_wkt=None),
+        transport_mode="walk",
+        pace="moderate",
+    )
+
+    assert assessment.status == "unusable"
+    assert assessment.usable_for_private_draft is False
+    assert "provider_geometry_missing" in assessment.warnings
+
+
+def test_pedestrian_highway_filter_violation_is_unusable() -> None:
+    assessment = assess_route_quality(
+        _routing(road_types=("highway",)),
+        transport_mode="walk",
+        pace="active",
+    )
+
+    assert assessment.status == "unusable"
+    assert "pedestrian_highway_filter_violated" in assessment.warnings
+
+
+def test_route_above_requested_pace_needs_review() -> None:
+    assessment = assess_route_quality(
+        _routing(elevation_gain_meters=550, max_road_angle_degrees=18),
+        transport_mode="walk",
+        pace="calm",
+    )
+
+    assert assessment.status == "needs_review"
+    assert "slope_above_requested_pace" in assessment.warnings
+    assert "elevation_gain_above_requested_pace" in assessment.warnings
+
+
+def test_sound_provider_route_is_never_overstated_as_fully_verified() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="walk",
+        pace="calm",
+    )
+
+    assert assessment.status == "verified_with_warnings"
+    assert "terrain_access_not_independently_verified" in assessment.warnings
+
+
+def _stop(**changes: object) -> PickedPlace:
+    values: dict[str, object] = {
+        "place_id": uuid4(),
+        "name": "Точка",
+        "short_description": None,
+        "recommended_visit_minutes": 30,
+    }
+    values.update(changes)
+    return PickedPlace(**values)  # type: ignore[arg-type]
+
+
+def test_independent_gate_blocks_closed_stop_and_explicit_child_mismatch() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="walk",
+        pace="calm",
+        stops=[
+            _stop(temporary_closure_status="closed"),
+            _stop(suitable_for_children=False),
+        ],
+        with_children=True,
+    )
+
+    assert assessment.status == "unusable"
+    assert "stop_temporarily_closed" in assessment.warnings
+    assert "stop_not_suitable_for_children" in assessment.warnings
+
+
+def test_independent_gate_marks_water_surface_and_season_as_review() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="walk",
+        pace="moderate",
+        stops=[
+            _stop(
+                temporary_closure_status="partial",
+                surface="gravel",
+                seasonality=("summer",),
+                accessibility={"water_crossing": True},
+                safety_warnings=("steep cliff",),
+            )
+        ],
+        season="winter",
+    )
+
+    assert assessment.status == "needs_review"
+    assert "water_crossing_requires_independent_review" in assessment.warnings
+    assert "stop_surface_requires_review" in assessment.warnings
+    assert "stop_seasonality_mismatch" in assessment.warnings
+    assert "stop_safety_warning_requires_review" in assessment.warnings
+
+
+def test_synthetic_route_with_required_boat_access_is_not_usable() -> None:
+    assessment = assess_route_quality(
+        _routing(provider="stub", synthetic=True, geometry_wkt=None),
+        transport_mode="walk",
+        stops=[_stop(accessibility={"requires_boat": True})],
+    )
+
+    assert assessment.status == "unusable"
+    assert "stop_requires_unsafe_access" in assessment.warnings
+
+
+def test_active_closure_for_requested_mode_is_unusable() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="car",
+        road_events=(
+            RoadEventSignal(
+                status="active",
+                event_kind="closure",
+                affects_transport=("driving",),
+            ),
+        ),
+    )
+
+    assert assessment.status == "unusable"
+    assert "road_event_active_closure" in assessment.warnings
+
+
+def test_event_for_another_mode_is_ignored_and_expired_event_is_ignored() -> None:
+    now = datetime.now(UTC)
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="walk",
+        as_of=now,
+        road_events=(
+            RoadEventSignal(
+                status="active",
+                event_kind="closure",
+                affects_transport=("driving",),
+            ),
+            RoadEventSignal(
+                status="active",
+                event_kind="closure",
+                ends_at=now - timedelta(minutes=1),
+            ),
+        ),
+    )
+
+    assert assessment.status == "verified_with_warnings"
+    assert "road_event_active_closure" not in assessment.warnings
+
+
+def test_scheduled_restriction_needs_review_without_hard_block() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="walk",
+        road_events=(
+            RoadEventSignal(
+                status="scheduled",
+                event_kind="restriction",
+                affects_transport=("walking",),
+            ),
+        ),
+    )
+
+    assert assessment.status == "needs_review"
+    assert "road_event_scheduled_restriction" in assessment.warnings
+
+
+def test_execution_recheck_uses_same_mode_and_ignores_resolved_events() -> None:
+    blockers = active_road_event_blockers(
+        (
+            RoadEventSignal(
+                status="active",
+                event_kind="closure",
+                affects_transport=("car",),
+            ),
+            RoadEventSignal(
+                status="resolved",
+                event_kind="closure",
+                affects_transport=("all",),
+            ),
+        ),
+        transport_mode="walk",
+    )
+    assert blockers == ()

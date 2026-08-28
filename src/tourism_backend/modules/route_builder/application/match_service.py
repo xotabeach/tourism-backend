@@ -20,6 +20,7 @@ from tourism_backend.modules.route_builder.application.schemas import (
 )
 from tourism_backend.modules.route_builder.application.scoring import (
     RouteMatchCandidate,
+    UserPreferenceSignals,
     partition_scored,
     score_candidate,
 )
@@ -44,7 +45,13 @@ async def match_routes(
     policy = policy_for_user(user)
 
     candidates = await _load_candidates(session, region_slug=params.region_slug)
-    scored = [score_candidate(params, candidate) for candidate in candidates]
+    preferences = UserPreferenceSignals(
+        categories=frozenset(user.preferred_categories or ()),
+        difficulty=user.preferred_difficulty,
+        travels_with_kids=user.travels_with_kids,
+        travels_with_pets=user.travels_with_pets,
+    )
+    scored = [score_candidate(params, candidate, preferences) for candidate in candidates]
     ideal_scored, close_scored, offer_generate = partition_scored(scored)
 
     route_ids = [item.candidate.route_id for item in ideal_scored + close_scored]

@@ -5,6 +5,7 @@ from uuid import uuid4
 from tourism_backend.modules.route_builder.application.schemas import RouteMatchParamsIn
 from tourism_backend.modules.route_builder.application.scoring import (
     RouteMatchCandidate,
+    UserPreferenceSignals,
     partition_scored,
     score_candidate,
 )
@@ -136,3 +137,28 @@ def test_category_signal_does_not_override_wrong_city() -> None:
         _candidate(locality_names=("Ялта",), category_slugs=frozenset({"museum", "fortress"})),
     )
     assert scored.score < 0.55
+
+
+def test_profile_preferences_are_soft_and_explainable() -> None:
+    params = RouteMatchParamsIn(city="Ялта", duration="d3_5")
+    preferences = UserPreferenceSignals(
+        categories=frozenset({"Море"}),
+        difficulty="easy",
+        travels_with_kids=True,
+    )
+    preferred = score_candidate(
+        params,
+        _candidate(category_slugs=frozenset({"beach"})),
+        preferences,
+    )
+    other = score_candidate(
+        params,
+        _candidate(
+            category_slugs=frozenset({"mountain"}),
+            difficulty="hard",
+            suitable_for_children=False,
+        ),
+        preferences,
+    )
+    assert preferred.score > other.score
+    assert any("предпочтения" in reason for reason in preferred.reasons)

@@ -2,7 +2,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOCAL_PLACEHOLDER_MARKERS = (
@@ -40,6 +40,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_name: str = "tourism-backend"
@@ -92,10 +93,31 @@ class Settings(BaseSettings):
     rag_top_k: int = Field(default=4, ge=1, le=8)
     rag_embedding_model: str = "hash-v1"
 
-    # ADR-004 RoutingProvider. stub = synthetic haversine; osrm = later.
-    routing_provider: Literal["stub"] = "stub"
+    # ADR-004/010 RoutingProvider. ``stub`` is synthetic local DX; ``2gis``
+    # uses the server-side HTTP Routing API.  Keep the default conservative so
+    # a missing external key can never silently change local/test behaviour.
+    routing_provider: Literal["stub", "2gis"] = "stub"
     osrm_base_url: str | None = None
     routing_timeout_seconds: float = Field(default=10, ge=1, le=60)
+    # Keep the canonical name explicit, while accepting the two names used by
+    # older deployment manifests during a rolling migration.  The value is
+    # never serialized or exposed through the API.
+    two_gis_http_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "TWO_GIS_HTTP_API_KEY",
+            "TWO_GIS_ROUTING_API_KEY",
+            "TWO_GIS_API_KEY",
+        ),
+    )
+    two_gis_routing_base_url: str = "https://routing.api.2gis.com"
+    two_gis_routing_alternative: int = Field(default=0, ge=0, le=3)
+    # Demo keys currently expose a 50 km route cap. Production can raise this
+    # only after the vendor subscription/terms are confirmed.
+    two_gis_max_route_meters: int = Field(default=50_000, ge=100, le=1_000_000)
+    # Comma-separated soft filters. The adapter records any returned road
+    # types; the quality gate decides whether a route may be published.
+    two_gis_routing_filters: str = "dirt_road,ferry"
 
     @property
     def otp_accept_any_enabled(self) -> bool:
@@ -134,6 +156,15 @@ def validate_settings(settings: Settings) -> None:
                 f"cleartext and is not allowed when app_env={settings.app_env.value!r}"
             )
             raise RuntimeError(msg)
+
+    if settings.routing_provider == "2gis":
+        key = settings.two_gis_http_api_key
+        if key is None or not key.get_secret_value().strip():
+            raise RuntimeError(
+                "TWO_GIS_HTTP_API_KEY (or its legacy alias) is required when ROUTING_PROVIDER=2gis"
+            )
+        if not settings.two_gis_routing_base_url.startswith("https://"):
+            raise RuntimeError("TWO_GIS_ROUTING_BASE_URL must use HTTPS")
 
     if settings.app_env in {AppEnvironment.LOCAL, AppEnvironment.TEST}:
         return

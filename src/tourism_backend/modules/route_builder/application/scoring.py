@@ -64,13 +64,14 @@ INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
     "море": frozenset({"beach", "viewpoint"}),
     "горы": frozenset({"mountain", "viewpoint", "cave", "trail"}),
     "еда": frozenset({"winery"}),
+    "лес": frozenset({"nature", "park", "trail"}),
+    "леса": frozenset({"nature", "park", "trail"}),
     "вино": frozenset({"winery"}),
     "история": frozenset(
         {"museum", "fortress", "palace", "monument", "religious-site", "landmark"}
     ),
     "экстрим": frozenset({"cave", "mountain", "trail"}),
     "фото": frozenset({"viewpoint", "waterfall", "palace"}),
-    "леса": frozenset({"nature", "park", "trail"}),
     "спорт": frozenset({"trail", "mountain"}),
     "лошади": frozenset({"trail", "nature"}),
     "романтика": frozenset({"palace", "viewpoint", "beach", "park"}),
@@ -106,6 +107,22 @@ class RouteMatchCandidate:
     # Distinct category slugs across the route's stops (ADR-009: primary
     # interest/trip-type signal, since it is the one field with full coverage).
     category_slugs: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class UserPreferenceSignals:
+    """Explicit profile preferences used as a bounded ranking signal.
+
+    Preferences are intentionally soft: an explicit request in the current
+    session always remains the dominant signal, and an unknown route field is
+    neutral rather than a penalty.  Behavioural history is not represented
+    here; it belongs to the later feedback/ranker workstream.
+    """
+
+    categories: frozenset[str] = frozenset()
+    difficulty: str | None = None
+    travels_with_kids: bool = False
+    travels_with_pets: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,7 +312,57 @@ def _party_flags_score(
     return score, reason
 
 
-def score_candidate(params: RouteMatchParamsIn, candidate: RouteMatchCandidate) -> ScoredMatch:
+def _preference_score(
+    preferences: UserPreferenceSignals | None,
+    candidate: RouteMatchCandidate,
+) -> tuple[float, str | None]:
+    if preferences is None:
+        return 0.5, None
+    parts: list[float] = []
+    reasons: list[str] = []
+    if preferences.categories:
+        preferred_categories: set[str] = set()
+        for category in preferences.categories:
+            preferred_categories.update(categories_for_interest(category))
+        overlap = preferred_categories & set(candidate.category_slugs)
+        category_score = min(1.0, len(overlap) / max(1, min(2, len(preferred_categories))))
+        parts.append(category_score)
+        if overlap:
+            reasons.append("совпадает с предпочтениями")
+    if preferences.difficulty:
+        if candidate.difficulty is None:
+            parts.append(0.5)
+        elif candidate.difficulty.casefold() == preferences.difficulty.casefold():
+            parts.append(1.0)
+            reasons.append("сложность из профиля")
+        else:
+            parts.append(0.25)
+    if preferences.travels_with_kids:
+        parts.append(
+            1.0
+            if candidate.suitable_for_children is True
+            else 0.15
+            if candidate.suitable_for_children is False
+            else 0.5
+        )
+    if preferences.travels_with_pets:
+        parts.append(
+            1.0
+            if candidate.pets_allowed is True
+            else 0.15
+            if candidate.pets_allowed is False
+            else 0.5
+        )
+    if not parts:
+        return 0.5, None
+    return sum(parts) / len(parts), ", ".join(dict.fromkeys(reasons)) or None
+
+
+def score_candidate(
+    params: RouteMatchParamsIn,
+    candidate: RouteMatchCandidate,
+    preferences: UserPreferenceSignals | None = None,
+) -> ScoredMatch:
     text = _haystack(candidate)
     parts: list[tuple[float, float, str | None]] = []
     # (weight, score, reason)
@@ -315,6 +382,11 @@ def score_candidate(params: RouteMatchParamsIn, candidate: RouteMatchCandidate) 
     parts.append((0.03, s_score, s_reason))
     f_score, f_reason = _party_flags_score(params, candidate)
     parts.append((0.02, f_score, f_reason))
+    pref_score, pref_reason = _preference_score(preferences, candidate)
+    # Profile preferences are useful for cold-start personalization, but must
+    # never overpower the current query.  The cap keeps a single preference
+    # from turning the feed into a one-topic filter bubble.
+    parts.append((0.08, pref_score, pref_reason))
 
     total_w = sum(w for w, _, _ in parts)
     score = sum(w * s for w, s, _ in parts) / total_w

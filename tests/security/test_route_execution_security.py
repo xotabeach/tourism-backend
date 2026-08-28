@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from tourism_backend.config import Settings
@@ -103,6 +104,25 @@ async def test_route_execution_lifecycle_is_idempotent(live_client: AsyncClient)
     assert execution["route_id"] == route_id
     assert execution["total_stops"] >= 1
     assert execution["completed_stops"] == 0
+    assert execution["routing"] is not None
+    assert execution["routing"]["snapshot_id"]
+    assert execution["routing"]["revision"] >= 1
+    assert execution["routing"]["captured_at"]
+
+    snapshot_engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        with pytest.raises(DBAPIError):
+            async with snapshot_engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE route_routing_snapshots "
+                        "SET total_duration_seconds = COALESCE(total_duration_seconds, 0) + 1 "
+                        "WHERE id = :snapshot_id"
+                    ),
+                    {"snapshot_id": execution["routing"]["snapshot_id"]},
+                )
+    finally:
+        await snapshot_engine.dispose()
 
     repeated = await live_client.post(
         "/api/v1/route-executions",
@@ -111,6 +131,7 @@ async def test_route_execution_lifecycle_is_idempotent(live_client: AsyncClient)
     )
     assert repeated.status_code == 201, repeated.text
     assert repeated.json()["id"] == execution["id"]
+    assert repeated.json()["routing"]["snapshot_id"] == execution["routing"]["snapshot_id"]
 
     active = await live_client.get("/api/v1/route-executions/active", headers=headers)
     assert active.status_code == 200

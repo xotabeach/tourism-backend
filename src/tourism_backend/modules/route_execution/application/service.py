@@ -14,7 +14,16 @@ from sqlalchemy.sql.elements import ColumnElement
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
-from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.places.infrastructure.models import Place, RoadEvent
+from tourism_backend.modules.route_builder.application.route_quality import (
+    RoadEventSignal,
+    active_road_event_blockers,
+)
+from tourism_backend.modules.route_builder.application.routing import normalize_transport_mode
+from tourism_backend.modules.route_execution.application.routing_snapshot import (
+    ensure_routing_snapshot,
+    routing_snapshot_out,
+)
 from tourism_backend.modules.route_execution.application.schemas import (
     RouteExecutionListOut,
     RouteExecutionOut,
@@ -79,6 +88,7 @@ async def _execution_out(session: AsyncSession, execution: RouteExecution) -> Ro
     completed = sum(stop.completed_at is not None for stop in stops)
     required = [stop for stop in stops if not stop.is_optional]
     completed_required = sum(stop.completed_at is not None for stop in required)
+    routing = await routing_snapshot_out(session, execution.routing_snapshot_id)
     return RouteExecutionOut(
         id=execution.id,
         route_id=execution.route_id,
@@ -88,6 +98,7 @@ async def _execution_out(session: AsyncSession, execution: RouteExecution) -> Ro
         started_at=execution.started_at,
         completed_at=execution.completed_at,
         cancelled_at=execution.cancelled_at,
+        routing=routing,
         total_stops=len(stops),
         completed_stops=completed,
         required_stops=len(required),
@@ -140,10 +151,62 @@ async def start_execution(
         )
 
     route = await session.scalar(
-        select(Route).where(Route.id == route_id, or_(_PUBLIC_ROUTE, _owned_route(user_id)))
+        select(Route)
+        .where(Route.id == route_id, or_(_PUBLIC_ROUTE, _owned_route(user_id)))
+        .with_for_update()
     )
     if route is None:
         raise AppError(code="route_not_found", message="Route not found", status_code=404)
+
+    # Do not start a route that was explicitly marked unusable by the quality
+    # gate. Older routes may have no routing metadata; those remain readable
+    # for backwards compatibility and carry an honest ``unknown`` snapshot.
+    routing_metadata = (
+        route.accessibility.get("routing") if isinstance(route.accessibility, dict) else None
+    )
+    if isinstance(routing_metadata, dict) and routing_metadata.get("quality_status") == "unusable":
+        raise AppError(
+            code="route_quality_unusable",
+            message="Маршрут нельзя начать: качество маршрута не подтверждено",
+            status_code=409,
+        )
+
+    # Road events are region-level until segment geometry is available. An
+    # active closure is therefore a conservative execution blocker; the
+    # snapshot still records any earlier review warnings for observability.
+    event_rows = list(
+        (
+            await session.scalars(
+                select(RoadEvent)
+                .where(
+                    RoadEvent.region_id == route.region_id,
+                    RoadEvent.status.in_(("active", "scheduled")),
+                )
+                .order_by(RoadEvent.starts_at, RoadEvent.id)
+                .limit(64)
+            )
+        ).all()
+    )
+    blockers = active_road_event_blockers(
+        tuple(
+            RoadEventSignal(
+                status=event.status,
+                event_kind=event.event_kind,
+                affects_transport=tuple((event.affects_transport or [])[:8]),
+                starts_at=event.starts_at,
+                ends_at=event.ends_at,
+            )
+            for event in event_rows
+        ),
+        transport_mode=normalize_transport_mode(route.transport_mode),
+    )
+    if blockers:
+        raise AppError(
+            code="route_blocked_by_road_event",
+            message="Маршрут временно недоступен из-за дорожного ограничения",
+            status_code=409,
+            details={"reasons": list(blockers)},
+        )
 
     rows = (
         await session.execute(
@@ -165,6 +228,15 @@ async def start_execution(
             status_code=409,
         )
 
+    routing_snapshot = await ensure_routing_snapshot(
+        session,
+        route=route,
+        stop_signature=[
+            (route_stop.id, route_stop.position, place.id) for route_stop, place, _lng, _lat in rows
+        ],
+        captured_at=datetime.now(UTC),
+    )
+
     cover_url = await session.scalar(
         select(MediaAttachment.public_path)
         .where(
@@ -180,6 +252,7 @@ async def start_execution(
         id=uuid4(),
         user_id=user_id,
         route_id=route.id,
+        routing_snapshot_id=routing_snapshot.id,
         route_name=route.name,
         route_cover_url=cover_url,
         status="active",

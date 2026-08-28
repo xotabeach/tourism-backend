@@ -1,9 +1,11 @@
+import json
+import math
 from datetime import UTC, datetime
 from typing import cast as type_cast
 from uuid import UUID, uuid4
 
 from geoalchemy2 import Geometry
-from geoalchemy2.functions import ST_X, ST_Y
+from geoalchemy2.functions import ST_X, ST_Y, ST_AsGeoJSON
 from sqlalchemy import Select, cast, delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Exists
@@ -20,10 +22,13 @@ from tourism_backend.modules.routes.application.media import SavedRouteMedia
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
     RouteDetailOut,
+    RouteGeometryOut,
     RouteListItemOut,
     RouteListOut,
     RouteMediaOut,
     RoutePublicationStatus,
+    RouteQualityStatus,
+    RouteRoutingOut,
     RouteSource,
     RouteStopOut,
     UserRouteDraftIn,
@@ -418,6 +423,8 @@ async def _route_detail_from_model(
         for stop, place, lng, lat in stops_rows
     ]
     covers = await _cover_urls_for_routes(session, [route.id])
+    geometry = await _geometry_for_route(session, route.id)
+    routing = _routing_for_route(route.accessibility)
     authors = await _author_fields_for_routes(session, [route])
     owner_id, label, avatar, is_expert, rank_title = authors[route.id]
     base = _to_list_item(
@@ -436,9 +443,152 @@ async def _route_detail_from_model(
         budget_notes=route.budget_notes,
         accessibility=route.accessibility,
         freshness_status=route.freshness_status,
+        geometry=geometry,
+        routing=routing,
         stops=stops,
         media=media,
     )
+
+
+async def _geometry_for_route(
+    session: AsyncSession,
+    route_id: UUID,
+) -> RouteGeometryOut | None:
+    """Read only a validated LineString, never the provider's raw response."""
+
+    raw = await session.scalar(select(ST_AsGeoJSON(Route.geometry)).where(Route.id == route_id))
+    if not isinstance(raw, str):
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("type") != "LineString":
+        return None
+    raw_coordinates = payload.get("coordinates")
+    if not isinstance(raw_coordinates, list):
+        return None
+    coordinates: list[tuple[float, float]] = []
+    for pair in raw_coordinates:
+        if not isinstance(pair, list) or len(pair) < 2:
+            continue
+        lon, lat = pair[0], pair[1]
+        if (
+            isinstance(lon, bool)
+            or isinstance(lat, bool)
+            or not isinstance(lon, (int, float))
+            or not isinstance(lat, (int, float))
+            or not math.isfinite(float(lon))
+            or not math.isfinite(float(lat))
+            or not -180 <= float(lon) <= 180
+            or not -90 <= float(lat) <= 90
+        ):
+            continue
+        coordinates.append((float(lon), float(lat)))
+    if len(coordinates) < 2:
+        return None
+    return RouteGeometryOut(coordinates=coordinates)
+
+
+def _routing_for_route(value: object) -> RouteRoutingOut | None:
+    """Map the small normalized routing metadata kept in accessibility JSON."""
+
+    if not isinstance(value, dict):
+        return None
+    raw = value.get("routing")
+    if not isinstance(raw, dict):
+        return None
+    warnings = [item for item in raw.get("warnings", []) if isinstance(item, str)]
+    road_types = [item for item in raw.get("road_types", []) if isinstance(item, str)]
+    provider = raw.get("provider") if isinstance(raw.get("provider"), str) else None
+    allowed_quality_statuses = {
+        "unverified",
+        "checking",
+        "verified",
+        "verified_with_warnings",
+        "needs_review",
+        "unusable",
+    }
+    raw_quality_status = raw.get("quality_status")
+    quality_status: RouteQualityStatus = (
+        type_cast(RouteQualityStatus, raw_quality_status)
+        if isinstance(raw_quality_status, str) and raw_quality_status in allowed_quality_statuses
+        else "unknown"
+    )
+    quality_policy_version = (
+        raw.get("quality_policy_version")
+        if isinstance(raw.get("quality_policy_version"), str)
+        else None
+    )
+    movement_duration: int | None = None
+    visit_duration: int | None = None
+    transfer_duration: int | None = None
+    buffer_duration: int | None = None
+    total_duration: int | None = None
+    elevation_gain: int | None = None
+    elevation_loss: int | None = None
+    for field in (
+        "movement_duration_seconds",
+        "visit_duration_minutes",
+        "transfer_duration_seconds",
+        "buffer_duration_seconds",
+        "total_duration_seconds",
+        "elevation_gain_meters",
+        "elevation_loss_meters",
+    ):
+        candidate = raw.get(field)
+        if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0:
+            if field == "movement_duration_seconds":
+                movement_duration = candidate
+            elif field == "visit_duration_minutes":
+                visit_duration = candidate
+            elif field == "transfer_duration_seconds":
+                transfer_duration = candidate
+            elif field == "buffer_duration_seconds":
+                buffer_duration = candidate
+            elif field == "total_duration_seconds":
+                total_duration = candidate
+            elif field == "elevation_gain_meters":
+                elevation_gain = candidate
+            else:
+                elevation_loss = candidate
+    min_altitude = _optional_int(raw.get("min_altitude_meters"))
+    max_altitude = _optional_int(raw.get("max_altitude_meters"))
+    max_road_angle: float | None = None
+    angle = raw.get("max_road_angle_degrees")
+    if (
+        isinstance(angle, (int, float))
+        and not isinstance(angle, bool)
+        and math.isfinite(float(angle))
+        and 0 <= float(angle) <= 90
+    ):
+        max_road_angle = float(angle)
+    return RouteRoutingOut(
+        provider=provider,
+        synthetic=bool(raw.get("synthetic", False)),
+        quality_status=quality_status,
+        quality_policy_version=quality_policy_version,
+        warnings=warnings[:32],
+        movement_duration_seconds=movement_duration,
+        visit_duration_minutes=visit_duration,
+        transfer_duration_seconds=transfer_duration,
+        buffer_duration_seconds=buffer_duration,
+        total_duration_seconds=total_duration,
+        elevation_gain_meters=elevation_gain,
+        elevation_loss_meters=elevation_loss,
+        min_altitude_meters=min_altitude,
+        max_altitude_meters=max_altitude,
+        max_road_angle_degrees=max_road_angle,
+        road_types=road_types[:32],
+    )
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(float(value)):
+        return None
+    return int(round(value))
 
 
 async def get_route(session: AsyncSession, route_id: UUID) -> RouteDetailOut:

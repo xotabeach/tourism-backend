@@ -6,6 +6,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from tourism_backend.modules.routes.application.schemas import (
+    RouteGeometryOut,
+    RouteQualityStatus,
+)
+
 RouteExecutionStatus = Literal["active", "completed", "cancelled"]
 
 
@@ -13,6 +18,34 @@ class RouteExecutionStartIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route_id: UUID
+
+
+class RouteExecutionRoutingOut(BaseModel):
+    """The immutable route facts captured when execution started."""
+
+    snapshot_id: UUID
+    revision: int = Field(ge=1)
+    captured_at: datetime
+    route_updated_at: datetime | None
+    provider: str | None
+    provider_version: str | None
+    transport_mode: str | None
+    geometry: RouteGeometryOut | None
+    distance_meters: int | None = Field(default=None, ge=0)
+    movement_duration_seconds: int | None = Field(default=None, ge=0)
+    visit_duration_minutes: int | None = Field(default=None, ge=0)
+    transfer_duration_seconds: int | None = Field(default=None, ge=0)
+    buffer_duration_seconds: int | None = Field(default=None, ge=0)
+    total_duration_seconds: int | None = Field(default=None, ge=0)
+    elevation_gain_meters: int | None = Field(default=None, ge=0)
+    elevation_loss_meters: int | None = Field(default=None, ge=0)
+    min_altitude_meters: int | None
+    max_altitude_meters: int | None
+    max_road_angle_degrees: float | None = Field(default=None, ge=0, le=90)
+    road_types: list[str] = Field(default_factory=list, max_length=32)
+    quality_status: RouteQualityStatus
+    quality_policy_version: str | None
+    warnings: list[str] = Field(default_factory=list, max_length=32)
 
 
 class RouteExecutionStopOut(BaseModel):
@@ -36,6 +69,7 @@ class RouteExecutionOut(BaseModel):
     started_at: datetime
     completed_at: datetime | None
     cancelled_at: datetime | None
+    routing: RouteExecutionRoutingOut | None = None
     total_stops: int = Field(ge=0)
     completed_stops: int = Field(ge=0)
     required_stops: int = Field(ge=0)

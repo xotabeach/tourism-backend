@@ -10,6 +10,7 @@ from geoalchemy2 import Geometry
 from geoalchemy2.functions import ST_X, ST_Y
 from sqlalchemy import cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
@@ -25,6 +26,7 @@ from tourism_backend.modules.route_builder.application.schemas import (
 )
 from tourism_backend.modules.route_builder.application.scoring import (
     INTEREST_KEYWORDS,
+    UserPreferenceSignals,
     categories_for_interest,
 )
 
@@ -57,6 +59,14 @@ class PickedPlace:
     short_description: str | None
     recommended_visit_minutes: int | None
     cover_hint: str | None = None
+    difficulty: str | None = None
+    suitable_for_children: bool | None = None
+    suitable_for_pets: bool | None = None
+    temporary_closure_status: str | None = None
+    safety_warnings: tuple[str, ...] = ()
+    seasonality: tuple[str, ...] = ()
+    surface: str | None = None
+    accessibility: dict[str, object] | None = None
 
 
 def _target_stops(duration: DurationOption, max_points: int) -> int:
@@ -68,6 +78,7 @@ def _score_place(
     place: Place,
     city_cf: str,
     categories: frozenset[str] = frozenset(),
+    preferences: UserPreferenceSignals | None = None,
 ) -> float:
     text = " ".join(
         part
@@ -111,7 +122,49 @@ def _score_place(
         score += 0.05
     if place.temporary_closure_status in {"closed", "partial"}:
         score -= 0.5
+    if preferences is not None:
+        preferred_categories: set[str] = set()
+        for category in preferences.categories:
+            preferred_categories.update(categories_for_interest(category))
+        if preferred_categories and preferred_categories & set(categories):
+            # A small bonus keeps profile preferences useful for generation
+            # without turning them into a hard filter.
+            score += 0.08
+        if preferences.difficulty and place.difficulty:
+            score += 0.05 if place.difficulty.casefold() == preferences.difficulty.casefold() else 0
+        if preferences.travels_with_kids and place.is_suitable_for_children is True:
+            score += 0.05
+        if preferences.travels_with_pets and place.is_suitable_for_pets is True:
+            score += 0.05
     return score
+
+
+def _hard_place_constraints(params: RouteMatchParamsIn) -> tuple[ColumnElement[bool], ...]:
+    """Return constraints that should prevent an avoidable bad candidate."""
+
+    constraints: list[ColumnElement[bool]] = [
+        or_(
+            Place.temporary_closure_status.is_(None),
+            ~Place.temporary_closure_status.in_(
+                ("closed", "temporarily_closed", "closed_permanently")
+            ),
+        )
+    ]
+    if params.with_children is True:
+        constraints.append(
+            or_(
+                Place.is_suitable_for_children.is_(True),
+                Place.is_suitable_for_children.is_(None),
+            )
+        )
+    if params.with_pets is True:
+        constraints.append(
+            or_(
+                Place.is_suitable_for_pets.is_(True),
+                Place.is_suitable_for_pets.is_(None),
+            )
+        )
+    return tuple(constraints)
 
 
 async def _categories_for_places(
@@ -138,6 +191,7 @@ async def pick_places_for_params(
     *,
     params: RouteMatchParamsIn,
     max_points: int,
+    preferences: UserPreferenceSignals | None = None,
 ) -> list[PickedPlace]:
     region = await session.scalar(select(Region).where(Region.slug == params.region_slug))
     if region is None:
@@ -157,6 +211,7 @@ async def pick_places_for_params(
     stmt = select(Place).where(
         Place.region_id == region.id,
         Place.publication_status == "published",
+        *_hard_place_constraints(params),
     )
     if locality_ids:
         stmt = stmt.where(
@@ -185,6 +240,7 @@ async def pick_places_for_params(
                     .where(
                         Place.region_id == region.id,
                         Place.publication_status == "published",
+                        *_hard_place_constraints(params),
                     )
                     .order_by(Place.name)
                     .limit(80)
@@ -196,7 +252,13 @@ async def pick_places_for_params(
     ranked = sorted(
         places,
         key=lambda place: (
-            -_score_place(params, place, city_cf, categories_by_place.get(place.id, frozenset())),
+            -_score_place(
+                params,
+                place,
+                city_cf,
+                categories_by_place.get(place.id, frozenset()),
+                preferences,
+            ),
             place.name,
         ),
     )
@@ -247,6 +309,16 @@ async def pick_places_for_params(
             short_description=place.short_description,
             recommended_visit_minutes=place.recommended_visit_minutes,
             cover_hint=covers.get(place.id),
+            difficulty=place.difficulty,
+            suitable_for_children=place.is_suitable_for_children,
+            suitable_for_pets=place.is_suitable_for_pets,
+            temporary_closure_status=place.temporary_closure_status,
+            safety_warnings=tuple((place.safety_warnings or [])[:16]),
+            seasonality=tuple((place.seasonality or [])[:16]),
+            surface=place.surface,
+            accessibility=(
+                dict(place.accessibility) if isinstance(place.accessibility, dict) else None
+            ),
         )
         for place in chosen
     ]

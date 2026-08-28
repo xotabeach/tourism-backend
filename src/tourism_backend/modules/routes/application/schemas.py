@@ -13,6 +13,15 @@ RoutePublicationStatus = Literal[
 ]
 RouteCatalogSort = Literal["default", "popular", "recent"]
 RouteSource = Literal["editorial", "generated", "user_created"]
+RouteQualityStatus = Literal[
+    "unknown",
+    "unverified",
+    "checking",
+    "verified",
+    "verified_with_warnings",
+    "needs_review",
+    "unusable",
+]
 
 
 class UserRouteDraftIn(BaseModel):
@@ -90,6 +99,34 @@ class RouteMediaOut(BaseModel):
     position: int
 
 
+class RouteGeometryOut(BaseModel):
+    """Provider geometry in a mobile-friendly GeoJSON subset."""
+
+    type: Literal["LineString"] = "LineString"
+    coordinates: list[tuple[float, float]] = Field(default_factory=list)
+
+
+class RouteRoutingOut(BaseModel):
+    """Normalized routing provenance exposed without a provider payload/key."""
+
+    provider: str | None = None
+    synthetic: bool = False
+    quality_status: RouteQualityStatus = "unknown"
+    quality_policy_version: str | None = Field(default=None, max_length=32)
+    warnings: list[str] = Field(default_factory=list, max_length=32)
+    movement_duration_seconds: int | None = Field(default=None, ge=0)
+    visit_duration_minutes: int | None = Field(default=None, ge=0)
+    transfer_duration_seconds: int | None = Field(default=None, ge=0)
+    buffer_duration_seconds: int | None = Field(default=None, ge=0)
+    total_duration_seconds: int | None = Field(default=None, ge=0)
+    elevation_gain_meters: int | None = Field(default=None, ge=0)
+    elevation_loss_meters: int | None = Field(default=None, ge=0)
+    min_altitude_meters: int | None = None
+    max_altitude_meters: int | None = None
+    max_road_angle_degrees: float | None = Field(default=None, ge=0, le=90)
+    road_types: list[str] = Field(default_factory=list, max_length=32)
+
+
 class RouteListItemOut(BaseModel):
     id: UUID
     region_id: UUID
@@ -124,6 +161,8 @@ class RouteDetailOut(RouteListItemOut):
     budget_notes: str | None
     accessibility: dict[str, object] | None
     freshness_status: str
+    geometry: RouteGeometryOut | None = None
+    routing: RouteRoutingOut | None = None
     stops: list[RouteStopOut] = Field(default_factory=list)
     media: list[RouteMediaOut] = Field(default_factory=list)
 

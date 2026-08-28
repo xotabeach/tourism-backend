@@ -41,6 +41,17 @@ class RoutingResult:
     total_distance_meters: int
     total_duration_seconds: int
     warnings: tuple[str, ...] = ()
+    # Provider geometry is optional while the legacy stub is still enabled.
+    # When present it is the road/path geometry returned by the provider and
+    # must be preferred over a synthetic straight line when persisting a
+    # generated route.
+    geometry_wkt: str | None = None
+    elevation_gain_meters: int | None = None
+    elevation_loss_meters: int | None = None
+    min_altitude_meters: int | None = None
+    max_altitude_meters: int | None = None
+    max_road_angle_degrees: float | None = None
+    road_types: tuple[str, ...] = ()
 
 
 class RoutingError(Exception):
