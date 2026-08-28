@@ -18,6 +18,9 @@ from tourism_backend.modules.places.infrastructure import models as places_model
 from tourism_backend.modules.route_builder.infrastructure import (
     models as route_builder_models,
 )
+from tourism_backend.modules.route_execution.infrastructure import (
+    models as route_execution_models,
+)
 from tourism_backend.modules.routes.infrastructure import models as routes_models
 from tourism_backend.modules.subscriptions.infrastructure import (
     models as subscriptions_models,
@@ -37,6 +40,7 @@ _ = (
     geography_models,
     places_models,
     routes_models,
+    route_execution_models,
     identity_models,
     favorites_models,
     support_models,

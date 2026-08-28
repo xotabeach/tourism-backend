@@ -11,8 +11,9 @@ Python 3.13 и FastAPI.
 - HTTP API (`/api/v1`) для мобильного клиента.
 - Domain modules с API: `identity`, `geography`, `places`, `routes`,
   `favorites`, `support`, `notifications`, `admin`, `media`.
-- Заглушки (пакеты без router): `route_builder`, `route_execution`,
-  `subscriptions`.
+- API-модули: `route_builder` (match/generate/AI sessions),
+  `route_execution` (start/check/complete/cancel), `subscriptions` (Travel+
+  entitlements; self-serve checkout остаётся mock до подключения billing).
 - Миграции PostgreSQL/PostGIS через Alembic. Ops UI: SQLAdmin `/admin`.
 
 ## Требования
