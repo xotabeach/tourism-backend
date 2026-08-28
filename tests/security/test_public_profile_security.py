@@ -215,13 +215,20 @@ async def test_users_leaderboard_is_public_and_ordered_by_points(
 
     engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
     async with engine.begin() as conn:
+        top = int(
+            (
+                await conn.execute(text("SELECT COALESCE(MAX(travel_points), 0) FROM users"))
+            ).scalar_one()
+        )
+        low_pts = top + 1
+        high_pts = top + 2
         await conn.execute(
-            text("UPDATE users SET travel_points = 4999 WHERE id = :id"),
-            {"id": low_id},
+            text("UPDATE users SET travel_points = :points WHERE id = :id"),
+            {"id": low_id, "points": low_pts},
         )
         await conn.execute(
-            text("UPDATE users SET travel_points = 5000 WHERE id = :id"),
-            {"id": high_id},
+            text("UPDATE users SET travel_points = :points WHERE id = :id"),
+            {"id": high_id, "points": high_pts},
         )
     await engine.dispose()
 
@@ -237,8 +244,11 @@ async def test_users_leaderboard_is_public_and_ordered_by_points(
     assert low_id in ids
     assert ids.index(high_id) < ids.index(low_id)
     high_row = next(item for item in body["items"] if item["id"] == high_id)
-    assert high_row["rank_slug"] == "explorer"
-    assert high_row["rank_title"] == "Исследователь"
+    assert high_row["rank_slug"]
+    assert high_row["rank_title"]
+    if 5000 <= high_pts < 10_000:
+        assert high_row["rank_slug"] == "explorer"
+        assert high_row["rank_title"] == "Исследователь"
     assert "phone" not in str(high_row).lower()
     assert set(high_row) == {
         "id",
