@@ -112,6 +112,15 @@ OpenAPI: `http://localhost:8000/docs`
 
 AI planning sessions и deterministic Route Builder уже подключены в Phase 8B;
 OpenAI-compatible LM Studio transport и безопасный smoke probe также доступны.
+2ГИС HTTP Routing API проверяется ручным sanitized smoke (ключ не печатается):
+
+```bash
+uv run python scripts/check_two_gis_routing.py --configured-only
+uv run python scripts/check_two_gis_routing.py
+```
+
+``ROUTING_PROVIDER`` может оставаться ``stub``: скрипт вызывает адаптер напрямую.
+Ключ — только в env (``TWO_GIS_HTTP_API_KEY`` или алиас ``TWO_GIS_API_KEY``), не в CI.
 Пользовательская генерация проходит через domain validation. Проверка transport:
 
 ```bash
