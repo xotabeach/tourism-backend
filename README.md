@@ -121,6 +121,13 @@ uv run python scripts/check_two_gis_routing.py
 
 ``ROUTING_PROVIDER`` может оставаться ``stub``: скрипт вызывает адаптер напрямую.
 Ключ — только в env (``TWO_GIS_HTTP_API_KEY`` или алиас ``TWO_GIS_API_KEY``), не в CI.
+Каталог мест сверяется dry-run'ом с Places API (без публикации, квота
+бережётся ``--max-requests``). ``--apply`` только после ручной проверки отчёта
+и всё равно не меняет ``publication_status`` / координаты / название:
+
+```bash
+uv run python scripts/enrich_places_2gis.py --limit 20 --output /tmp/2gis-places.json
+```
 Пользовательская генерация проходит через domain validation. Проверка transport:
 
 ```bash
