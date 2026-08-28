@@ -1,10 +1,10 @@
 """Deterministic safety/quality gate for normalized routing results.
 
-The gate does not claim to certify a hiking trail.  It catches contradictions
-that are already visible in the provider response and records what still needs
-independent OSM/editorial verification.  That distinction is important for
-Crimean mountain routes: a path in a road graph is not proof that it is open,
-safe in current weather, or suitable for a particular traveller.
+The gate does not claim to certify a hiking trail. It combines the provider
+result with first-party/editorial stop fields and a bounded OSM tag
+projection. A path in a road graph is not proof that it is open, safe in
+current weather, or suitable for a particular traveller — missing evidence
+stays a warning, never a silent "safe".
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class RouteQualityAssessment:
 
     status: RouteQualityStatus
     warnings: tuple[str, ...]
-    policy_version: str = "v1"
+    policy_version: str = "v2"
 
     @property
     def usable_for_private_draft(self) -> bool:
@@ -101,18 +101,104 @@ def _accessibility_flags(value: object) -> set[str]:
     return flags
 
 
+_FORBIDDEN_ACCESS = frozenset({"no", "private", "military", "forbidden"})
+_WATERWAY_REVIEW = frozenset({"river", "canal", "stream", "tidal", "drain", "rapids"})
+_FORD_TRUE = frozenset({"yes", "stepping_stones", "ford"})
+_HARD_SAC_SCALE = frozenset(
+    {
+        "demanding_mountain_hiking",
+        "alpine_hiking",
+        "demanding_alpine_hiking",
+        "difficult_alpine_hiking",
+    }
+)
+_IMPASSABLE_SMOOTHNESS = frozenset({"impassable", "very_horrible", "horrible"})
+_MOTORWAY_HIGHWAYS = frozenset({"motorway", "motorway_link", "trunk", "trunk_link"})
+
+
+def _osm_tag(tags: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = tags.get(key)
+        if value:
+            return value
+    return ""
+
+
+def _independent_osm_findings(
+    tags: dict[str, str],
+    *,
+    transport_mode: TransportMode,
+) -> tuple[list[str], list[str], list[str]]:
+    """Project allowlisted OSM tags into hard/review/warning codes.
+
+    Tags are observations, not a field survey. ``foot=yes`` on a private
+    estate still needs editorial confirmation; unknown tags stay unknown.
+    """
+
+    hard: list[str] = []
+    review: list[str] = []
+    warnings: list[str] = []
+    access = _osm_tag(tags, "access")
+    foot = _osm_tag(tags, "foot")
+    vehicle = _osm_tag(tags, "vehicle", "motor_vehicle", "motorcar")
+    if transport_mode == "walk":
+        if foot in _FORBIDDEN_ACCESS or (
+            access in _FORBIDDEN_ACCESS and foot not in {"yes", "designated"}
+        ):
+            hard.append("osm_access_forbidden")
+    elif transport_mode == "car":
+        if vehicle in _FORBIDDEN_ACCESS or (
+            access in _FORBIDDEN_ACCESS and vehicle not in {"yes", "destination", "permissive"}
+        ):
+            hard.append("osm_access_forbidden")
+    elif access in _FORBIDDEN_ACCESS:
+        review.append("osm_access_requires_review")
+
+    ford = _osm_tag(tags, "ford")
+    waterway = _osm_tag(tags, "waterway")
+    bridge = _osm_tag(tags, "bridge")
+    if ford in _FORD_TRUE or (waterway in _WATERWAY_REVIEW and bridge not in {"yes", "viaduct"}):
+        review.append("osm_water_crossing_requires_review")
+    if _osm_tag(tags, "boat") in {"yes", "required", "mandatory"}:
+        hard.append("stop_requires_unsafe_access")
+
+    sac = _osm_tag(tags, "sac_scale")
+    if sac in _HARD_SAC_SCALE:
+        review.append("osm_demanding_trail_requires_review")
+    elif sac == "mountain_hiking":
+        review.append("osm_mountain_hiking_requires_review")
+
+    smoothness = _osm_tag(tags, "smoothness")
+    if smoothness in _IMPASSABLE_SMOOTHNESS:
+        if transport_mode == "car":
+            hard.append("osm_surface_impassable")
+        else:
+            review.append("osm_surface_requires_review")
+    tracktype = _osm_tag(tags, "tracktype")
+    if tracktype in {"grade4", "grade5"}:
+        review.append("osm_rough_track_requires_review")
+
+    highway = _osm_tag(tags, "highway")
+    if transport_mode == "walk" and highway in _MOTORWAY_HIGHWAYS:
+        hard.append("osm_pedestrian_motorway")
+    if _osm_tag(tags, "barrier") in {"gate", "lift_gate", "block"} and access in _FORBIDDEN_ACCESS:
+        review.append("osm_barrier_requires_review")
+    return hard, review, warnings
+
+
 def _independent_stop_findings(
     stops: Sequence[PickedPlace],
     *,
+    transport_mode: TransportMode,
     season: str | None,
     with_children: bool | None,
     with_pets: bool | None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Return hard failures, review reasons and bounded data warnings.
 
-    These checks use only first-party/editorial fields already stored on a
-    place. Missing evidence is a warning; it is never converted into a claim
-    that a trail, bridge or opening hour is safe.
+    These checks use first-party/editorial fields and the bounded OSM tag
+    projection. Missing evidence is a warning; it is never converted into a
+    claim that a trail, bridge or opening hour is safe.
     """
 
     hard_failures: list[str] = []
@@ -152,7 +238,94 @@ def _independent_stop_findings(
         if not stop.accessibility:
             warnings.append("stop_accessibility_unknown")
 
+        if stop.access_transport:
+            allowed = {
+                item.casefold().strip().replace("-", "_").replace(" ", "_")
+                for item in stop.access_transport
+                if item.strip()
+            }
+            aliases = _TRANSPORT_ALIASES.get(transport_mode, frozenset({transport_mode}))
+            if allowed and not (allowed & aliases) and not (allowed & {"all", "any"}):
+                review_reasons.append("stop_access_transport_mismatch")
+
+        if stop.osm_tags:
+            osm_hard, osm_review, osm_warnings = _independent_osm_findings(
+                stop.osm_tags,
+                transport_mode=transport_mode,
+            )
+            hard_failures.extend(osm_hard)
+            review_reasons.extend(osm_review)
+            warnings.extend(osm_warnings)
+        else:
+            warnings.append("stop_osm_tags_unknown")
+
     return hard_failures, review_reasons, warnings
+
+
+def _linestring_points(wkt: str | None) -> list[tuple[float, float]]:
+    """Parse a 2D LINESTRING without importing the provider adapter."""
+
+    if not isinstance(wkt, str):
+        return []
+    match = wkt.strip()
+    if not match.upper().startswith("LINESTRING"):
+        return []
+    start = match.find("(")
+    end = match.rfind(")")
+    if start < 0 or end <= start:
+        return []
+    points: list[tuple[float, float]] = []
+    for raw_point in match[start + 1 : end].split(","):
+        fields = raw_point.strip().split()
+        if len(fields) < 2:
+            continue
+        try:
+            lon = float(fields[0])
+            lat = float(fields[1])
+        except ValueError:
+            continue
+        if not -180 <= lon <= 180 or not -90 <= lat <= 90:
+            continue
+        points.append((lon, lat))
+        if len(points) > 50_000:
+            return []
+    return points
+
+
+def _geometry_topology_findings(
+    wkt: str | None,
+    *,
+    distance_meters: int,
+) -> tuple[list[str], list[str], list[str]]:
+    """Catch empty or two-point geometry that looks like a straight line."""
+
+    hard: list[str] = []
+    review: list[str] = []
+    warnings: list[str] = []
+    if wkt is None:
+        return hard, review, warnings
+    points = _linestring_points(wkt)
+    if len(points) < 2:
+        hard.append("provider_geometry_unparseable")
+        return hard, review, warnings
+    # Short hops can be two vertices. A long "detailed" line with two points
+    # is the stub/straight-line failure mode, not a road graph.
+    if len(points) == 2 and distance_meters > 250:
+        review.append("geometry_looks_like_straight_line")
+    return hard, review, warnings
+
+
+def _has_independent_stop_evidence(stops: Sequence[PickedPlace]) -> bool:
+    return any(
+        stop.osm_tags
+        or stop.accessibility
+        or stop.surface
+        or stop.safety_warnings
+        or stop.temporary_closure_status
+        or stop.seasonality
+        or stop.access_transport
+        for stop in stops
+    )
 
 
 def _dedupe(values: list[str]) -> tuple[str, ...]:
@@ -287,14 +460,16 @@ def assess_route_quality(
 ) -> RouteQualityAssessment:
     """Evaluate the data we have without inventing missing safety facts.
 
-    ``verified`` is intentionally not emitted by v1. Independent checks for
-    access, water crossings, seasonal closures and trail surface are not yet
-    wired into this pure provider-result gate. A sound provider route therefore
-    tops out at ``verified_with_warnings``.
+    ``verified`` is still not emitted: OSM tags and editorial fields are
+    independent of the provider graph, but they are not a field survey.
+    A sound provider route with independent stop checks therefore tops out
+    at ``verified_with_warnings``. Missing independent evidence stays an
+    explicit warning rather than a silent pass.
     """
 
     context_hard_failures, context_review_reasons, context_warnings = _independent_stop_findings(
         stops,
+        transport_mode=transport_mode,
         season=season,
         with_children=with_children,
         with_pets=with_pets,
@@ -326,6 +501,14 @@ def assess_route_quality(
         hard_failures.append("route_legs_missing")
     if routing.geometry_wkt is None:
         hard_failures.append("provider_geometry_missing")
+    else:
+        geo_hard, geo_review, geo_warnings = _geometry_topology_findings(
+            routing.geometry_wkt,
+            distance_meters=routing.total_distance_meters,
+        )
+        hard_failures.extend(geo_hard)
+        review_reasons.extend(geo_review)
+        warnings.extend(geo_warnings)
 
     for leg in routing.legs:
         if leg.from_index < 0 or leg.to_index <= leg.from_index:
@@ -335,10 +518,11 @@ def assess_route_quality(
 
     road_types = {item.casefold() for item in routing.road_types}
     if transport_mode == "walk" and "highway" in road_types:
-        # A highway returned despite the requested filter is incompatible with
-        # the pedestrian promise until an editor/provider fixture proves an
-        # actual segregated footpath.
-        hard_failures.append("pedestrian_highway_filter_violated")
+        # 2GIS may still return an excluded road type when it cannot build a
+        # path without it. That is not a certified sidewalk, but treating it
+        # as unusable would reject ordinary Crimean coastal walks. Editorial
+        # review is the honest status until an independent footpath check.
+        review_reasons.append("pedestrian_highway_filter_violated")
     if "ferry" in road_types:
         review_reasons.append("ferry_schedule_and_access_unknown")
     if "dirt_road" in road_types:
@@ -371,10 +555,8 @@ def assess_route_quality(
         warnings.extend(hard_failures)
         return RouteQualityAssessment(status="unusable", warnings=_dedupe(warnings))
 
-    # These require independent data sources or editorial evidence. The route
-    # may still be useful as a private draft, but the UI must not call it a
-    # certified/safe hiking route yet.
-    warnings.append("terrain_access_not_independently_verified")
+    if not _has_independent_stop_evidence(stops):
+        warnings.append("terrain_access_not_independently_verified")
     if review_reasons:
         warnings.extend(review_reasons)
         return RouteQualityAssessment(status="needs_review", warnings=_dedupe(warnings))

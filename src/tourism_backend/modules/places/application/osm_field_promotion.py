@@ -30,6 +30,33 @@ _MAX_OPENING_HOURS_CHARS = 255
 _MAX_SURFACE_CHARS = 32
 _MAX_PHONE_CHARS = 64
 _MAX_URL_CHARS = 500
+_MAX_SAFETY_TAG_CHARS = 64
+_MAX_SAFETY_TAGS = 24
+_SAFETY_TAG_KEYS = frozenset(
+    {
+        "access",
+        "barrier",
+        "bicycle",
+        "boat",
+        "bridge",
+        "crossing",
+        "fee",
+        "foot",
+        "ford",
+        "highway",
+        "informal",
+        "motor_vehicle",
+        "motorcar",
+        "protected_area",
+        "sac_scale",
+        "smoothness",
+        "tracktype",
+        "trail_visibility",
+        "tunnel",
+        "vehicle",
+        "waterway",
+    }
+)
 
 #: Typical time actually spent at a place, by category slug. Deliberately
 #: coarse: this is a planning estimate that replaces "no estimate at all",
@@ -125,3 +152,33 @@ def estimate_visit_minutes(category_slugs: frozenset[str] | set[str]) -> int:
         if slug in _VISIT_MINUTES_BY_CATEGORY
     ]
     return max(known) if known else _DEFAULT_VISIT_MINUTES
+
+
+def safety_tags_from_payload(payload: object) -> dict[str, str] | None:
+    """Return a bounded OSM tag projection for the route quality gate.
+
+    The full ``source_payload`` is untrusted third-party JSON. Only an
+    allowlisted set of access/water/surface keys is copied, values are
+    length-capped, and missing/malformed payloads yield ``None`` rather than
+    an empty dict that could be mistaken for "we checked and found nothing".
+    """
+
+    if not isinstance(payload, dict):
+        return None
+    tags = payload.get("tags")
+    if not isinstance(tags, dict):
+        return None
+    selected: dict[str, str] = {}
+    for raw_key, raw_value in tags.items():
+        if not isinstance(raw_key, str) or not isinstance(raw_value, str):
+            continue
+        key = raw_key.casefold().strip()
+        if key not in _SAFETY_TAG_KEYS and not key.startswith("access:"):
+            continue
+        value = " ".join(raw_value.split()).casefold()[:_MAX_SAFETY_TAG_CHARS]
+        if not value:
+            continue
+        selected[key] = value
+        if len(selected) >= _MAX_SAFETY_TAGS:
+            break
+    return selected or None

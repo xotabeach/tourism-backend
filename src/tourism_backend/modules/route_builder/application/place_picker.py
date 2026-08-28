@@ -14,6 +14,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
+from tourism_backend.modules.places.application.osm_field_promotion import safety_tags_from_payload
 from tourism_backend.modules.places.application.place_covers import covers_for_places
 from tourism_backend.modules.places.infrastructure.models import Category, Place, PlaceCategory
 from tourism_backend.modules.route_builder.application.routing import (
@@ -67,6 +68,8 @@ class PickedPlace:
     seasonality: tuple[str, ...] = ()
     surface: str | None = None
     accessibility: dict[str, object] | None = None
+    osm_tags: dict[str, str] | None = None
+    access_transport: tuple[str, ...] = ()
 
 
 def _target_stops(duration: DurationOption, max_points: int) -> int:
@@ -137,6 +140,30 @@ def _score_place(
         if preferences.travels_with_pets and place.is_suitable_for_pets is True:
             score += 0.05
     return score
+
+
+def picked_place_from_orm(place: Place, *, cover_hint: str | None = None) -> PickedPlace:
+    """Copy the safety fields the quality gate can evaluate without ORM types."""
+
+    return PickedPlace(
+        place_id=place.id,
+        name=place.name,
+        short_description=place.short_description,
+        recommended_visit_minutes=place.recommended_visit_minutes,
+        cover_hint=cover_hint,
+        difficulty=place.difficulty,
+        suitable_for_children=place.is_suitable_for_children,
+        suitable_for_pets=place.is_suitable_for_pets,
+        temporary_closure_status=place.temporary_closure_status,
+        safety_warnings=tuple((place.safety_warnings or [])[:16]),
+        seasonality=tuple((place.seasonality or [])[:16]),
+        surface=place.surface,
+        accessibility=(
+            dict(place.accessibility) if isinstance(place.accessibility, dict) else None
+        ),
+        osm_tags=safety_tags_from_payload(place.source_payload),
+        access_transport=tuple((place.access_transport or [])[:16]),
+    )
 
 
 def _hard_place_constraints(params: RouteMatchParamsIn) -> tuple[ColumnElement[bool], ...]:
@@ -302,26 +329,7 @@ async def pick_places_for_params(
             status_code=422,
         )
     covers = await covers_for_places(session, [place.id for place in chosen])
-    return [
-        PickedPlace(
-            place_id=place.id,
-            name=place.name,
-            short_description=place.short_description,
-            recommended_visit_minutes=place.recommended_visit_minutes,
-            cover_hint=covers.get(place.id),
-            difficulty=place.difficulty,
-            suitable_for_children=place.is_suitable_for_children,
-            suitable_for_pets=place.is_suitable_for_pets,
-            temporary_closure_status=place.temporary_closure_status,
-            safety_warnings=tuple((place.safety_warnings or [])[:16]),
-            seasonality=tuple((place.seasonality or [])[:16]),
-            surface=place.surface,
-            accessibility=(
-                dict(place.accessibility) if isinstance(place.accessibility, dict) else None
-            ),
-        )
-        for place in chosen
-    ]
+    return [picked_place_from_orm(place, cover_hint=covers.get(place.id)) for place in chosen]
 
 
 async def _coords_for_places(

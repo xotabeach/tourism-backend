@@ -17,6 +17,7 @@ from tourism_backend.modules.places.infrastructure.models import Place, RoadEven
 from tourism_backend.modules.route_builder.application.place_picker import (
     PickedPlace,
     pick_places_for_params,
+    picked_place_from_orm,
 )
 from tourism_backend.modules.route_builder.application.quota import (
     quota_snapshot,
@@ -111,22 +112,7 @@ def _visit_duration_minutes(places: list[PickedPlace]) -> int:
 def _picked_from_place(place: Place) -> PickedPlace:
     """Rehydrate all safety facts needed by the independent quality gate."""
 
-    return PickedPlace(
-        place_id=place.id,
-        name=place.name,
-        short_description=place.short_description,
-        recommended_visit_minutes=place.recommended_visit_minutes,
-        difficulty=place.difficulty,
-        suitable_for_children=place.is_suitable_for_children,
-        suitable_for_pets=place.is_suitable_for_pets,
-        temporary_closure_status=place.temporary_closure_status,
-        safety_warnings=tuple((place.safety_warnings or [])[:16]),
-        seasonality=tuple((place.seasonality or [])[:16]),
-        surface=place.surface,
-        accessibility=(
-            dict(place.accessibility) if isinstance(place.accessibility, dict) else None
-        ),
-    )
+    return picked_place_from_orm(place)
 
 
 def _transport_mode(params: RouteMatchParamsIn) -> TransportMode:

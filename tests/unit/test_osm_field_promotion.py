@@ -12,6 +12,7 @@ from tourism_backend.modules.places.application.osm_field_promotion import (
     promoted_phone,
     promoted_surface,
     promoted_website,
+    safety_tags_from_payload,
 )
 
 
@@ -85,3 +86,26 @@ def test_visit_minutes_takes_the_longest_category() -> None:
 def test_visit_minutes_falls_back_for_unknown_categories() -> None:
     assert estimate_visit_minutes(set()) == 45
     assert estimate_visit_minutes({"not-a-real-category"}) == 45
+
+
+def test_safety_tags_from_payload_allowlists_and_caps_untrusted_osm() -> None:
+    assert safety_tags_from_payload(None) is None
+    assert safety_tags_from_payload({"tags": {}}) is None
+    assert safety_tags_from_payload({"tags": {"name": "ignored", "tourism": "attraction"}}) is None
+    tags = safety_tags_from_payload(
+        {
+            "tags": {
+                "Access": "Private",
+                "ford": "yes",
+                "javascript": "alert(1)",
+                "foot": "  YES  ",
+                "waterway": "x" * 200,
+            }
+        }
+    )
+    assert tags is not None
+    assert tags["access"] == "private"
+    assert tags["ford"] == "yes"
+    assert tags["foot"] == "yes"
+    assert len(tags["waterway"]) == 64
+    assert "javascript" not in tags

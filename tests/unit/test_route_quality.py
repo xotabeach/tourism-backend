@@ -25,12 +25,12 @@ def _routing(**changes: object) -> RoutingResult:
                 to_index=1,
                 distance_meters=1_200,
                 duration_seconds=900,
-                geometry_wkt="LINESTRING(34.1 44.5, 34.11 44.51)",
+                geometry_wkt="LINESTRING(34.1 44.5, 34.11 44.51, 34.12 44.52, 34.13 44.53)",
             ),
         ),
         "total_distance_meters": 1_200,
         "total_duration_seconds": 900,
-        "geometry_wkt": "LINESTRING(34.1 44.5, 34.11 44.51)",
+        "geometry_wkt": "LINESTRING(34.1 44.5, 34.11 44.51, 34.12 44.52, 34.13 44.53)",
         "elevation_gain_meters": 80,
         "max_road_angle_degrees": 8,
     }
@@ -62,14 +62,15 @@ def test_provider_route_without_geometry_is_unusable() -> None:
     assert "provider_geometry_missing" in assessment.warnings
 
 
-def test_pedestrian_highway_filter_violation_is_unusable() -> None:
+def test_pedestrian_highway_filter_violation_needs_review() -> None:
     assessment = assess_route_quality(
         _routing(road_types=("highway",)),
         transport_mode="walk",
         pace="active",
     )
 
-    assert assessment.status == "unusable"
+    assert assessment.status == "needs_review"
+    assert assessment.usable_for_private_draft is True
     assert "pedestrian_highway_filter_violated" in assessment.warnings
 
 
@@ -234,3 +235,85 @@ def test_execution_recheck_uses_same_mode_and_ignores_resolved_events() -> None:
         transport_mode="walk",
     )
     assert blockers == ()
+
+
+def test_two_point_long_geometry_needs_review_as_straight_line() -> None:
+    assessment = assess_route_quality(
+        _routing(geometry_wkt="LINESTRING(34.1 44.5, 34.13 44.53)"),
+        transport_mode="walk",
+        pace="calm",
+    )
+
+    assert assessment.status == "needs_review"
+    assert "geometry_looks_like_straight_line" in assessment.warnings
+    assert assessment.policy_version == "v2"
+
+
+def test_osm_private_access_without_foot_permission_is_unusable() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="walk",
+        pace="calm",
+        stops=[_stop(osm_tags={"access": "private", "highway": "path"})],
+    )
+
+    assert assessment.status == "unusable"
+    assert "osm_access_forbidden" in assessment.warnings
+    assert "terrain_access_not_independently_verified" not in assessment.warnings
+
+
+def test_osm_ford_and_waterway_need_review_without_blanket_unverified() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="walk",
+        pace="moderate",
+        stops=[
+            _stop(
+                osm_tags={
+                    "ford": "yes",
+                    "waterway": "stream",
+                    "access": "yes",
+                    "foot": "yes",
+                }
+            )
+        ],
+    )
+
+    assert assessment.status == "needs_review"
+    assert "osm_water_crossing_requires_review" in assessment.warnings
+    assert "terrain_access_not_independently_verified" not in assessment.warnings
+
+
+def test_clean_osm_tags_keep_verified_with_warnings_not_full_verified() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="walk",
+        pace="calm",
+        stops=[_stop(osm_tags={"access": "yes", "foot": "yes", "highway": "footway"})],
+    )
+
+    assert assessment.status == "verified_with_warnings"
+    assert "terrain_access_not_independently_verified" not in assessment.warnings
+    assert "osm_access_forbidden" not in assessment.warnings
+
+
+def test_car_route_rejects_impassable_osm_smoothness() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="car",
+        stops=[_stop(osm_tags={"smoothness": "impassable", "access": "yes"})],
+    )
+
+    assert assessment.status == "unusable"
+    assert "osm_surface_impassable" in assessment.warnings
+
+
+def test_access_transport_mismatch_needs_review() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="car",
+        stops=[_stop(access_transport=("walk", "foot"), osm_tags={"access": "yes"})],
+    )
+
+    assert assessment.status == "needs_review"
+    assert "stop_access_transport_mismatch" in assessment.warnings
