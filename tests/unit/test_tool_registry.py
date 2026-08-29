@@ -239,6 +239,8 @@ def test_places_near_point_stmt_uses_st_dwithin_and_limit() -> None:
     assert "st_dwithin" in compiled
     assert "limit" in compiled
     assert "st_distance" in compiled
+    assert "merged_into_place_id" in compiled
+    assert "data_quality_status" in compiled
     assert "st_x(" not in compiled
     assert "st_y(" not in compiled
 

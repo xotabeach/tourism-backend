@@ -37,9 +37,6 @@ from tourism_backend.modules.route_builder.application.chat_actions import (
     prefer_ready_ask_field,
     sanitize_confirmed_fields,
 )
-from tourism_backend.modules.route_builder.application.place_picker import (
-    pick_places_for_params,
-)
 from tourism_backend.modules.route_builder.application.schemas import (
     ActionsBlockOut,
     CatalogMatchBlockOut,
@@ -61,6 +58,7 @@ from tourism_backend.modules.route_builder.application.schemas import (
     ToggleBlockOut,
 )
 from tourism_backend.modules.route_builder.application.tool_registry import (
+    ToolCall,
     execute_tool,
     parse_tool_calls,
     prefetch_context,
@@ -969,16 +967,24 @@ async def _place_hints(
     session: AsyncSession,
     constraints: dict[str, Any],
 ) -> list[dict[str, str]]:
+    city = constraints.get("city")
+    if not isinstance(city, str) or not city.strip():
+        return []
     try:
-        params = RouteMatchParamsIn.model_validate(constraints)
-        picked = await pick_places_for_params(
+        result = await execute_tool(
             session,
-            params=params,
-            max_points=8,
+            ToolCall(
+                name="search_places",
+                arguments={"city": city.strip(), "limit": 6},
+            ),
+            constraints=constraints,
         )
     except Exception:  # noqa: BLE001 — hints are optional context only
         return []
-    return [{"place_id": str(item.place_id), "title": item.name[:80]} for item in picked[:8]]
+    if not result.ok:
+        return []
+    places = result.data.get("places") or []
+    return [place for place in places if isinstance(place, dict)][:8]
 
 
 async def _owned_session(

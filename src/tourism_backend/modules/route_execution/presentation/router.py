@@ -7,6 +7,7 @@ from fastapi import APIRouter, Query, status
 from tourism_backend.api.deps import CurrentUserId, DbSession
 from tourism_backend.modules.route_execution.application import service
 from tourism_backend.modules.route_execution.application.schemas import (
+    RouteExecutionEventIn,
     RouteExecutionListOut,
     RouteExecutionOut,
     RouteExecutionStartIn,
@@ -70,12 +71,14 @@ async def complete_route_execution_stop(
     stop_id: UUID,
     session: DbSession,
     user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
 ) -> RouteExecutionOut:
     return await service.complete_stop(
         session,
         user_id=user_id,
         execution_id=execution_id,
         stop_id=stop_id,
+        event=payload,
     )
 
 
@@ -84,11 +87,13 @@ async def complete_route_execution(
     execution_id: UUID,
     session: DbSession,
     user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
 ) -> RouteExecutionOut:
     return await service.complete_execution(
         session,
         user_id=user_id,
         execution_id=execution_id,
+        event=payload,
     )
 
 
@@ -97,9 +102,11 @@ async def cancel_route_execution(
     execution_id: UUID,
     session: DbSession,
     user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
 ) -> RouteExecutionOut:
     return await service.cancel_execution(
         session,
         user_id=user_id,
         execution_id=execution_id,
+        event=payload,
     )

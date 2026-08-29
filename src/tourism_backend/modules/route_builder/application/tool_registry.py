@@ -10,9 +10,15 @@ from typing import Any
 from geoalchemy2 import Geography
 from sqlalchemy import Select, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
 from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.route_builder.application.ai_candidates import (
+    candidate_dto,
+    detail_dto,
+    is_ai_approved_place,
+)
 
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -296,12 +302,7 @@ async def _search_places(
 
     stmt = select(Place).where(
         Place.region_id == region.id,
-        Place.publication_status == "published",
-        # Hard filters: never surface temporarily closed places as candidates.
-        or_(
-            Place.temporary_closure_status.is_(None),
-            Place.temporary_closure_status == "none",
-        ),
+        *_approved_place_sql(),
     )
     if locality_ids:
         stmt = stmt.where(
@@ -318,7 +319,11 @@ async def _search_places(
                 Place.address.ilike(f"%{city}%"),
             )
         )
-    rows = (await session.scalars(stmt.limit(40))).all()
+    rows = [
+        place
+        for place in (await session.scalars(stmt.limit(40))).all()
+        if is_ai_approved_place(place, constraints=constraints)
+    ]
     interest = str(args.get("interest") or "").casefold()
     city_cf = city.casefold()
     scored: list[tuple[float, Place]] = []
@@ -342,14 +347,7 @@ async def _search_places(
             score += 0.3
         scored.append((score, place))
     scored.sort(key=lambda item: (-item[0], item[1].name))
-    places = [
-        {
-            "place_id": str(place.id),
-            "title": place.name[:80],
-            "subtitle": (place.short_description or "")[:120] or None,
-        }
-        for _, place in scored[:limit]
-    ]
+    places = [candidate_dto(place) for _, place in scored[:limit]]
     return {"places": places, "city": city}
 
 
@@ -378,28 +376,9 @@ async def _get_place_details(
         place = await session.get(Place, place_id)
     except Exception:  # noqa: BLE001 — invalid uuid must not break the turn
         return {"ok": False, "error": "place_not_found"}
-    if place is None or place.publication_status != "published":
+    if place is None or not is_ai_approved_place(place, constraints=constraints):
         return {"ok": False, "error": "place_not_found"}
-    seasonality = list(place.seasonality or [])
-    transport_access = list(place.access_transport or [])
-    return {
-        "ok": True,
-        "place": {
-            "place_id": str(place.id),
-            "title": place.name[:120],
-            "subtitle": (place.short_description or "")[:200] or None,
-            "category": (place.category_name if hasattr(place, "category_name") else None),
-            "is_paid": bool(place.is_paid),
-            "price_notes": (place.price_notes or "")[:160] or None,
-            "visit_minutes": place.recommended_visit_minutes,
-            "children_ok": place.is_suitable_for_children,
-            "pets_ok": place.is_suitable_for_pets,
-            "access_transport": transport_access[:4],
-            "seasonality": seasonality[:4],
-            "crowding": (place.typical_crowding if hasattr(place, "typical_crowding") else None),
-            "temporary_closure_status": place.temporary_closure_status,
-        },
-    }
+    return {"ok": True, "place": detail_dto(place)}
 
 
 async def _find_places_near_point(
@@ -412,7 +391,6 @@ async def _find_places_near_point(
     Distance filter and row cap run in PostGIS (``ST_DWithin`` + ``LIMIT``)
     so a growing catalog cannot load a bbox into Python for haversine.
     """
-    _ = constraints
     lat = args.get("lat")
     lng = args.get("lng")
     if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
@@ -430,18 +408,34 @@ async def _find_places_near_point(
 
     rows = (
         await session.scalars(
-            places_near_point_stmt(lat=float(lat), lng=float(lng), radius_m=radius_m, limit=limit)
+            places_near_point_stmt(
+                lat=float(lat),
+                lng=float(lng),
+                radius_m=radius_m,
+                limit=max(limit * 4, 16),
+            )
         )
     ).all()
     places = [
-        {
-            "place_id": str(place.id),
-            "title": place.name[:80],
-            "subtitle": (place.short_description or "")[:120] or None,
-        }
+        candidate_dto(place)
         for place in rows
-    ]
+        if is_ai_approved_place(place, constraints=constraints)
+    ][:limit]
     return {"places": places, "near_lat": lat, "near_lng": lng, "radius_m": radius_m}
+
+
+def _approved_place_sql() -> tuple[ColumnElement[bool], ...]:
+    """SQL hard gate: published, not merged, not rejected, not closed."""
+
+    return (
+        Place.publication_status == "published",
+        Place.merged_into_place_id.is_(None),
+        Place.data_quality_status != "rejected",
+        or_(
+            Place.temporary_closure_status.is_(None),
+            Place.temporary_closure_status == "none",
+        ),
+    )
 
 
 def places_near_point_stmt(
@@ -456,11 +450,7 @@ def places_near_point_stmt(
     return (
         select(Place)
         .where(
-            Place.publication_status == "published",
-            or_(
-                Place.temporary_closure_status.is_(None),
-                Place.temporary_closure_status == "none",
-            ),
+            *_approved_place_sql(),
             func.ST_DWithin(Place.location, origin, radius_m),
         )
         .order_by(func.ST_Distance(Place.location, origin))

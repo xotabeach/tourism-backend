@@ -189,3 +189,56 @@ class RouteExecutionStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_optional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RouteExecutionEvent(Base, UUIDPrimaryKeyMixin):
+    """Append-only ledger of execution mutations, including offline replays.
+
+    The client event id makes a queued action safe to send twice: the second
+    delivery finds its own row and returns the recorded outcome instead of
+    mutating state again.  ``occurred_at`` keeps the untrusted device time next
+    to the clamped ``effective_at`` that actually entered the run, so history
+    stays auditable without trusting a phone clock.
+    """
+
+    __tablename__ = "route_execution_events"
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('complete_stop', 'complete', 'cancel')",
+            name="action_allowed",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "client_event_id",
+            name="uq_route_execution_events_user_event",
+        ),
+        Index(
+            "ix_route_execution_events_execution_recorded",
+            "execution_id",
+            "recorded_at",
+        ),
+    )
+
+    execution_id: Mapped[UUID] = mapped_column(
+        ForeignKey("route_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stop_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("route_execution_stops.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    client_event_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

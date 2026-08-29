@@ -12,12 +12,39 @@ from tourism_backend.modules.routes.application.schemas import (
 )
 
 RouteExecutionStatus = Literal["active", "completed", "cancelled"]
+RouteExecutionEventAction = Literal["complete_stop", "complete", "cancel"]
 
 
 class RouteExecutionStartIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route_id: UUID
+
+
+class RouteExecutionEventIn(BaseModel):
+    """Optional idempotency envelope for a mutation that may be replayed.
+
+    Both fields stay optional so an online client can keep calling the
+    endpoints without a body; an offline outbox sends them to make a retry
+    safe and to report when the action really happened.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_event_id: UUID | None = None
+    occurred_at: datetime | None = None
+
+
+class RouteExecutionSyncOut(BaseModel):
+    """What the server did with a (possibly replayed) mutation."""
+
+    action: RouteExecutionEventAction
+    client_event_id: UUID | None
+    occurred_at: datetime | None
+    effective_at: datetime
+    recorded_at: datetime
+    replayed: bool = False
+    applied: bool = True
 
 
 class RouteExecutionRoutingOut(BaseModel):
@@ -75,6 +102,7 @@ class RouteExecutionOut(BaseModel):
     required_stops: int = Field(ge=0)
     completed_required_stops: int = Field(ge=0)
     stops: list[RouteExecutionStopOut]
+    sync: RouteExecutionSyncOut | None = None
     created_at: datetime
     updated_at: datetime
 
