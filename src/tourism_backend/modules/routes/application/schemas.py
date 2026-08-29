@@ -165,6 +165,7 @@ class RouteDetailOut(RouteListItemOut):
     routing: RouteRoutingOut | None = None
     stops: list[RouteStopOut] = Field(default_factory=list)
     media: list[RouteMediaOut] = Field(default_factory=list)
+    static_map_url: str | None = None
 
 
 class RouteListOut(BaseModel):

@@ -1,0 +1,1 @@
+"""Map image proxy integrations."""

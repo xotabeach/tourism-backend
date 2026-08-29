@@ -479,6 +479,7 @@ async def _route_detail_from_model(
         routing=routing,
         stops=stops,
         media=media,
+        static_map_url=f"/api/v1/maps/static/route/{route.id}",
     )
 
 

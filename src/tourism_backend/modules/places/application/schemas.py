@@ -73,6 +73,7 @@ class PlaceDetailOut(PlaceListItemOut):
     content_enrichment_status: str = "missing"
     proposed_slug: str | None = None
     primary_entrance: PlaceEntranceOut | None = None
+    static_map_url: str | None = None
 
 
 class PlaceListOut(BaseModel):

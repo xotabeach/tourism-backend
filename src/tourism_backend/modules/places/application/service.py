@@ -300,4 +300,5 @@ async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
         content_enrichment_status=place.content_enrichment_status,
         proposed_slug=place.proposed_slug,
         primary_entrance=primary_entrance,
+        static_map_url=f"/api/v1/maps/static/place/{place.id}",
     )
