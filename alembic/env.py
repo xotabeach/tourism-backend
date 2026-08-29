@@ -15,6 +15,9 @@ from tourism_backend.modules.notifications.infrastructure import (
     models as notifications_models,
 )
 from tourism_backend.modules.places.infrastructure import models as places_models
+from tourism_backend.modules.recommendations.infrastructure import (
+    models as recommendations_models,
+)
 from tourism_backend.modules.route_builder.infrastructure import (
     models as route_builder_models,
 )
@@ -39,6 +42,7 @@ config.set_main_option("sqlalchemy.url", settings.database_url_sync)
 _ = (
     geography_models,
     places_models,
+    recommendations_models,
     routes_models,
     route_execution_models,
     identity_models,

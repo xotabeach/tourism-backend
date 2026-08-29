@@ -1,5 +1,6 @@
 import json
 import math
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import cast as type_cast
 from uuid import UUID, uuid4
@@ -249,6 +250,37 @@ def _to_list_item(
         author_is_expert=author_is_expert,
         author_rank_title=author_rank_title,
     )
+
+
+async def list_catalog_items_by_ids(
+    session: AsyncSession,
+    route_ids: Sequence[UUID],
+) -> dict[UUID, RouteListItemOut]:
+    """Hydrate public catalog cards in the given id order."""
+
+    if not route_ids:
+        return {}
+    unique_ids = list(dict.fromkeys(route_ids))
+    routes = list((await session.scalars(select(Route).where(Route.id.in_(unique_ids)))).all())
+    by_id = {route.id: route for route in routes}
+    ordered = [by_id[route_id] for route_id in unique_ids if route_id in by_id]
+    counts = await _stops_count_map(session, unique_ids)
+    covers = await _cover_urls_for_routes(session, unique_ids)
+    authors = await _author_fields_for_routes(session, ordered)
+    items: dict[UUID, RouteListItemOut] = {}
+    for route in ordered:
+        owner_id, label, avatar, is_expert, rank_title = authors[route.id]
+        items[route.id] = _to_list_item(
+            route,
+            counts.get(route.id, 0),
+            covers.get(route.id),
+            owner_user_id=owner_id,
+            author_label=label,
+            author_avatar_url=avatar,
+            author_is_expert=is_expert,
+            author_rank_title=rank_title,
+        )
+    return items
 
 
 async def _list_from_stmt(

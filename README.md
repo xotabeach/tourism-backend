@@ -104,7 +104,7 @@ OpenAPI: `http://localhost:8000/docs`
 | Geography / places | `/api/v1/geography/*`, `/categories`, `/places`, отдельные place reviews + media |
 | Auth / me | `/auth/otp/*`, `/auth/refresh`, `/me`, `/me/preferences` |
 | Users | `/users/search`, `/users/leaderboard`, `/users/{id}`, `/users/{id}/achievements` |
-| Routes | catalog (в т.ч. `place_id`), `/routes/mine`, drafts, submit, reviews + reply context + media |
+| Routes | catalog (в т.ч. `place_id`), `/routes/mine`, drafts, submit, reviews + reply context + media, `/routes/recommendations/today`, `POST /routes/{id}/recommendation-feedback` |
 | Favorites | `/favorites/places/{id}`, `/favorites/routes/{id}` |
 | Support | `/support/tickets`, `/support/tickets/{id}/attachments` (до 3 фото) |
 | Inbox / FCM | `/me/notifications`, `/me/device-tokens` |

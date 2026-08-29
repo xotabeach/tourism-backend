@@ -8,6 +8,9 @@ from tourism_backend.modules.notifications.presentation.router import (
     router as notifications_router,
 )
 from tourism_backend.modules.places.presentation.router import router as places_router
+from tourism_backend.modules.recommendations.presentation.router import (
+    router as recommendations_router,
+)
 from tourism_backend.modules.route_builder.presentation.router import (
     router as route_builder_router,
 )
@@ -23,6 +26,7 @@ from tourism_backend.modules.support.presentation.router import router as suppor
 router = APIRouter(prefix="/api/v1")
 router.include_router(geography_router)
 router.include_router(places_router)
+router.include_router(recommendations_router)
 router.include_router(routes_router)
 router.include_router(route_execution_router)
 router.include_router(route_builder_router)
