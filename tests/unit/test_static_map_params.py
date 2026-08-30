@@ -90,3 +90,44 @@ def test_route_static_params_center_is_lat_then_lng() -> None:
     (zoom_value,) = [value for key, value in params if key == "z"]
     assert zoom_value == "11"
     assert not [value for key, value in params if key == "pt"]
+
+
+def test_long_route_geometry_is_decimated_below_the_url_limit() -> None:
+    """A 48km route with 2092 geometry vertices got a 414 from 2GIS.
+
+    Encoding every vertex at full precision produced a ~42KB ``ls`` value,
+    over the provider's URL length limit — every request for that route came
+    back as an upstream error and the app fell back to a plain pins-only
+    preview instead of the real map. 800 points was confirmed OK against the
+    live API; the decimation keeps real margin under that.
+    """
+    from tourism_backend.modules.maps.presentation.router import _MAX_LINE_POINTS
+
+    line = [(34.0 + i * 0.0001, 44.0 + i * 0.0001) for i in range(2092)]
+    stops = [line[0], line[-1]]
+
+    params = _route_static_params(line, stops, width=880, height=420, scale=2)
+
+    ls_value = dict(params)["ls"]
+    encoded_points = ls_value.split("~")[0].count(",") // 2 + 1
+    assert encoded_points <= _MAX_LINE_POINTS
+
+
+def test_decimation_keeps_the_route_endpoints() -> None:
+    from tourism_backend.modules.maps.presentation.router import _downsample
+
+    line = [(float(i), float(i)) for i in range(1000)]
+
+    reduced = _downsample(line, 100)
+
+    assert reduced[0] == line[0]
+    assert reduced[-1] == line[-1]
+    assert len(reduced) <= 100
+
+
+def test_decimation_is_a_no_op_under_the_limit() -> None:
+    from tourism_backend.modules.maps.presentation.router import _downsample
+
+    line = [(float(i), float(i)) for i in range(10)]
+
+    assert _downsample(line, 400) == line

@@ -27,6 +27,29 @@ def _size(width: int, height: int, scale: int) -> str:
     return f"{width}x{height}@{scale}x"
 
 
+# A road-following polyline can carry thousands of vertices (verified: a
+# 48km route had 2092). Encoded at full precision that blew past 2GIS static
+# maps' URL length limit — the provider returned 414 and every request for
+# that route fell back to the app's plain pins-only preview. A static
+# preview at a few hundred pixels doesn't need meter-level fidelity, so the
+# line is decimated before encoding; empirically confirmed OK at 800 points,
+# this keeps real margin under that.
+_MAX_LINE_POINTS = 400
+
+
+def _downsample(
+    points: Sequence[tuple[float, float]], max_points: int
+) -> Sequence[tuple[float, float]]:
+    if len(points) <= max_points:
+        return points
+    last = len(points) - 1
+    # Evenly spaced indices spanning the full route, both endpoints included
+    # by construction; dedup only ever removes near-duplicates from rounding,
+    # so the result never exceeds max_points.
+    indices = {round(i * last / (max_points - 1)) for i in range(max_points)}
+    return [points[i] for i in sorted(indices)]
+
+
 def _line(points: Sequence[tuple[float, float]]) -> str:
     # Static API expects latitude,longitude (the backend geometry is lon,lat).
     return ",".join(f"{lat:.6f},{lon:.6f}" for lon, lat in points)
@@ -45,7 +68,7 @@ def _route_static_params(
 ) -> list[tuple[str, str]]:
     params: list[tuple[str, str]] = [
         ("s", _size(width, height, scale)),
-        ("ls", _line(line_points) + "~c:16a34a~w:5"),
+        ("ls", _line(_downsample(line_points, _MAX_LINE_POINTS)) + "~c:16a34a~w:5"),
     ]
     # An explicit center+zoom makes the projection deterministic, so a client
     # can place its own tappable pins over the raster (2GIS static maps use
