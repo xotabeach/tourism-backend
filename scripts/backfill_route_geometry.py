@@ -11,16 +11,26 @@ Dry-run by default. Each converted route costs provider calls, so the run is
 bounded by ``--limit`` and skips routes that already have provider geometry
 unless ``--force`` is given.
 
+Routing and persistence can be split when the database host cannot reach the
+provider (the test VPS currently gets ConnectTimeout to routing.api.2gis.com
+while static maps still work): compute geometry from a machine that can, then
+apply the exported file next to the database.
+
 Examples:
   uv run python scripts/backfill_route_geometry.py --limit 5
   uv run python scripts/backfill_route_geometry.py --limit 5 --apply
+  uv run python scripts/backfill_route_geometry.py --limit 30 --export out.json
+  uv run python scripts/backfill_route_geometry.py --input out.json --apply
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from geoalchemy2 import Geometry, WKTElement
 from geoalchemy2.functions import ST_X, ST_Y
@@ -92,7 +102,63 @@ def _has_provider_geometry(route: Route) -> bool:
     return routing.get("synthetic") is False and bool(routing.get("geometry_available"))
 
 
-async def _run(*, limit: int, apply: bool, force: bool) -> None:
+async def _apply_exported(entries: list[dict[str, Any]]) -> None:
+    """Persist geometry computed elsewhere. Makes no provider calls."""
+    settings = get_settings()
+    engine = create_engine(settings)
+    factory = create_session_factory(engine)
+    applied = 0
+    missing = 0
+    try:
+        async with factory() as session:
+            for entry in entries:
+                route = await session.get(Route, UUID(str(entry["route_id"])))
+                if route is None:
+                    missing += 1
+                    continue
+                _store_geometry(
+                    route,
+                    geometry_wkt=str(entry["geometry_wkt"]),
+                    distance_meters=int(entry["distance_meters"]),
+                    provider=str(entry.get("provider") or "2gis"),
+                    road_types=[str(item) for item in entry.get("road_types") or []],
+                )
+                applied += 1
+                print(f"  applied: {route.name}")
+            await session.commit()
+    finally:
+        await engine.dispose()
+    print(f"route_geometry_backfill[import]: applied={applied} missing={missing}")
+
+
+def _store_geometry(
+    route: Route,
+    *,
+    geometry_wkt: str,
+    distance_meters: int,
+    provider: str,
+    road_types: list[str],
+) -> None:
+    route.geometry = WKTElement(geometry_wkt, srid=4326)
+    route.distance_meters = distance_meters
+    accessibility = dict(route.accessibility or {})
+    routing_meta = dict(accessibility.get("routing") or {})
+    routing_meta.update(
+        {
+            "provider": provider,
+            "synthetic": False,
+            "geometry_available": True,
+            "road_types": road_types,
+            "backfilled": True,
+        }
+    )
+    accessibility["routing"] = routing_meta
+    route.accessibility = accessibility
+
+
+async def _run(
+    *, limit: int, apply: bool, force: bool, export: Path | None
+) -> list[dict[str, Any]]:
     settings = get_settings()
     if settings.routing_provider != "2gis":
         raise SystemExit(
@@ -102,6 +168,7 @@ async def _run(*, limit: int, apply: bool, force: bool) -> None:
     engine = create_engine(settings)
     factory = create_session_factory(engine)
     provider = get_routing_provider(settings)
+    exported: list[dict[str, Any]] = []
     converted = 0
     skipped = 0
     failed = 0
@@ -156,24 +223,28 @@ async def _run(*, limit: int, apply: bool, force: bool) -> None:
                     f"distance_m={result.total_distance_meters} "
                     f"points={result.geometry_wkt.count(',') + 1}"
                 )
+                if export is not None:
+                    exported.append(
+                        {
+                            "route_id": str(route.id),
+                            "route_name": route.name,
+                            "geometry_wkt": result.geometry_wkt,
+                            "distance_meters": result.total_distance_meters,
+                            "provider": result.provider,
+                            "road_types": list(result.road_types),
+                        }
+                    )
                 if not apply:
                     continue
-                route.geometry = WKTElement(result.geometry_wkt, srid=4326)
-                route.distance_meters = result.total_distance_meters
-                accessibility = dict(route.accessibility or {})
-                routing_meta = dict(accessibility.get("routing") or {})
-                routing_meta.update(
-                    {
-                        "provider": result.provider,
-                        "synthetic": False,
-                        "geometry_available": True,
-                        "road_types": list(result.road_types),
-                        "backfilled": True,
-                    }
+                _store_geometry(
+                    route,
+                    geometry_wkt=result.geometry_wkt,
+                    distance_meters=result.total_distance_meters,
+                    provider=result.provider,
+                    road_types=list(result.road_types),
                 )
-                accessibility["routing"] = routing_meta
-                route.accessibility = accessibility
-            if apply:
+                # Commit per route: a long batch over a flaky provider link
+                # must not lose everything it already converted.
                 await session.commit()
     finally:
         await engine.dispose()
@@ -182,6 +253,7 @@ async def _run(*, limit: int, apply: bool, force: bool) -> None:
         f"route_geometry_backfill[{mode_label}]: "
         f"converted={converted} skipped={skipped} failed={failed}"
     )
+    return exported
 
 
 def main() -> None:
@@ -193,10 +265,37 @@ def main() -> None:
         action="store_true",
         help="recompute even when provider geometry is already stored",
     )
+    parser.add_argument(
+        "--export",
+        type=Path,
+        help="write computed geometry to a file instead of//in addition to applying",
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        help="apply geometry from a previous --export run without calling the provider",
+    )
     args = parser.parse_args()
+    if args.input is not None:
+        if not args.apply:
+            raise SystemExit("--input requires --apply")
+        payload = json.loads(args.input.read_text(encoding="utf-8"))
+        entries = payload.get("routes") if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            raise SystemExit("export file must be an object with a 'routes' array")
+        asyncio.run(_apply_exported(entries))
+        return
     if not 1 <= args.limit <= 100:
         raise SystemExit("limit must be between 1 and 100")
-    asyncio.run(_run(limit=args.limit, apply=args.apply, force=args.force))
+    exported = asyncio.run(
+        _run(limit=args.limit, apply=args.apply, force=args.force, export=args.export)
+    )
+    if args.export is not None:
+        args.export.parent.mkdir(parents=True, exist_ok=True)
+        args.export.write_text(
+            json.dumps({"routes": exported}, ensure_ascii=False), encoding="utf-8"
+        )
+        print(f"wrote export: {args.export} routes={len(exported)}")
 
 
 if __name__ == "__main__":

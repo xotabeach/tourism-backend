@@ -52,7 +52,8 @@ def _route_static_params(
     # standard 256px Web Mercator — verified against known pixel offsets).
     # Without it the provider auto-fits and the exact viewport is unknown.
     if center is not None and zoom is not None:
-        params.append(("c", f"{center[1]:.6f},{center[0]:.6f}"))
+        # Static API takes latitude first, same as the `pt`/`ls` values above.
+        params.append(("c", f"{center[0]:.6f},{center[1]:.6f}"))
         params.append(("z", str(zoom)))
     if pins == "numbered":
         # pt marker color only accepts 2GIS's predefined short codes (be/rd/

@@ -68,3 +68,25 @@ def test_route_static_params_markers_use_real_stop_coordinates() -> None:
         lon_str = rest.split("~", 1)[0]
         assert float(lat_str) == lat
         assert float(lon_str) == lon
+
+
+def test_route_static_params_center_is_lat_then_lng() -> None:
+    """2GIS `c` takes latitude first; sending lng,lat made every map 502."""
+    line = [(34.41, 44.68), (34.20, 44.60)]
+    stops = [(34.41, 44.68), (34.20, 44.60)]
+    params = _route_static_params(
+        line,
+        stops,
+        width=360,
+        height=260,
+        scale=2,
+        center=(44.64, 34.30),
+        zoom=11,
+        pins="none",
+    )
+
+    (center_value,) = [value for key, value in params if key == "c"]
+    assert center_value == "44.640000,34.300000"
+    (zoom_value,) = [value for key, value in params if key == "z"]
+    assert zoom_value == "11"
+    assert not [value for key, value in params if key == "pt"]
