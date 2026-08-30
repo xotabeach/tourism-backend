@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     # Comma-separated soft filters. The adapter records any returned road
     # types; the quality gate decides whether a route may be published.
     two_gis_routing_filters: str = "dirt_road,ferry"
+    # Soft budget for a single log warning per day, not a hard cutoff — demo
+    # quota is enforced by the vendor (429), this just flags unusual volume.
+    two_gis_daily_call_budget: int = Field(default=500, ge=1)
 
     @property
     def otp_accept_any_enabled(self) -> bool:

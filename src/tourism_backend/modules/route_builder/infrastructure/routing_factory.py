@@ -30,5 +30,6 @@ def get_routing_provider(settings: Settings | None = None) -> RoutingProvider:
             alternative=cfg.two_gis_routing_alternative,
             max_route_meters=cfg.two_gis_max_route_meters,
             filters=filters,
+            daily_call_budget=cfg.two_gis_daily_call_budget,
         )
     raise RuntimeError(f"Unsupported routing_provider={cfg.routing_provider!r}")

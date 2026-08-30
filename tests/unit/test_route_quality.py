@@ -6,6 +6,7 @@ from uuid import uuid4
 from tourism_backend.modules.route_builder.application.place_picker import PickedPlace
 from tourism_backend.modules.route_builder.application.route_quality import (
     RoadEventSignal,
+    TerrainFeatureSignal,
     active_road_event_blockers,
     assess_route_quality,
 )
@@ -317,3 +318,77 @@ def test_access_transport_mismatch_needs_review() -> None:
 
     assert assessment.status == "needs_review"
     assert "stop_access_transport_mismatch" in assessment.warnings
+
+
+def test_terrain_features_unavailable_is_a_warning_not_a_review() -> None:
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="car",
+        terrain_features=(),
+    )
+
+    assert assessment.status == "verified_with_warnings"
+    assert "route_terrain_features_unavailable" in assessment.warnings
+
+
+def test_route_crossing_coastline_without_ferry_needs_review() -> None:
+    # Vertical coastline line crossing the default diagonal route geometry
+    # (LINESTRING(34.1 44.5, 34.11 44.51, ...)) near its first segment.
+    coastline = TerrainFeatureSignal(
+        kind="coastline",
+        points=((34.105, 44.4), (34.105, 44.6)),
+    )
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="car",
+        terrain_features=(coastline,),
+    )
+
+    assert assessment.status == "needs_review"
+    assert "route_crosses_coastline_without_ferry" in assessment.warnings
+
+
+def test_route_crossing_coastline_with_ferry_road_type_is_not_flagged() -> None:
+    coastline = TerrainFeatureSignal(
+        kind="coastline",
+        points=((34.105, 44.4), (34.105, 44.6)),
+    )
+    assessment = assess_route_quality(
+        _routing(road_types=("ferry",)),
+        transport_mode="car",
+        terrain_features=(coastline,),
+    )
+
+    assert "route_crosses_coastline_without_ferry" not in assessment.warnings
+
+
+def test_walk_route_far_from_known_trail_warns() -> None:
+    far_trail = TerrainFeatureSignal(
+        kind="trail",
+        points=((30.0, 40.0), (30.01, 40.01)),
+    )
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="walk",
+        pace="calm",
+        terrain_features=(far_trail,),
+    )
+
+    assert "route_segment_far_from_known_trail" in assessment.warnings
+    # A warning, not a hard failure or review downgrade on its own.
+    assert assessment.usable_for_private_draft is True
+
+
+def test_walk_route_on_known_trail_has_no_distance_warning() -> None:
+    on_route_trail = TerrainFeatureSignal(
+        kind="trail",
+        points=((34.1, 44.5), (34.11, 44.51), (34.12, 44.52), (34.13, 44.53)),
+    )
+    assessment = assess_route_quality(
+        _routing(),
+        transport_mode="walk",
+        pace="calm",
+        terrain_features=(on_route_trail,),
+    )
+
+    assert "route_segment_far_from_known_trail" not in assessment.warnings

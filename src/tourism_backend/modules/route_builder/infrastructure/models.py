@@ -4,7 +4,9 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from geoalchemy2 import Geography
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -149,3 +151,27 @@ class RoutePlanningMessage(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class RouteTerrainFeature(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Independent OSM/Overpass geometry for the segment-level terrain gate.
+
+    Coastline and trail ways for Crimea, imported once via
+    ``scripts/import_terrain_features.py`` (same Overpass source used for
+    the places catalog). Read-only for route generation; never edited from
+    the app. Not a field survey — see route_quality.py for how findings from
+    this table stay "review"/"warning", never a hard safety claim.
+    """
+
+    __tablename__ = "route_terrain_features"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('coastline', 'trail')",
+            name="ck_route_terrain_features_kind",
+        ),
+    )
+
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    geometry = mapped_column(Geography(geometry_type="LINESTRING", srid=4326), nullable=False)
+    source_osm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

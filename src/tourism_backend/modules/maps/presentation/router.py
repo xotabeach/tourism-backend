@@ -11,6 +11,9 @@ from fastapi import APIRouter, Query, Request, Response
 from tourism_backend.api.deps import DbSession, SettingsDep
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.places.application import service as places_service
+from tourism_backend.modules.route_builder.infrastructure.two_gis_routing import (
+    two_gis_routing_stats,
+)
 from tourism_backend.modules.routes.application import service as routes_service
 
 router = APIRouter(tags=["maps"])
@@ -154,3 +157,14 @@ async def place_static_map(
         ("pt", f"{place.lat:.6f},{place.lng:.6f}~k:p~c:rd~s:l"),
     ]
     return await _fetch(settings=settings, params=params, request=request)
+
+
+@router.get("/maps/two-gis/status")
+async def two_gis_status(settings: SettingsDep) -> dict[str, object]:
+    """Ops-safe status: configured/provider/circuit + counters. No secrets."""
+    key = settings.two_gis_http_api_key
+    return {
+        "routing_provider": settings.routing_provider,
+        "configured": key is not None and bool(key.get_secret_value().strip()),
+        **two_gis_routing_stats(),
+    }

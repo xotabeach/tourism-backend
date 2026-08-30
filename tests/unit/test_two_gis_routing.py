@@ -13,7 +13,16 @@ from tourism_backend.modules.route_builder.application.routing import (
 )
 from tourism_backend.modules.route_builder.infrastructure.two_gis_routing import (
     TwoGisRoutingProvider,
+    reset_two_gis_routing_state_for_tests,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_two_gis_state() -> None:
+    # The retry/circuit-breaker/cache state is process-wide by design (see
+    # two_gis_routing.py); without a reset, one test's failures or cached
+    # route could leak into an unrelated test in the same pytest session.
+    reset_two_gis_routing_state_for_tests()
 
 
 def _waypoints(count: int = 2) -> list[RouteWaypoint]:
@@ -206,3 +215,108 @@ async def test_2gis_chunks_routes_above_provider_point_limit() -> None:
     assert result.total_duration_seconds == 120
     assert [leg.from_index for leg in result.legs] == [0, 4]
     assert "provider_points_chunked" in result.warnings
+
+
+def _success_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "status": "OK",
+            "type": "result",
+            "result": [
+                {
+                    "total_distance": 100,
+                    "total_duration": 60,
+                    "maneuvers": [
+                        {
+                            "outcoming_path": {
+                                "geometry": [
+                                    {"selection": ("LINESTRING(34.1 44.5, 34.11 44.51)")}
+                                ]
+                            }
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_2gis_routing_retries_once_on_timeout_then_succeeds() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.TimeoutException("boom", request=request)
+        return _success_response()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = TwoGisRoutingProvider(api_key="test-secret", client=client)
+        result = await provider.route(waypoints=_waypoints(), transport_mode="car")
+
+    assert calls == 2
+    assert result.total_distance_meters == 100
+
+
+@pytest.mark.asyncio
+async def test_2gis_routing_times_out_after_retry_exhausted() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.TimeoutException("boom", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = TwoGisRoutingProvider(api_key="test-secret", client=client)
+        with pytest.raises(RoutingError) as error:
+            await provider.route(waypoints=_waypoints(), transport_mode="car")
+
+    assert error.value.code == "routing_timeout"
+    assert calls == 2  # 1 initial attempt + 1 bounded retry, not unbounded
+
+
+@pytest.mark.asyncio
+async def test_2gis_circuit_opens_after_repeated_failures_and_fails_fast() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.TimeoutException("boom", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = TwoGisRoutingProvider(api_key="test-secret", client=client)
+        for _ in range(3):
+            with pytest.raises(RoutingError):
+                await provider.route(waypoints=_waypoints(), transport_mode="car")
+        calls_before_open = calls
+
+        with pytest.raises(RoutingError) as error:
+            await provider.route(waypoints=_waypoints(), transport_mode="car")
+
+    assert error.value.code == "routing_circuit_open"
+    assert calls == calls_before_open  # circuit-open call never touched the network
+
+
+@pytest.mark.asyncio
+async def test_2gis_routing_cache_hit_skips_network_call() -> None:
+    calls = 0
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _success_response()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = TwoGisRoutingProvider(api_key="test-secret", client=client)
+        first = await provider.route(waypoints=_waypoints(), transport_mode="car")
+        second = await provider.route(waypoints=_waypoints(), transport_mode="car")
+
+    assert calls == 1
+    assert "provider_result_cached" not in first.warnings
+    assert "provider_result_cached" in second.warnings
+    assert second.total_distance_meters == first.total_distance_meters

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from geoalchemy2 import Geometry, WKTElement
+from geoalchemy2 import Geography, Geometry, WKTElement
 from geoalchemy2.functions import ST_X, ST_Y
-from sqlalchemy import cast, select
+from sqlalchemy import cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import get_settings
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
 from tourism_backend.modules.places.infrastructure.models import Place, RoadEvent
@@ -25,6 +28,7 @@ from tourism_backend.modules.route_builder.application.quota import (
 )
 from tourism_backend.modules.route_builder.application.route_quality import (
     RoadEventSignal,
+    TerrainFeatureSignal,
     assess_route_quality,
 )
 from tourism_backend.modules.route_builder.application.routing import (
@@ -51,9 +55,13 @@ from tourism_backend.modules.route_builder.application.scoring import (
 from tourism_backend.modules.route_builder.infrastructure.models import (
     RouteGenerationEvent,
     RouteProposal,
+    RouteTerrainFeature,
 )
 from tourism_backend.modules.route_builder.infrastructure.routing_factory import (
     get_routing_provider,
+)
+from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
+    StubRoutingProvider,
 )
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 from tourism_backend.modules.subscriptions.application import service as travel_plus
@@ -61,6 +69,22 @@ from tourism_backend.modules.subscriptions.application.entitlements import (
     FREE_POLICY,
     policy_for_user,
     require_ai_chat,
+)
+
+_logger = logging.getLogger("tourism_backend.route_builder")
+
+# RoutingError codes that mean "the provider is unavailable right now", not
+# "this request is malformed". Only these fall back to a synthetic route;
+# routing_request_invalid/routing_unsupported_mode are real bugs the stub
+# would not meaningfully fix either.
+_ROUTING_FALLBACK_CODES = frozenset(
+    {
+        "routing_timeout",
+        "routing_provider_error",
+        "routing_quota_exceeded",
+        "routing_circuit_open",
+        "routing_unreachable",
+    }
 )
 
 _TRANSPORT_MAP = {
@@ -202,6 +226,60 @@ async def _road_events_for_places(
     )
 
 
+_TERRAIN_FEATURE_BUFFER_METERS = 300
+_MAX_TERRAIN_FEATURES = 50
+
+
+async def _terrain_features_near_route(
+    session: AsyncSession,
+    *,
+    geometry_wkt: str | None,
+) -> tuple[TerrainFeatureSignal, ...]:
+    """Bounded PostGIS lookup for the independent terrain gate (Track D).
+
+    Pure ``ST_DWithin`` + LIMIT, same pattern as
+    ``tool_registry.places_near_point_stmt``. route_quality.py stays
+    DB-agnostic and only receives plain (lon, lat) point tuples.
+    """
+
+    if not geometry_wkt:
+        return ()
+    route_geog = cast(
+        func.ST_SetSRID(func.ST_GeomFromText(geometry_wkt), 4326),
+        Geography,
+    )
+    rows = (
+        await session.execute(
+            select(
+                RouteTerrainFeature.kind,
+                func.ST_AsGeoJSON(RouteTerrainFeature.geometry),
+            )
+            .where(
+                func.ST_DWithin(
+                    RouteTerrainFeature.geometry,
+                    route_geog,
+                    _TERRAIN_FEATURE_BUFFER_METERS,
+                )
+            )
+            .limit(_MAX_TERRAIN_FEATURES)
+        )
+    ).all()
+    signals: list[TerrainFeatureSignal] = []
+    for kind, geojson in rows:
+        try:
+            coordinates = json.loads(geojson)["coordinates"]
+        except (TypeError, ValueError, KeyError):
+            continue
+        points = tuple(
+            (float(pair[0]), float(pair[1]))
+            for pair in coordinates
+            if isinstance(pair, list) and len(pair) >= 2
+        )
+        if len(points) >= 2 and kind in ("coastline", "trail"):
+            signals.append(TerrainFeatureSignal(kind=kind, points=points))
+    return tuple(signals)
+
+
 async def _route_places(
     session: AsyncSession,
     *,
@@ -212,23 +290,38 @@ async def _route_places(
     waypoints = await _waypoints_for_places(session, places)
     if road_events is None:
         road_events = await _road_events_for_places(session, places)
-    provider = get_routing_provider()
+    settings = get_settings()
+    provider = get_routing_provider(settings)
+    transport_mode = _transport_mode(params)
     try:
-        routing = await provider.route(
-            waypoints=waypoints,
-            transport_mode=_transport_mode(params),
-        )
+        routing = await provider.route(waypoints=waypoints, transport_mode=transport_mode)
     except RoutingError as exc:
-        raise AppError(code=exc.code, message=exc.message, status_code=422) from exc
+        if settings.routing_provider == "2gis" and exc.code in _ROUTING_FALLBACK_CODES:
+            _logger.warning(
+                "routing_provider_fallback_to_stub",
+                extra={"routing_error_code": exc.code},
+            )
+            routing = await StubRoutingProvider().route(
+                waypoints=waypoints,
+                transport_mode=transport_mode,
+            )
+        else:
+            raise AppError(code=exc.code, message=exc.message, status_code=422) from exc
+    terrain_features = (
+        ()
+        if routing.synthetic
+        else await _terrain_features_near_route(session, geometry_wkt=routing.geometry_wkt)
+    )
     quality = assess_route_quality(
         routing,
-        transport_mode=_transport_mode(params),
+        transport_mode=transport_mode,
         pace=params.pace,
         stops=places,
         season=params.season,
         with_children=params.with_children,
         with_pets=params.with_pets,
         road_events=road_events,
+        terrain_features=terrain_features,
     )
     if not quality.usable_for_private_draft:
         raise AppError(

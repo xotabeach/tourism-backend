@@ -9,6 +9,7 @@ stays a warning, never a silent "safe".
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -69,6 +70,21 @@ class RoadEventSignal:
     affects_transport: tuple[str, ...] = ()
     starts_at: datetime | None = None
     ends_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TerrainFeatureSignal:
+    """Independent OSM coastline/trail geometry near a route (see Track D).
+
+    Pre-filtered to the route's bounding box by the caller (PostGIS
+    ``ST_DWithin`` — see generate_service.py); this module stays DB-free and
+    only does planar point/segment math, same spirit as ``_linestring_points``
+    for provider geometry. Crimea's small extent makes the planar
+    approximation good enough for a review/warning signal, not a survey.
+    """
+
+    kind: Literal["coastline", "trail"]
+    points: tuple[tuple[float, float], ...]
 
 
 def _truthy(value: object) -> bool:
@@ -292,6 +308,140 @@ def _linestring_points(wkt: str | None) -> list[tuple[float, float]]:
     return points
 
 
+# Route geometry can carry thousands of points; a terrain feature (coastline
+# ways especially) can too. Both are capped before pairwise comparison so a
+# pathological input cannot turn an O(segments x features) check into an
+# unbounded one — this is a review/warning signal, not a survey, so a
+# stride-sampled subset of a very long line is an acceptable trade.
+_MAX_ROUTE_POINTS_FOR_TERRAIN_CHECK = 300
+_MAX_FEATURE_POINTS_FOR_TERRAIN_CHECK = 300
+_TRAIL_PROXIMITY_DEGREES = 0.00045  # roughly 50m at Crimea's latitude
+
+
+def _stride_sample(
+    points: Sequence[tuple[float, float]], max_points: int
+) -> list[tuple[float, float]]:
+    if len(points) <= max_points:
+        return list(points)
+    step = len(points) / max_points
+    return [points[int(i * step)] for i in range(max_points)]
+
+
+def _segments_intersect(
+    a1: tuple[float, float],
+    a2: tuple[float, float],
+    b1: tuple[float, float],
+    b2: tuple[float, float],
+) -> bool:
+    """Planar segment intersection test (orientation + on-segment cases)."""
+
+    def cross(o: tuple[float, float], p: tuple[float, float], q: tuple[float, float]) -> float:
+        return (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+
+    def on_segment(p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]) -> bool:
+        return min(p[0], r[0]) <= q[0] <= max(p[0], r[0]) and min(p[1], r[1]) <= q[1] <= max(
+            p[1], r[1]
+        )
+
+    d1 = cross(b1, b2, a1)
+    d2 = cross(b1, b2, a2)
+    d3 = cross(a1, a2, b1)
+    d4 = cross(a1, a2, b2)
+    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)):
+        return True
+    if d1 == 0 and on_segment(b1, a1, b2):
+        return True
+    if d2 == 0 and on_segment(b1, a2, b2):
+        return True
+    if d3 == 0 and on_segment(a1, b1, a2):
+        return True
+    return bool(d4 == 0 and on_segment(a1, b2, a2))
+
+
+def _point_segment_distance(
+    point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
+) -> float:
+    px, py = point
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)))
+    proj_x, proj_y = ax + t * dx, ay + t * dy
+    return math.hypot(px - proj_x, py - proj_y)
+
+
+def _independent_terrain_findings(
+    route_wkt: str | None,
+    *,
+    transport_mode: TransportMode,
+    road_types: set[str],
+    terrain_features: Sequence[TerrainFeatureSignal],
+) -> tuple[list[str], list[str], list[str]]:
+    """Independent OSM coastline/trail cross-check against route geometry.
+
+    Not a field survey: OSM way coverage is incomplete, so a route with no
+    nearby trail stays a bounded warning, not a hard failure. A route that
+    crosses a mapped coastline without a ferry leg is a stronger, but still
+    review (not unusable) signal — the provider's own geometry could be a
+    short bridge/isthmus the coastline extract does not resolve at this
+    scale.
+    """
+
+    if not terrain_features:
+        return [], [], ["route_terrain_features_unavailable"]
+
+    route_points = _stride_sample(
+        _linestring_points(route_wkt), _MAX_ROUTE_POINTS_FOR_TERRAIN_CHECK
+    )
+    if len(route_points) < 2:
+        return [], [], []
+
+    hard: list[str] = []
+    review: list[str] = []
+    warnings: list[str] = []
+
+    coastline = [f for f in terrain_features if f.kind == "coastline"]
+    trails = [f for f in terrain_features if f.kind == "trail"]
+
+    if coastline and "ferry" not in road_types:
+        crosses = False
+        for i in range(len(route_points) - 1):
+            a1, a2 = route_points[i], route_points[i + 1]
+            for feature in coastline:
+                pts = _stride_sample(feature.points, _MAX_FEATURE_POINTS_FOR_TERRAIN_CHECK)
+                for j in range(len(pts) - 1):
+                    if _segments_intersect(a1, a2, pts[j], pts[j + 1]):
+                        crosses = True
+                        break
+                if crosses:
+                    break
+            if crosses:
+                break
+        if crosses:
+            review.append("route_crosses_coastline_without_ferry")
+
+    if transport_mode == "walk":
+        if trails:
+            trail_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+            for feature in trails:
+                sampled = _stride_sample(feature.points, _MAX_FEATURE_POINTS_FOR_TERRAIN_CHECK)
+                trail_segments.extend((sampled[j], sampled[j + 1]) for j in range(len(sampled) - 1))
+            far_points = sum(
+                1
+                for point in route_points
+                if min(_point_segment_distance(point, a, b) for a, b in trail_segments)
+                > _TRAIL_PROXIMITY_DEGREES
+            )
+            if far_points > len(route_points) // 2:
+                warnings.append("route_segment_far_from_known_trail")
+        else:
+            warnings.append("route_trail_coverage_unknown")
+
+    return hard, review, warnings
+
+
 def _geometry_topology_findings(
     wkt: str | None,
     *,
@@ -456,6 +606,7 @@ def assess_route_quality(
     with_children: bool | None = None,
     with_pets: bool | None = None,
     road_events: Sequence[RoadEventSignal] = (),
+    terrain_features: Sequence[TerrainFeatureSignal] = (),
     as_of: datetime | None = None,
 ) -> RouteQualityAssessment:
     """Evaluate the data we have without inventing missing safety facts.
@@ -529,6 +680,16 @@ def assess_route_quality(
         review_reasons.append("dirt_road_surface_requires_review")
     if transport_mode == "walk" and road_types & {"stairs", "stairway", "ban_stairway"}:
         review_reasons.append("stairs_require_review")
+
+    terrain_hard, terrain_review, terrain_warnings = _independent_terrain_findings(
+        routing.geometry_wkt,
+        transport_mode=transport_mode,
+        road_types=road_types,
+        terrain_features=terrain_features,
+    )
+    hard_failures.extend(terrain_hard)
+    review_reasons.extend(terrain_review)
+    warnings.extend(terrain_warnings)
 
     angle = routing.max_road_angle_degrees
     if angle is not None:

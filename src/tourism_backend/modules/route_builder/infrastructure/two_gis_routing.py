@@ -7,8 +7,12 @@ the rest of the backend never receives a 2GIS response object or an API key.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
+import time
 from collections.abc import Mapping
+from dataclasses import replace
 from math import isfinite
 from typing import Any
 
@@ -35,6 +39,114 @@ _TRANSPORTS: dict[TransportMode, str] = {
     "car": "driving",
 }
 _WKT_LINE_RE = re.compile(r"^\s*LINESTRING(?:\s+Z)?\s*\((?P<body>.*)\)\s*$", re.I)
+
+_logger = logging.getLogger("tourism_backend.two_gis_routing")
+
+# Retry/circuit-breaker/cache/stats state is process-wide by design: a fresh
+# TwoGisRoutingProvider is constructed on every call (see routing_factory.py),
+# so a per-instance breaker would never accumulate failures across requests.
+_RETRY_ATTEMPTS = 2
+_RETRY_BACKOFF_SECONDS = 0.3
+_CIRCUIT_FAILURE_THRESHOLD = 3
+_CIRCUIT_COOLDOWN_SECONDS = 60.0
+_CACHE_TTL_SECONDS = 3600.0
+_CACHE_MAX_ITEMS = 64
+_DAILY_SECONDS = 86_400.0
+
+
+class _TwoGisCircuitBreaker:
+    def __init__(self) -> None:
+        self._consecutive_failures = 0
+        self._opened_at: float | None = None
+
+    def is_open(self) -> bool:
+        if self._opened_at is None:
+            return False
+        return time.monotonic() - self._opened_at < _CIRCUIT_COOLDOWN_SECONDS
+
+    def record_success(self) -> None:
+        self._consecutive_failures = 0
+        self._opened_at = None
+
+    def record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= _CIRCUIT_FAILURE_THRESHOLD:
+            self._opened_at = time.monotonic()
+
+    @property
+    def state(self) -> str:
+        return "open" if self.is_open() else "closed"
+
+
+class _TwoGisStats:
+    def __init__(self) -> None:
+        self.calls_total = 0
+        self.cache_hits = 0
+        self.retries = 0
+        self.failures_total = 0
+        self.circuit_open_rejections = 0
+        self.quota_errors_total = 0
+        self._daily_calls = 0
+        self._daily_window_started = time.monotonic()
+        self._daily_budget_warned = False
+
+    def record_daily_call(self, budget: int) -> None:
+        now = time.monotonic()
+        if now - self._daily_window_started >= _DAILY_SECONDS:
+            self._daily_calls = 0
+            self._daily_window_started = now
+            self._daily_budget_warned = False
+        self._daily_calls += 1
+        if not self._daily_budget_warned and self._daily_calls > budget:
+            self._daily_budget_warned = True
+            _logger.warning(
+                "two_gis_daily_budget_exceeded",
+                extra={"daily_calls": self._daily_calls, "budget": budget},
+            )
+
+    def snapshot(self) -> dict[str, int]:
+        return {
+            "calls_total": self.calls_total,
+            "cache_hits": self.cache_hits,
+            "retries": self.retries,
+            "failures_total": self.failures_total,
+            "circuit_open_rejections": self.circuit_open_rejections,
+            "quota_errors_total": self.quota_errors_total,
+            "daily_calls": self._daily_calls,
+        }
+
+
+_circuit = _TwoGisCircuitBreaker()
+_stats = _TwoGisStats()
+_route_cache: dict[tuple[Any, ...], tuple[float, RoutingResult]] = {}
+
+
+def two_gis_routing_stats() -> dict[str, object]:
+    """Process-local counters + circuit state — no key, no URL, no PII.
+
+    Backs the public ``/api/v1/maps/two-gis/status`` endpoint and the tests.
+    """
+    snapshot: dict[str, object] = dict(_stats.snapshot())
+    snapshot["circuit_state"] = _circuit.state
+    return snapshot
+
+
+def reset_two_gis_routing_state_for_tests() -> None:
+    global _circuit, _stats
+    _circuit = _TwoGisCircuitBreaker()
+    _stats = _TwoGisStats()
+    _route_cache.clear()
+
+
+def _route_cache_key(
+    *,
+    waypoints: list[RouteWaypoint],
+    transport_mode: TransportMode,
+    filters: tuple[str, ...],
+    alternative: int,
+) -> tuple[Any, ...]:
+    points = tuple((round(point.lat, 5), round(point.lng, 5)) for point in waypoints)
+    return (points, transport_mode, filters, alternative)
 
 
 def _parse_linestring(value: object) -> list[str]:
@@ -164,6 +276,7 @@ class TwoGisRoutingProvider:
         alternative: int = 0,
         max_route_meters: int | None = 50_000,
         filters: tuple[str, ...] = ("dirt_road", "ferry"),
+        daily_call_budget: int = 500,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not api_key.strip():
@@ -174,6 +287,7 @@ class TwoGisRoutingProvider:
         self._alternative = max(0, min(alternative, 3))
         self._max_route_meters = max_route_meters
         self._filters = tuple(item.strip() for item in filters if item.strip())
+        self._daily_call_budget = daily_call_budget
         self._client = client
 
     async def route(
@@ -202,21 +316,44 @@ class TwoGisRoutingProvider:
                 "routing_unsupported_mode",
                 f"2GIS global routing does not support mode {transport_mode!r} yet",
             )
+
+        cache_key = _route_cache_key(
+            waypoints=waypoints,
+            transport_mode=transport_mode,
+            filters=self._filters,
+            alternative=self._alternative,
+        )
+        now = time.monotonic()
+        cached = _route_cache.get(cache_key)
+        if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
+            _stats.cache_hits += 1
+            cached_result = cached[1]
+            return replace(
+                cached_result,
+                warnings=(*cached_result.warnings, "provider_result_cached"),
+            )
+
         max_points = _MAX_WALK_POINTS if transport_mode == "walk" else _MAX_OTHER_POINTS
         if len(waypoints) > max_points:
-            return await self._route_chunked(
+            result = await self._route_chunked(
                 waypoints=waypoints,
                 transport_mode=transport_mode,
                 constraints=constraints,
                 transport=transport,
                 max_points=max_points,
             )
-        return await self._route_once(
-            waypoints=waypoints,
-            transport_mode=transport_mode,
-            constraints=constraints,
-            transport=transport,
-        )
+        else:
+            result = await self._route_once(
+                waypoints=waypoints,
+                transport_mode=transport_mode,
+                constraints=constraints,
+                transport=transport,
+            )
+
+        if len(_route_cache) >= _CACHE_MAX_ITEMS:
+            _route_cache.pop(next(iter(_route_cache)))
+        _route_cache[cache_key] = (now, result)
+        return result
 
     async def _route_chunked(
         self,
@@ -527,6 +664,58 @@ class TwoGisRoutingProvider:
         )
 
     async def _post(self, payload: Mapping[str, Any]) -> httpx.Response:
+        if _circuit.is_open():
+            _stats.circuit_open_rejections += 1
+            raise RoutingError(
+                "routing_circuit_open",
+                "2GIS routing temporarily disabled after repeated failures",
+            )
+
+        _stats.calls_total += 1
+        _stats.record_daily_call(self._daily_call_budget)
+
+        last_error: httpx.HTTPError | None = None
+        for attempt in range(_RETRY_ATTEMPTS):
+            started = time.monotonic()
+            try:
+                response = await self._send(payload)
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                last_error = exc
+                if attempt + 1 < _RETRY_ATTEMPTS:
+                    _stats.retries += 1
+                    await asyncio.sleep(_RETRY_BACKOFF_SECONDS)
+                    continue
+                _circuit.record_failure()
+                _stats.failures_total += 1
+                _logger.warning(
+                    "two_gis_routing_call",
+                    extra={
+                        "outcome": "timeout",
+                        "attempts": attempt + 1,
+                        "latency_ms": int((time.monotonic() - started) * 1000),
+                    },
+                )
+                raise
+            else:
+                _circuit.record_success()
+                if response.status_code == 429:
+                    _stats.quota_errors_total += 1
+                _logger.info(
+                    "two_gis_routing_call",
+                    extra={
+                        "outcome": "ok" if response.status_code < 400 else "http_error",
+                        "status_code": response.status_code,
+                        "attempts": attempt + 1,
+                        "latency_ms": int((time.monotonic() - started) * 1000),
+                    },
+                )
+                return response
+        # Unreachable: the loop above always returns or raises on its last attempt.
+        if last_error is None:
+            raise RuntimeError("2GIS retry loop exited without a result")
+        raise last_error
+
+    async def _send(self, payload: Mapping[str, Any]) -> httpx.Response:
         if self._client is not None:
             return await self._client.post(
                 f"{self._base_url}{_ROUTING_PATH}",
