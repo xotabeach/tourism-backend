@@ -154,6 +154,14 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Points actually granted on completion. Also the idempotency guard: a
+    # replayed complete must not pay out twice.
+    awarded_points: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
 
 
 class RouteExecutionStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):

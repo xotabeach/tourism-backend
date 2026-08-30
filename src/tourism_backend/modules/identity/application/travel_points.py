@@ -81,3 +81,16 @@ async def grant_due_travel_points(session: AsyncSession) -> int:
     if granted:
         await session.commit()
     return granted
+
+
+async def award_travel_points(session: AsyncSession, *, user: User, points: int) -> int:
+    """Add points to a user and keep their rank in sync.
+
+    Callers own idempotency: this always adds. Returns the granted amount so
+    the caller can persist it as its own replay guard.
+    """
+    if points <= 0:
+        return 0
+    user.travel_points += points
+    await _sync_rank(session, user)
+    return points

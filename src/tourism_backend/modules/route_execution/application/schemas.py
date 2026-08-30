@@ -102,6 +102,8 @@ class RouteExecutionOut(BaseModel):
     required_stops: int = Field(ge=0)
     completed_required_stops: int = Field(ge=0)
     stops: list[RouteExecutionStopOut]
+    # Travel points granted for finishing this route (0 while it is active).
+    awarded_points: int = Field(default=0, ge=0)
     sync: RouteExecutionSyncOut | None = None
     created_at: datetime
     updated_at: datetime

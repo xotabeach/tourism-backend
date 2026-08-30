@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.identity.application.travel_points import award_travel_points
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.infrastructure.models import Place, RoadEvent
@@ -26,6 +27,10 @@ from tourism_backend.modules.route_execution.application.offline_sync import (
     ResolvedEventTime,
     resolve_event_time,
     terminal_conflict_details,
+)
+from tourism_backend.modules.route_execution.application.rewards import (
+    RouteEffort,
+    travel_points_for_effort,
 )
 from tourism_backend.modules.route_execution.application.routing_snapshot import (
     ensure_routing_snapshot,
@@ -43,6 +48,7 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecution,
     RouteExecutionEvent,
     RouteExecutionStop,
+    RouteRoutingSnapshot,
 )
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 
@@ -131,6 +137,7 @@ async def _execution_out(
             )
             for stop in stops
         ],
+        awarded_points=int(execution.awarded_points or 0),
         sync=sync,
         created_at=execution.created_at,
         updated_at=execution.updated_at,
@@ -598,6 +605,7 @@ async def complete_execution(
     execution.status = "completed"
     execution.completed_at = resolved.effective
     execution.updated_at = now
+    await _award_completion_points(session, execution=execution, user_id=user_id)
     return await _commit_event(
         session,
         execution=execution,
@@ -607,6 +615,61 @@ async def complete_execution(
         applied=True,
         client_event_id=client_event_id,
     )
+
+
+async def _award_completion_points(
+    session: AsyncSession,
+    *,
+    execution: RouteExecution,
+    user_id: UUID,
+) -> None:
+    """Grant travel points once, sized by what the route actually demanded.
+
+    Reads the immutable snapshot captured at start, so editing the route
+    afterwards cannot change an already-earned reward. ``awarded_points`` is
+    the replay guard: a repeated complete finds it non-zero and pays nothing.
+    """
+
+    if execution.awarded_points:
+        return
+    user = await session.get(User, user_id)
+    if user is None:
+        return
+
+    completed_required = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(RouteExecutionStop)
+            .where(
+                RouteExecutionStop.execution_id == execution.id,
+                RouteExecutionStop.is_optional.is_(False),
+                RouteExecutionStop.completed_at.is_not(None),
+            )
+        )
+        or 0
+    )
+    snapshot = (
+        await session.get(RouteRoutingSnapshot, execution.routing_snapshot_id)
+        if execution.routing_snapshot_id is not None
+        else None
+    )
+    difficulty = None
+    if execution.route_id is not None:
+        difficulty = await session.scalar(
+            select(Route.difficulty).where(Route.id == execution.route_id)
+        )
+
+    points = travel_points_for_effort(
+        RouteEffort(
+            completed_required_stops=completed_required,
+            distance_meters=snapshot.distance_meters if snapshot else None,
+            elevation_gain_meters=snapshot.elevation_gain_meters if snapshot else None,
+            max_road_angle_degrees=snapshot.max_road_angle_degrees if snapshot else None,
+            transport_mode=snapshot.transport_mode if snapshot else None,
+            difficulty=difficulty,
+        )
+    )
+    execution.awarded_points = await award_travel_points(session, user=user, points=points)
 
 
 async def cancel_execution(

@@ -161,12 +161,20 @@ async def test_route_execution_lifecycle_is_idempotent(live_client: AsyncClient)
     assert finished.json()["status"] == "completed"
     assert finished.json()["completed_required_stops"] == finished.json()["required_stops"]
 
+    # Finishing pays travel points, sized by the route's own effort.
+    awarded = finished.json()["awarded_points"]
+    assert awarded > 0
+    me_after = await live_client.get("/api/v1/me", headers=headers)
+    assert me_after.status_code == 200, me_after.text
+
     repeated_finish = await live_client.post(
         f"/api/v1/route-executions/{execution['id']}/complete",
         headers=headers,
     )
     assert repeated_finish.status_code == 200
     assert repeated_finish.json()["id"] == execution["id"]
+    # A replayed complete must not pay out a second time.
+    assert repeated_finish.json()["awarded_points"] == awarded
 
     history = await live_client.get("/api/v1/route-executions", headers=headers)
     assert history.status_code == 200
