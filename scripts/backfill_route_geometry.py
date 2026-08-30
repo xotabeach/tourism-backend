@@ -43,6 +43,9 @@ from tourism_backend.modules.route_builder.application.routing import (
 from tourism_backend.modules.route_builder.infrastructure.routing_factory import (
     get_routing_provider,
 )
+from tourism_backend.modules.route_builder.infrastructure.two_gis_routing import (
+    reset_two_gis_circuit,
+)
 from tourism_backend.modules.route_execution.infrastructure import models as _execution_models
 from tourism_backend.modules.routes.infrastructure import models as _routes_models
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
@@ -135,6 +138,8 @@ async def _run(*, limit: int, apply: bool, force: bool) -> None:
                     print(f"  skip (no coordinates): {route.name}")
                     continue
                 mode = _transport_mode(route)
+                # Unrelated routes: a slow one must not fail-fast the rest.
+                reset_two_gis_circuit()
                 try:
                     result = await provider.route(waypoints=waypoints, transport_mode=mode)
                 except RoutingError as exc:

@@ -131,9 +131,20 @@ def two_gis_routing_stats() -> dict[str, object]:
     return snapshot
 
 
-def reset_two_gis_routing_state_for_tests() -> None:
-    global _circuit, _stats
+def reset_two_gis_circuit() -> None:
+    """Close the breaker again.
+
+    Request traffic must let the breaker do its job, but a bounded ops batch
+    (see scripts/backfill_route_geometry.py) walks unrelated routes: one slow
+    route should not fail-fast every remaining one.
+    """
+    global _circuit
     _circuit = _TwoGisCircuitBreaker()
+
+
+def reset_two_gis_routing_state_for_tests() -> None:
+    global _stats
+    reset_two_gis_circuit()
     _stats = _TwoGisStats()
     _route_cache.clear()
 
