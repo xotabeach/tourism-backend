@@ -90,6 +90,10 @@ class RouteStopOut(BaseModel):
     is_optional: bool
     lng: float | None = None
     lat: float | None = None
+    # Enough to render a small preview card when a map pin is tapped without
+    # a second round trip per stop.
+    place_short_description: str | None = None
+    place_cover_url: str | None = None
 
 
 class RouteMediaOut(BaseModel):

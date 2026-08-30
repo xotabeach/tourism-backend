@@ -17,6 +17,7 @@ from tourism_backend.modules.geography.infrastructure.models import Region
 from tourism_backend.modules.identity.infrastructure.models import EXPERT_RANK_ID, TravelRank, User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
+from tourism_backend.modules.places.application import place_covers
 from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
 from tourism_backend.modules.places.infrastructure.models import Place, PlaceImage
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
@@ -439,6 +440,10 @@ async def _route_detail_from_model(
         for attachment in attachments
     ]
 
+    stop_covers = await place_covers.covers_for_places(
+        session,
+        [place.id for _stop, place, _lng, _lat in stops_rows],
+    )
     stops: list[RouteStopOut] = [
         RouteStopOut(
             id=stop.id,
@@ -451,6 +456,8 @@ async def _route_detail_from_model(
             is_optional=stop.is_optional,
             lng=float(lng) if lng is not None else None,
             lat=float(lat) if lat is not None else None,
+            place_short_description=place.short_description,
+            place_cover_url=stop_covers.get(place.id),
         )
         for stop, place, lng, lat in stops_rows
     ]

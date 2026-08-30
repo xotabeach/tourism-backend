@@ -33,16 +33,34 @@ def _line(points: Sequence[tuple[float, float]]) -> str:
 
 
 def _route_static_params(
-    points: Sequence[tuple[float, float]], *, width: int, height: int, scale: int
+    line_points: Sequence[tuple[float, float]],
+    stop_points: Sequence[tuple[float, float]],
+    *,
+    width: int,
+    height: int,
+    scale: int,
+    center: tuple[float, float] | None = None,
+    zoom: int | None = None,
+    pins: str = "numbered",
 ) -> list[tuple[str, str]]:
     params: list[tuple[str, str]] = [
         ("s", _size(width, height, scale)),
-        ("ls", _line(points) + "~c:16a34a~w:5"),
+        ("ls", _line(line_points) + "~c:16a34a~w:5"),
     ]
-    # pt marker color only accepts 2GIS's predefined short codes (be/rd/oe/
-    # yw/gn/pe/pk/gy/bk), unlike ls which takes an arbitrary hex RRGGBB.
-    for index, (lon, lat) in enumerate(points[:: max(1, len(points) // 8)][:8], start=1):
-        params.append(("pt", f"{lat:.6f},{lon:.6f}~k:c~c:gn~n:{index}"))
+    # An explicit center+zoom makes the projection deterministic, so a client
+    # can place its own tappable pins over the raster (2GIS static maps use
+    # standard 256px Web Mercator — verified against known pixel offsets).
+    # Without it the provider auto-fits and the exact viewport is unknown.
+    if center is not None and zoom is not None:
+        params.append(("c", f"{center[1]:.6f},{center[0]:.6f}"))
+        params.append(("z", str(zoom)))
+    if pins == "numbered":
+        # pt marker color only accepts 2GIS's predefined short codes (be/rd/
+        # oe/yw/gn/pe/pk/gy/bk), unlike ls which takes an arbitrary hex
+        # RRGGBB. Markers must sit on the real stops, not on points sampled
+        # from the road-following geometry (which follows the road).
+        for index, (lon, lat) in enumerate(stop_points[:8], start=1):
+            params.append(("pt", f"{lat:.6f},{lon:.6f}~k:c~c:gn~n:{index}"))
     return params
 
 
@@ -120,22 +138,37 @@ async def route_static_map(
     width: int = Query(default=880, ge=120, le=1280),
     height: int = Query(default=420, ge=90, le=1280),
     scale: int = Query(default=2, ge=1, le=2),
+    center_lat: float | None = Query(default=None, ge=-90, le=90),
+    center_lng: float | None = Query(default=None, ge=-180, le=180),
+    zoom: int | None = Query(default=None, ge=1, le=18),
+    pins: str = Query(default="numbered", pattern="^(numbered|none)$"),
 ) -> Response:
     route = await routes_service.get_route(session, route_id)
-    points = route.geometry.coordinates if route.geometry else []
-    if len(points) < 2:
-        points = [
-            (stop.lng, stop.lat)
-            for stop in route.stops
-            if stop.lng is not None and stop.lat is not None
-        ]
-    if not points:
+    stop_points = [
+        (stop.lng, stop.lat)
+        for stop in route.stops
+        if stop.lng is not None and stop.lat is not None
+    ]
+    line_points = route.geometry.coordinates if route.geometry else []
+    if len(line_points) < 2:
+        line_points = stop_points
+    if not line_points:
         raise AppError(
             code="map_preview_unavailable",
             message="Route has no coordinates",
             status_code=404,
         )
-    params = _route_static_params(points, width=width, height=height, scale=scale)
+    has_center = center_lat is not None and center_lng is not None
+    params = _route_static_params(
+        line_points,
+        stop_points or line_points,
+        width=width,
+        height=height,
+        scale=scale,
+        center=(center_lat, center_lng) if has_center else None,  # type: ignore[arg-type]
+        zoom=zoom if has_center else None,
+        pins=pins,
+    )
     return await _fetch(settings=settings, params=params, request=request)
 
 
