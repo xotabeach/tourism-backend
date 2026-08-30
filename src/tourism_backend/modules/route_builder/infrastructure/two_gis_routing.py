@@ -149,6 +149,25 @@ def reset_two_gis_routing_state_for_tests() -> None:
     _route_cache.clear()
 
 
+def _http_error_code(response: httpx.Response) -> str:
+    """Map a provider HTTP failure to a typed code.
+
+    A demo key answers an over-long route with 403 and an explanatory body
+    rather than a distance field, so without this it surfaced as a generic
+    provider error and looked like an outage instead of a plan limit.
+    """
+    if response.status_code == 429:
+        return "routing_quota_exceeded"
+    if response.status_code == 403:
+        try:
+            message = str(response.json().get("message") or "")
+        except ValueError:
+            message = ""
+        if "excessive distance" in message.casefold():
+            return "route_too_long"
+    return "routing_provider_error"
+
+
 def _route_cache_key(
     *,
     waypoints: list[RouteWaypoint],
@@ -548,12 +567,10 @@ class TwoGisRoutingProvider:
         except httpx.TimeoutException as exc:
             raise RoutingError("routing_timeout", "2GIS routing timed out") from exc
         except httpx.HTTPStatusError as exc:
-            code = (
-                "routing_quota_exceeded"
-                if exc.response.status_code == 429
-                else "routing_provider_error"
-            )
-            raise RoutingError(code, "2GIS routing request failed") from exc
+            raise RoutingError(
+                _http_error_code(exc.response),
+                "2GIS routing request failed",
+            ) from exc
         except httpx.HTTPError as exc:
             raise RoutingError("routing_provider_error", "2GIS routing is unavailable") from exc
         except ValueError as exc:

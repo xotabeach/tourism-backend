@@ -320,3 +320,29 @@ async def test_2gis_routing_cache_hit_skips_network_call() -> None:
     assert "provider_result_cached" not in first.warnings
     assert "provider_result_cached" in second.warnings
     assert second.total_distance_meters == first.total_distance_meters
+
+
+@pytest.mark.asyncio
+async def test_2gis_demo_distance_limit_is_reported_as_route_too_long() -> None:
+    """A demo key answers an over-long route with 403, not a distance field.
+
+    Mapping it to the generic provider error made a plan limit look like an
+    outage in the logs and in the backfill report.
+    """
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "type": "error",
+                "message": "excessive distance between points for demo-keys, max (km): 50",
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = TwoGisRoutingProvider(api_key="test-secret", client=client)
+        with pytest.raises(RoutingError) as error:
+            await provider.route(waypoints=_waypoints(), transport_mode="car")
+
+    assert error.value.code == "route_too_long"
+    assert "test-secret" not in error.value.message
