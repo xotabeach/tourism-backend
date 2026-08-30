@@ -48,12 +48,8 @@ def test_starting_and_finishing_without_stops_only_earns_the_base() -> None:
 
 
 def test_walking_is_worth_more_per_kilometre_than_driving() -> None:
-    walk = RouteEffort(
-        completed_required_stops=2, distance_meters=20_000, transport_mode="walk"
-    )
-    drive = RouteEffort(
-        completed_required_stops=2, distance_meters=20_000, transport_mode="car"
-    )
+    walk = RouteEffort(completed_required_stops=2, distance_meters=20_000, transport_mode="walk")
+    drive = RouteEffort(completed_required_stops=2, distance_meters=20_000, transport_mode="car")
     assert travel_points_for_effort(walk) > travel_points_for_effort(drive)
 
 

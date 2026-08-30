@@ -113,9 +113,7 @@ async def test_deck_falls_back_to_catalog_when_everything_is_favourited(
         # Every personalised candidate is excluded, so without the fallback
         # this list was empty and the swiper rendered nothing.
         assert body["items"], "deck must not be empty when the catalogue is non-empty"
-        assert all(
-            item["explanation_code"] == "catalog_fallback" for item in body["items"]
-        )
+        assert all(item["explanation_code"] == "catalog_fallback" for item in body["items"])
     finally:
         async with app.state.session_factory() as session:
             await session.execute(

@@ -8,7 +8,6 @@ route, which emptied the deck entirely (observed in production: 22 favourites
 from __future__ import annotations
 
 
-
 def test_catalog_fallback_is_an_allowed_explanation_code() -> None:
     from tourism_backend.modules.recommendations.application.service import (
         _EXPLANATION_CODES,

@@ -230,9 +230,7 @@ def _success_response() -> httpx.Response:
                     "maneuvers": [
                         {
                             "outcoming_path": {
-                                "geometry": [
-                                    {"selection": ("LINESTRING(34.1 44.5, 34.11 44.51)")}
-                                ]
+                                "geometry": [{"selection": ("LINESTRING(34.1 44.5, 34.11 44.51)")}]
                             }
                         }
                     ],
