@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -71,6 +72,20 @@ _ = (
 )
 
 _WALK_MODES = {"walk", "walking", "pedestrian", "foot"}
+
+# The 2GIS demo key allows 5 Routing API calls per minute and temporarily
+# blocks the key once that is exceeded. A long route is split into several
+# provider calls, so pace conservatively rather than per route.
+_MIN_SECONDS_BETWEEN_CALLS = 15.0
+
+
+async def _throttle(last_call_at: float | None) -> float:
+    if last_call_at is not None:
+        wait = _MIN_SECONDS_BETWEEN_CALLS - (time.monotonic() - last_call_at)
+        if wait > 0:
+            print(f"  … waiting {wait:.0f}s for the provider rate limit")
+            await asyncio.sleep(wait)
+    return time.monotonic()
 
 
 def _transport_mode(route: Route) -> TransportMode:
@@ -169,6 +184,7 @@ async def _run(
     factory = create_session_factory(engine)
     provider = get_routing_provider(settings)
     exported: list[dict[str, Any]] = []
+    last_call_at: float | None = None
     converted = 0
     skipped = 0
     failed = 0
@@ -207,6 +223,7 @@ async def _run(
                 mode = _transport_mode(route)
                 # Unrelated routes: a slow one must not fail-fast the rest.
                 reset_two_gis_circuit()
+                last_call_at = await _throttle(last_call_at)
                 try:
                     result = await provider.route(waypoints=waypoints, transport_mode=mode)
                 except RoutingError as exc:
