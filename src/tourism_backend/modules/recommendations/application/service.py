@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import delete, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Exists
@@ -61,8 +61,11 @@ _EXPLANATION_CODES = frozenset(
         "fresh_route",
         "popular_route",
         "cold_start",
+        "catalog_fallback",
     }
 )
+# How many plain-catalogue cards may back-fill an exhausted personal deck.
+_FALLBACK_LIMIT = 10
 
 
 def _has_unpublished_stop() -> Exists:
@@ -121,6 +124,15 @@ async def get_today_deck(
         and row.route_id not in profile.completed_route_ids
     ]
     cards = await _hydrate_cards(session, visible)
+    if not cards:
+        # A small catalogue plus an active user (saved or skipped nearly
+        # everything) leaves the personal deck empty, which showed up as a
+        # blank swiper. Back-fill from the plain catalogue, flagged so the app
+        # never passes filler off as a personalised pick.
+        cards = await _catalog_fallback_cards(
+            session,
+            exclude=profile.skipped_route_ids | profile.completed_route_ids,
+        )
     return RecommendationDeckOut(
         deck_date=deck_date,
         ranker_version=RANKER_VERSION,
@@ -128,6 +140,80 @@ async def get_today_deck(
         items=cards,
         remaining=len(cards),
     )
+
+
+async def refresh_today_deck(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    as_of: datetime | None = None,
+) -> RecommendationDeckOut:
+    """Rebuild today's deck for one user on demand.
+
+    Bounded to the caller's own deck and to the current day, so repeating it
+    only ever recomputes the same day's rows rather than growing history.
+    """
+
+    now = as_of or datetime.now(UTC)
+    user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
+    if user is None:
+        raise AppError(code="unauthorized", message="Authentication required", status_code=401)
+    deck_date = deck_date_for(now)
+    await session.execute(
+        delete(RouteRecommendationDeckItem).where(
+            RouteRecommendationDeckItem.user_id == user_id,
+            RouteRecommendationDeckItem.deck_date == deck_date,
+        )
+    )
+    await session.commit()
+    return await get_today_deck(session, user_id=user_id, as_of=now)
+
+
+async def _catalog_fallback_cards(
+    session: AsyncSession,
+    *,
+    exclude: frozenset[UUID],
+) -> list[RecommendationCardOut]:
+    """Plain catalogue cards for an exhausted deck.
+
+    Favourites are deliberately still eligible here: with a tiny catalogue
+    they are most of what exists, and an empty screen is worse than showing a
+    route the user already liked. Skips and completed routes stay excluded —
+    re-showing those would contradict an explicit user signal.
+    """
+
+    route_ids = list(
+        (
+            await session.scalars(
+                select(Route.id)
+                .where(*_PUBLIC_CATALOG, ~_has_unpublished_stop())
+                .order_by(Route.updated_at.desc(), Route.id)
+                .limit(CANDIDATE_LIMIT)
+            )
+        ).all()
+    )
+    remaining = [route_id for route_id in route_ids if route_id not in exclude]
+    if not remaining:
+        return []
+    items = await routes_service.list_catalog_items_by_ids(
+        session,
+        remaining[:_FALLBACK_LIMIT],
+    )
+    cards: list[RecommendationCardOut] = []
+    for rank, route_id in enumerate(remaining[:_FALLBACK_LIMIT], start=1):
+        route = items.get(route_id)
+        if route is None:
+            continue
+        cards.append(
+            RecommendationCardOut(
+                route=route,
+                rank=rank,
+                score=0.0,
+                explanation_code="catalog_fallback",
+                exploration=False,
+            )
+        )
+    return cards
 
 
 async def record_feedback(

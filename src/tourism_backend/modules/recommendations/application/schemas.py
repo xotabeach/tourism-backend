@@ -15,6 +15,11 @@ ExplanationCode = Literal[
     "fresh_route",
     "popular_route",
     "cold_start",
+    # Not a recommendation: the personalised deck had nothing left to show
+    # (small catalogue + an active user who saved or skipped most of it), so
+    # the card comes from the plain catalogue. Kept distinct so the app never
+    # presents a catalogue filler as a personalised pick.
+    "catalog_fallback",
 ]
 
 

@@ -40,3 +40,15 @@ async def post_recommendation_feedback(
         route_id=route_id,
         payload=payload,
     )
+
+
+@router.post(
+    "/routes/recommendations/refresh",
+    response_model=RecommendationDeckOut,
+    status_code=status.HTTP_200_OK,
+)
+async def refresh_recommendations(
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> RecommendationDeckOut:
+    return await service.refresh_today_deck(session, user_id=user_id)
