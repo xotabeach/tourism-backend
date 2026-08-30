@@ -42,6 +42,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_admin_role,
     format_debug_code,
     format_expert_status,
+    format_masked_token,
     format_message_author,
     format_place_fk,
     format_place_publication_status,
@@ -58,6 +59,11 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_user_fk,
     format_user_id_peek,
 )
+from tourism_backend.modules.geography.infrastructure.models import (
+    Country,
+    Locality,
+    Region,
+)
 from tourism_backend.modules.identity.application import media as identity_media
 from tourism_backend.modules.identity.application.display_name import (
     DISPLAY_NAME_MAX_LENGTH,
@@ -67,23 +73,43 @@ from tourism_backend.modules.identity.application.display_name import (
 from tourism_backend.modules.identity.application.schemas import normalize_ru_phone
 from tourism_backend.modules.identity.infrastructure.models import (
     EXPERT_RANK_ID,
+    Achievement,
     AuthOtpChallenge,
     AuthPhoneChangeChallenge,
     TravelRank,
     User,
+    UserAchievement,
     UserExpertStatusEvent,
 )
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.application.service import resolve_urls
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.notifications.application import service as notifications_service
+from tourism_backend.modules.notifications.infrastructure.models import (
+    DeviceToken,
+    Notification,
+)
 from tourism_backend.modules.places.application import review_service as place_review_service
 from tourism_backend.modules.places.application.publication_readiness import (
     is_ready_for_publication,
     publication_blockers,
 )
 from tourism_backend.modules.places.application.publication_service import facts_for_places
-from tourism_backend.modules.places.infrastructure.models import Place, PlaceReview
+from tourism_backend.modules.places.infrastructure.models import (
+    Category,
+    Place,
+    PlaceImage,
+    PlaceReview,
+    RoadEvent,
+)
+from tourism_backend.modules.recommendations.infrastructure.models import (
+    RouteRecommendationDeckItem,
+    RouteRecommendationFeedback,
+)
+from tourism_backend.modules.route_execution.infrastructure.models import (
+    RouteExecution,
+    RouteExecutionStop,
+)
 from tourism_backend.modules.routes.application import review_service
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 from tourism_backend.modules.subscriptions.application import service as travel_plus_service
@@ -1913,6 +1939,522 @@ class PlaceReviewAdmin(ModelView, model=PlaceReview):
         return await self._set_status(request, status_value="rejected")
 
 
+# ---------------------------------------------------------------------------
+# Achievements, executions, recommendations, geography, notifications & media.
+#
+# These tables previously had no interface at all, so answering "why is this
+# user's deck empty" or "what did this traveller actually finish" meant opening
+# psql. Anything the app derives (executions, deck rows, feedback, device
+# tokens) is read-only here: editing it by hand would desynchronise awarded
+# points, ranks and idempotency guards.
+# ---------------------------------------------------------------------------
+
+
+class AchievementAdmin(ModelView, model=Achievement):
+    category = "Достижения"
+    category_icon = "fa-solid fa-trophy"
+    name = "Достижение"
+    name_plural = "Достижения"
+    icon = "fa-solid fa-medal"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        Achievement.sort_order,
+        Achievement.title,
+        Achievement.slug,
+        Achievement.icon_slug,
+        Achievement.description,
+        Achievement.how_to_earn,
+    ]
+    column_labels = {
+        Achievement.sort_order: "Порядок",
+        Achievement.title: "Название",
+        Achievement.slug: "Slug",
+        Achievement.icon_slug: "Иконка",
+        Achievement.description: "Описание",
+        Achievement.how_to_earn: "Как получить",
+    }
+    form_columns = [
+        Achievement.title,
+        Achievement.description,
+        Achievement.how_to_earn,
+        Achievement.icon_slug,
+        Achievement.sort_order,
+    ]
+    column_searchable_list = [Achievement.title, Achievement.slug]
+    column_sortable_list = [Achievement.sort_order, Achievement.title]
+    column_default_sort = (Achievement.sort_order, False)
+    can_create = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class UserAchievementAdmin(ModelView, model=UserAchievement):
+    category = "Достижения"
+    category_icon = "fa-solid fa-trophy"
+    name = "Выданное достижение"
+    name_plural = "Выданные достижения"
+    icon = "fa-solid fa-award"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        UserAchievement.user_id,
+        UserAchievement.achievement_id,
+        UserAchievement.unlocked_at,
+    ]
+    column_labels = {
+        UserAchievement.user_id: "Пользователь",
+        UserAchievement.achievement_id: "Достижение",
+        UserAchievement.unlocked_at: "Получено",
+    }
+    column_formatters = {UserAchievement.user_id: format_user_fk}
+    column_sortable_list = [UserAchievement.unlocked_at]
+    column_default_sort = (UserAchievement.unlocked_at, True)
+    column_filters = [OperationColumnFilter(UserAchievement.user_id, title="ID пользователя")]
+    can_create = False
+    can_edit = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class RouteExecutionAdmin(ModelView, model=RouteExecution):
+    category = "Достижения"
+    category_icon = "fa-solid fa-trophy"
+    name = "Прохождение"
+    name_plural = "Прохождения"
+    icon = "fa-solid fa-person-hiking"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        RouteExecution.user_id,
+        RouteExecution.route_name,
+        RouteExecution.status,
+        RouteExecution.awarded_points,
+        RouteExecution.started_at,
+        RouteExecution.completed_at,
+    ]
+    column_labels = {
+        RouteExecution.user_id: "Пользователь",
+        RouteExecution.route_id: "Маршрут",
+        RouteExecution.route_name: "Название маршрута",
+        RouteExecution.status: "Статус",
+        RouteExecution.awarded_points: "Начислено тп",
+        RouteExecution.started_at: "Начато",
+        RouteExecution.completed_at: "Завершено",
+        RouteExecution.cancelled_at: "Отменено",
+    }
+    column_formatters = {
+        RouteExecution.user_id: format_user_fk,
+        RouteExecution.route_id: format_route_fk,
+    }
+    column_sortable_list = [RouteExecution.started_at, RouteExecution.status]
+    column_default_sort = (RouteExecution.started_at, True)
+    column_filters = [
+        OperationColumnFilter(RouteExecution.user_id, title="ID пользователя"),
+        OperationColumnFilter(RouteExecution.status, title="Статус"),
+    ]
+    # Editing a finished run by hand would desync awarded points and ranks.
+    can_create = False
+    can_edit = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class RouteExecutionStopAdmin(ModelView, model=RouteExecutionStop):
+    category = "Достижения"
+    category_icon = "fa-solid fa-trophy"
+    name = "Остановка прохождения"
+    name_plural = "Остановки прохождений"
+    icon = "fa-solid fa-flag-checkered"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        RouteExecutionStop.execution_id,
+        RouteExecutionStop.position,
+        RouteExecutionStop.place_name,
+        RouteExecutionStop.is_optional,
+        RouteExecutionStop.completed_at,
+    ]
+    column_labels = {
+        RouteExecutionStop.execution_id: "Прохождение",
+        RouteExecutionStop.position: "№",
+        RouteExecutionStop.place_name: "Место",
+        RouteExecutionStop.is_optional: "Необязательная",
+        RouteExecutionStop.completed_at: "Отмечена",
+    }
+    column_sortable_list = [RouteExecutionStop.position]
+    column_filters = [
+        OperationColumnFilter(RouteExecutionStop.execution_id, title="ID прохождения")
+    ]
+    can_create = False
+    can_edit = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class RecommendationDeckItemAdmin(ModelView, model=RouteRecommendationDeckItem):
+    category = "Рекомендации"
+    category_icon = "fa-solid fa-wand-magic-sparkles"
+    name = "Карточка колоды"
+    name_plural = "Колоды рекомендаций"
+    icon = "fa-solid fa-layer-group"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        RouteRecommendationDeckItem.deck_date,
+        RouteRecommendationDeckItem.user_id,
+        RouteRecommendationDeckItem.rank,
+        RouteRecommendationDeckItem.route_id,
+        RouteRecommendationDeckItem.score,
+        RouteRecommendationDeckItem.explanation_code,
+        RouteRecommendationDeckItem.exploration,
+    ]
+    column_labels = {
+        RouteRecommendationDeckItem.deck_date: "Дата колоды",
+        RouteRecommendationDeckItem.user_id: "Пользователь",
+        RouteRecommendationDeckItem.rank: "Позиция",
+        RouteRecommendationDeckItem.route_id: "Маршрут",
+        RouteRecommendationDeckItem.score: "Оценка",
+        RouteRecommendationDeckItem.explanation_code: "Причина",
+        RouteRecommendationDeckItem.exploration: "Исследование",
+        RouteRecommendationDeckItem.ranker_version: "Версия ранкера",
+    }
+    column_formatters = {
+        RouteRecommendationDeckItem.user_id: format_user_fk,
+        RouteRecommendationDeckItem.route_id: format_route_fk,
+    }
+    column_sortable_list = [
+        RouteRecommendationDeckItem.deck_date,
+        RouteRecommendationDeckItem.rank,
+    ]
+    column_default_sort = (RouteRecommendationDeckItem.deck_date, True)
+    column_filters = [
+        OperationColumnFilter(RouteRecommendationDeckItem.user_id, title="ID пользователя")
+    ]
+    can_create = False
+    can_edit = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class RecommendationFeedbackAdmin(ModelView, model=RouteRecommendationFeedback):
+    category = "Рекомендации"
+    category_icon = "fa-solid fa-wand-magic-sparkles"
+    name = "Реакция"
+    name_plural = "Реакции на рекомендации"
+    icon = "fa-solid fa-thumbs-down"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        RouteRecommendationFeedback.created_at,
+        RouteRecommendationFeedback.user_id,
+        RouteRecommendationFeedback.route_id,
+        RouteRecommendationFeedback.action,
+        RouteRecommendationFeedback.deck_date,
+    ]
+    column_labels = {
+        RouteRecommendationFeedback.created_at: "Когда",
+        RouteRecommendationFeedback.user_id: "Пользователь",
+        RouteRecommendationFeedback.route_id: "Маршрут",
+        RouteRecommendationFeedback.action: "Действие",
+        RouteRecommendationFeedback.deck_date: "Дата колоды",
+    }
+    column_formatters = {
+        RouteRecommendationFeedback.user_id: format_user_fk,
+        RouteRecommendationFeedback.route_id: format_route_fk,
+    }
+    column_sortable_list = [RouteRecommendationFeedback.created_at]
+    column_default_sort = (RouteRecommendationFeedback.created_at, True)
+    column_filters = [
+        OperationColumnFilter(RouteRecommendationFeedback.user_id, title="ID пользователя")
+    ]
+    can_create = False
+    can_edit = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class CountryAdmin(ModelView, model=Country):
+    category = "География"
+    category_icon = "fa-solid fa-earth-europe"
+    name = "Страна"
+    name_plural = "Страны"
+    icon = "fa-solid fa-flag"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [Country.name, Country.code, Country.slug, Country.status]
+    column_labels = {
+        Country.name: "Название",
+        Country.code: "Код",
+        Country.slug: "Slug",
+        Country.status: "Статус",
+        Country.timezone: "Часовой пояс",
+    }
+    form_columns = [Country.name, Country.status, Country.timezone]
+    column_searchable_list = [Country.name]
+    can_create = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class RegionAdmin(ModelView, model=Region):
+    category = "География"
+    category_icon = "fa-solid fa-earth-europe"
+    name = "Регион"
+    name_plural = "Регионы"
+    icon = "fa-solid fa-map"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [Region.name, Region.slug, Region.status, Region.timezone]
+    column_labels = {
+        Region.name: "Название",
+        Region.slug: "Slug",
+        Region.status: "Статус",
+        Region.timezone: "Часовой пояс",
+    }
+    form_columns = [Region.name, Region.status, Region.timezone]
+    column_searchable_list = [Region.name]
+    can_create = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class LocalityAdmin(ModelView, model=Locality):
+    category = "География"
+    category_icon = "fa-solid fa-earth-europe"
+    name = "Населённый пункт"
+    name_plural = "Населённые пункты"
+    icon = "fa-solid fa-city"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [Locality.name, Locality.slug, Locality.type, Locality.status]
+    column_labels = {
+        Locality.name: "Название",
+        Locality.slug: "Slug",
+        Locality.type: "Тип",
+        Locality.status: "Статус",
+    }
+    form_columns = [Locality.name, Locality.type, Locality.status]
+    column_searchable_list = [Locality.name]
+    column_sortable_list = [Locality.name]
+    can_create = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class CategoryAdmin(ModelView, model=Category):
+    category = "География"
+    category_icon = "fa-solid fa-earth-europe"
+    name = "Категория"
+    name_plural = "Категории мест"
+    icon = "fa-solid fa-tags"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        Category.sort_order,
+        Category.name,
+        Category.code,
+        Category.slug,
+        Category.status,
+    ]
+    column_labels = {
+        Category.sort_order: "Порядок",
+        Category.name: "Название",
+        Category.code: "Код",
+        Category.slug: "Slug",
+        Category.status: "Статус",
+        Category.description: "Описание",
+        Category.icon_key: "Иконка",
+    }
+    form_columns = [
+        Category.name,
+        Category.description,
+        Category.icon_key,
+        Category.sort_order,
+        Category.status,
+    ]
+    column_searchable_list = [Category.name]
+    column_default_sort = (Category.sort_order, False)
+    can_create = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class RoadEventAdmin(ModelView, model=RoadEvent):
+    category = "География"
+    category_icon = "fa-solid fa-earth-europe"
+    name = "Дорожное событие"
+    name_plural = "Дорожные события"
+    icon = "fa-solid fa-triangle-exclamation"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        RoadEvent.title,
+        RoadEvent.status,
+        RoadEvent.event_kind,
+        RoadEvent.starts_at,
+        RoadEvent.ends_at,
+    ]
+    column_labels = {
+        RoadEvent.title: "Заголовок",
+        RoadEvent.description: "Описание",
+        RoadEvent.status: "Статус",
+        RoadEvent.event_kind: "Тип",
+        RoadEvent.starts_at: "Начало",
+        RoadEvent.ends_at: "Окончание",
+        RoadEvent.affects_transport: "Влияет на транспорт",
+        RoadEvent.source_url: "Источник",
+    }
+    form_columns = [
+        RoadEvent.title,
+        RoadEvent.description,
+        RoadEvent.status,
+        RoadEvent.event_kind,
+        RoadEvent.starts_at,
+        RoadEvent.ends_at,
+        RoadEvent.affects_transport,
+    ]
+    column_searchable_list = [RoadEvent.title]
+    column_sortable_list = [RoadEvent.starts_at, RoadEvent.status]
+    column_default_sort = (RoadEvent.starts_at, True)
+    can_export = False
+    page_size = 50
+
+
+class NotificationAdmin(ModelView, model=Notification):
+    category = "Уведомления"
+    category_icon = "fa-solid fa-bell"
+    name = "Уведомление"
+    name_plural = "Уведомления"
+    icon = "fa-solid fa-envelope"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        Notification.created_at,
+        Notification.user_id,
+        Notification.kind,
+        Notification.title,
+        Notification.is_read,
+    ]
+    column_labels = {
+        Notification.created_at: "Когда",
+        Notification.user_id: "Пользователь",
+        Notification.kind: "Тип",
+        Notification.title: "Заголовок",
+        Notification.body: "Текст",
+        Notification.is_read: "Прочитано",
+    }
+    column_formatters = {Notification.user_id: format_user_fk}
+    column_sortable_list = [Notification.created_at]
+    column_default_sort = (Notification.created_at, True)
+    column_filters = [OperationColumnFilter(Notification.user_id, title="ID пользователя")]
+    can_create = False
+    can_edit = False
+    can_export = False
+    page_size = 50
+
+
+class DeviceTokenAdmin(ModelView, model=DeviceToken):
+    category = "Уведомления"
+    category_icon = "fa-solid fa-bell"
+    name = "Токен устройства"
+    name_plural = "Токены устройств"
+    icon = "fa-solid fa-mobile-screen"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        DeviceToken.user_id,
+        DeviceToken.platform,
+        DeviceToken.token,
+        DeviceToken.updated_at,
+    ]
+    column_labels = {
+        DeviceToken.user_id: "Пользователь",
+        DeviceToken.platform: "Платформа",
+        DeviceToken.token: "Токен",
+        DeviceToken.updated_at: "Обновлён",
+    }
+    # A push token is a credential: show only enough to match a device.
+    column_formatters = {
+        DeviceToken.user_id: format_user_fk,
+        DeviceToken.token: format_masked_token,
+    }
+    column_details_exclude_list = [DeviceToken.token]
+    column_sortable_list = [DeviceToken.updated_at]
+    column_default_sort = (DeviceToken.updated_at, True)
+    column_filters = [OperationColumnFilter(DeviceToken.user_id, title="ID пользователя")]
+    can_create = False
+    can_edit = False
+    can_export = False
+    page_size = 50
+
+
+class PlaceImageAdmin(ModelView, model=PlaceImage):
+    category = "Медиа"
+    category_icon = "fa-solid fa-photo-film"
+    name = "Фото места"
+    name_plural = "Фото мест"
+    icon = "fa-solid fa-image"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        PlaceImage.place_id,
+        PlaceImage.sort_order,
+        PlaceImage.is_cover,
+        PlaceImage.status,
+        PlaceImage.author,
+        PlaceImage.license,
+    ]
+    column_labels = {
+        PlaceImage.place_id: "Место",
+        PlaceImage.sort_order: "Порядок",
+        PlaceImage.is_cover: "Обложка",
+        PlaceImage.status: "Статус",
+        PlaceImage.author: "Автор",
+        PlaceImage.license: "Лицензия",
+        PlaceImage.alt_text: "Alt-текст",
+    }
+    column_formatters = {PlaceImage.place_id: format_place_fk}
+    form_columns = [
+        PlaceImage.alt_text,
+        PlaceImage.sort_order,
+        PlaceImage.is_cover,
+        PlaceImage.status,
+    ]
+    column_filters = [OperationColumnFilter(PlaceImage.place_id, title="ID места")]
+    can_create = False
+    can_export = False
+    page_size = 50
+
+
+class MediaAttachmentAdmin(ModelView, model=MediaAttachment):
+    category = "Медиа"
+    category_icon = "fa-solid fa-photo-film"
+    name = "Вложение"
+    name_plural = "Вложения"
+    icon = "fa-solid fa-paperclip"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        MediaAttachment.entity_type,
+        MediaAttachment.entity_id,
+        MediaAttachment.role,
+        MediaAttachment.status,
+        MediaAttachment.byte_size,
+        MediaAttachment.sort_order,
+    ]
+    column_labels = {
+        MediaAttachment.entity_type: "Тип сущности",
+        MediaAttachment.entity_id: "ID сущности",
+        MediaAttachment.role: "Роль",
+        MediaAttachment.status: "Статус",
+        MediaAttachment.byte_size: "Размер",
+        MediaAttachment.sort_order: "Порядок",
+        MediaAttachment.public_path: "Путь",
+    }
+    column_sortable_list = [MediaAttachment.byte_size]
+    column_filters = [OperationColumnFilter(MediaAttachment.entity_id, title="ID сущности")]
+    form_columns = [MediaAttachment.status, MediaAttachment.sort_order, MediaAttachment.alt_text]
+    can_create = False
+    can_export = False
+    page_size = 50
+
+
 def register_views(admin: Any, settings: Settings) -> None:
     show_debug = settings.otp_store_debug_code_enabled
 
@@ -2010,3 +2552,18 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(AdminPrincipalAdmin)
     admin.add_view(AdminRoleBindingAdmin)
     admin.add_view(AdminAuditEventAdmin)
+    admin.add_view(AchievementAdmin)
+    admin.add_view(UserAchievementAdmin)
+    admin.add_view(RouteExecutionAdmin)
+    admin.add_view(RouteExecutionStopAdmin)
+    admin.add_view(RecommendationDeckItemAdmin)
+    admin.add_view(RecommendationFeedbackAdmin)
+    admin.add_view(CountryAdmin)
+    admin.add_view(RegionAdmin)
+    admin.add_view(LocalityAdmin)
+    admin.add_view(CategoryAdmin)
+    admin.add_view(RoadEventAdmin)
+    admin.add_view(NotificationAdmin)
+    admin.add_view(DeviceTokenAdmin)
+    admin.add_view(PlaceImageAdmin)
+    admin.add_view(MediaAttachmentAdmin)

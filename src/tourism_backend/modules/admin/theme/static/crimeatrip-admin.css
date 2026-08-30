@@ -14,6 +14,9 @@
   --ct-error: #b3261e;
   --ct-ok: #294638;
   --ct-warn: #8a6a2f;
+  --ct-brand: #16a34a;
+  --ct-nav: #16181d;
+  --ct-nav-line: #24272e;
   --ct-radius: 14px;
   --ct-shadow: 0 4px 10px rgba(0, 0, 0, 0.08), 0 0 6px rgba(0, 0, 0, 0.05);
   --tblr-font-sans-serif: "Rubik", system-ui, sans-serif;
@@ -107,10 +110,13 @@ body.ct-login {
   border-color: var(--ct-accent-hover) !important;
 }
 
-/* —— Shell / sidebar —— */
+/* —— Shell / sidebar ——
+   Neutral dark panel rather than a coloured gradient: with ~30 sections the
+   list itself has to carry the hierarchy, so the chrome stays quiet and the
+   brand green marks only the current page. */
 .wrapper > aside.navbar-vertical {
-  background: linear-gradient(180deg, #0e4d6b 0%, #123f57 100%) !important;
-  border-right: none;
+  background: var(--ct-nav) !important;
+  border-right: 1px solid var(--ct-nav-line);
 }
 
 .wrapper > aside .navbar-brand h3,
@@ -121,29 +127,62 @@ body.ct-login {
   text-decoration: none;
 }
 
-.wrapper > aside .nav-link {
-  color: rgba(255, 255, 255, 0.78) !important;
-  border-radius: 10px;
-  margin: 2px 8px;
+.wrapper > aside .navbar-collapse {
+  /* Long section list: scroll inside the sidebar, not the page. */
+  max-height: calc(100vh - 5.5rem);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
 }
 
-.wrapper > aside .nav-link:hover,
-.wrapper > aside .nav-link.active {
-  background: rgba(255, 255, 255, 0.12) !important;
+.wrapper > aside .navbar-collapse::-webkit-scrollbar {
+  width: 6px;
+}
+
+.wrapper > aside .navbar-collapse::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+}
+
+.wrapper > aside .nav-link {
+  color: rgba(255, 255, 255, 0.74) !important;
+  border-radius: 9px;
+  margin: 1px 8px;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.875rem;
+  line-height: 1.25;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.wrapper > aside .nav-link .nav-link-icon {
+  opacity: 0.72;
+  width: 1.15rem;
+}
+
+.wrapper > aside .nav-link:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
   color: #fff !important;
 }
 
 .wrapper > aside .nav-link.active {
-  box-shadow: inset 3px 0 0 var(--ct-accent);
+  background: rgba(22, 163, 74, 0.18) !important;
+  color: #fff !important;
+  box-shadow: inset 3px 0 0 var(--ct-brand);
+}
+
+.wrapper > aside .nav-link.active .nav-link-icon {
+  opacity: 1;
+  color: var(--ct-brand);
 }
 
 .wrapper > aside .dropdown-header,
 .wrapper > aside .nav-item > span {
-  color: rgba(255, 255, 255, 0.45) !important;
-  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.42) !important;
+  font-size: 0.68rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding-left: 1rem;
+  letter-spacing: 0.09em;
+  padding: 0.85rem 1rem 0.3rem;
 }
 
 .wrapper > aside .btn-secondary {

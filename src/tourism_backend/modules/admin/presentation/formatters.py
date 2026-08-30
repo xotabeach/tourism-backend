@@ -344,3 +344,16 @@ def format_user_cover(
     else:
         banner = Markup('<span class="ct-user-banner ct-user-banner-empty">нет баннера</span>')
     return Markup('<span class="ct-user-banner-cell">{}{}</span>').format(banner, id_chip)
+
+
+def format_masked_token(model: object, attribute: object) -> Markup:
+    """Show only enough of a push token to match a device.
+
+    A device token is a credential: printing it in full would let anyone with
+    admin read access send pushes to that device.
+    """
+    token = getattr(model, "token", None)
+    if not isinstance(token, str) or not token:
+        return Markup("—")
+    tail = token[-6:] if len(token) > 6 else token
+    return Markup("<code>…{}</code>").format(tail)
