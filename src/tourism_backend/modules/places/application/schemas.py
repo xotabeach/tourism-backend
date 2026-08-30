@@ -1,7 +1,15 @@
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+PlaceCatalogSort = Literal[
+    "default",
+    "name_asc",
+    "name_desc",
+    "date_newest",
+    "date_oldest",
+]
 
 
 class CategoryOut(BaseModel):

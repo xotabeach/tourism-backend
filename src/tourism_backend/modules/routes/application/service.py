@@ -304,6 +304,10 @@ async def _list_from_stmt(
     order_by = {
         "popular": (favorites_count.desc(), Route.updated_at.desc(), Route.id),
         "recent": (Route.updated_at.desc(), Route.id),
+        "name_asc": (Route.name, Route.id),
+        "name_desc": (Route.name.desc(), Route.id),
+        "date_newest": (Route.created_at.desc(), Route.id),
+        "date_oldest": (Route.created_at, Route.id),
         "default": (Route.name, Route.id),
     }[sort]
 

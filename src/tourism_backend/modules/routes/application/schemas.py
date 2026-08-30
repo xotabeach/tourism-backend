@@ -11,7 +11,15 @@ RoutePublicationStatus = Literal[
     "rejected",
     "deleted",
 ]
-RouteCatalogSort = Literal["default", "popular", "recent"]
+RouteCatalogSort = Literal[
+    "default",
+    "popular",
+    "recent",
+    "name_asc",
+    "name_desc",
+    "date_newest",
+    "date_oldest",
+]
 RouteSource = Literal["editorial", "generated", "user_created"]
 RouteQualityStatus = Literal[
     "unknown",

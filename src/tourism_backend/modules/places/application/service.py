@@ -9,6 +9,7 @@ from tourism_backend.api.errors import AppError
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
 from tourism_backend.modules.places.application.schemas import (
     CategoryOut,
+    PlaceCatalogSort,
     PlaceDetailOut,
     PlaceEntranceOut,
     PlaceListItemOut,
@@ -142,6 +143,7 @@ async def list_places(
     is_suitable_for_pets: bool | None,
     season: str | None,
     temporary_closure_status: str | None,
+    sort: PlaceCatalogSort = "default",
     limit: int,
     offset: int,
 ) -> PlaceListOut:
@@ -177,10 +179,16 @@ async def list_places(
     count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
     total = int((await session.execute(count_stmt)).scalar_one())
 
+    order_by = {
+        "name_asc": (Place.name, Place.id),
+        "name_desc": (Place.name.desc(), Place.id),
+        "date_newest": (Place.created_at.desc(), Place.id),
+        "date_oldest": (Place.created_at, Place.id),
+        "default": (Place.name, Place.id),
+    }[sort]
+
     places = (
-        await session.scalars(
-            stmt.order_by(Place.name, Place.id).distinct().limit(limit).offset(offset)
-        )
+        await session.scalars(stmt.order_by(*order_by).distinct().limit(limit).offset(offset))
     ).all()
     place_ids = [place.id for place in places]
     coords = await _coords_for_places(session, place_ids)

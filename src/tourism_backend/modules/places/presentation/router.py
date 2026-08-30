@@ -15,6 +15,7 @@ from tourism_backend.modules.places.application.review_schemas import (
 )
 from tourism_backend.modules.places.application.schemas import (
     CategoryOut,
+    PlaceCatalogSort,
     PlaceDetailOut,
     PlaceListOut,
 )
@@ -44,6 +45,7 @@ async def get_places(
         pattern="^(winter|spring|summer|autumn|all_year)$",
     ),
     temporary_closure_status: str | None = Query(default=None, max_length=32),
+    sort: PlaceCatalogSort = "default",
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=10_000),
 ) -> PlaceListOut:
@@ -59,6 +61,7 @@ async def get_places(
         is_suitable_for_pets=is_suitable_for_pets,
         season=season,
         temporary_closure_status=temporary_closure_status,
+        sort=sort,
         limit=limit,
         offset=offset,
     )
