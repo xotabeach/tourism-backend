@@ -29,6 +29,20 @@ def _line(points: Sequence[tuple[float, float]]) -> str:
     return ",".join(f"{lat:.6f},{lon:.6f}" for lon, lat in points)
 
 
+def _route_static_params(
+    points: Sequence[tuple[float, float]], *, width: int, height: int, scale: int
+) -> list[tuple[str, str]]:
+    params: list[tuple[str, str]] = [
+        ("s", _size(width, height, scale)),
+        ("ls", _line(points) + "~c:16a34a~w:5"),
+    ]
+    # pt marker color only accepts 2GIS's predefined short codes (be/rd/oe/
+    # yw/gn/pe/pk/gy/bk), unlike ls which takes an arbitrary hex RRGGBB.
+    for index, (lon, lat) in enumerate(points[:: max(1, len(points) // 8)][:8], start=1):
+        params.append(("pt", f"{lat:.6f},{lon:.6f}~k:c~c:gn~n:{index}"))
+    return params
+
+
 async def _fetch(
     *,
     settings: SettingsDep,
@@ -118,12 +132,7 @@ async def route_static_map(
             message="Route has no coordinates",
             status_code=404,
         )
-    params: list[tuple[str, str]] = [
-        ("s", _size(width, height, scale)),
-        ("ls", _line(points) + "~c:16a34a~w:5"),
-    ]
-    for index, (lon, lat) in enumerate(points[:: max(1, len(points) // 8)][:8], start=1):
-        params.append(("pt", f"{lat:.6f},{lon:.6f}~k:c~c:16a34a~n:{index}"))
+    params = _route_static_params(points, width=width, height=height, scale=scale)
     return await _fetch(settings=settings, params=params, request=request)
 
 

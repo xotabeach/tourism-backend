@@ -36,3 +36,8 @@ def configure_logging(settings: Settings) -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(settings.log_level.upper())
+    # httpx/httpcore log the full outgoing request line at INFO, including
+    # the query string. Provider API keys (2GIS) travel as a query param, so
+    # INFO-level httpx logging would leak secrets into the JSON log stream.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
