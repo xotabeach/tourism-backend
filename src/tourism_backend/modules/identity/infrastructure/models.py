@@ -139,6 +139,11 @@ class Achievement(Base):
     slug: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str] = mapped_column(String(240), nullable=False)
+    # What the traveller must do. Seeded from `description`, which already
+    # held the rule text, so editors can now split flavour from the rule.
+    how_to_earn: Mapped[str] = mapped_column(String(240), nullable=False, server_default="")
+    # Icon key resolved by the app; free-form so new badges need no release.
+    icon_slug: Mapped[str] = mapped_column(String(64), nullable=False, server_default="")
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
 
 

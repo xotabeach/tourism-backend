@@ -10,6 +10,8 @@ class AchievementOut(BaseModel):
     slug: str = Field(max_length=64)
     title: str = Field(max_length=120)
     description: str = Field(max_length=240)
+    how_to_earn: str = Field(default="", max_length=240)
+    icon_slug: str = Field(default="", max_length=64)
     is_unlocked: bool = False
     unlocked_at: datetime | None = None
 

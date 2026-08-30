@@ -32,6 +32,8 @@ def _out(row: Achievement, *, unlocked_at: datetime | None) -> AchievementOut:
         slug=row.slug,
         title=row.title,
         description=row.description,
+        how_to_earn=row.how_to_earn or row.description,
+        icon_slug=row.icon_slug or row.slug,
         is_unlocked=unlocked_at is not None,
         unlocked_at=unlocked_at,
     )

@@ -438,11 +438,15 @@ async def test_achievements_catalog_is_public_and_bounded(live_client: AsyncClie
             "slug",
             "title",
             "description",
+            "how_to_earn",
+            "icon_slug",
             "is_unlocked",
             "unlocked_at",
         }
         assert len(item["title"]) <= 120
         assert len(item["description"]) <= 240
+        assert len(item["how_to_earn"]) <= 240
+        assert len(item["icon_slug"]) <= 64
         if item["is_unlocked"]:
             assert item["unlocked_at"] is not None
         else:
