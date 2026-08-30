@@ -859,6 +859,38 @@ async def discard_user_route_draft(
     await session.commit()
 
 
+async def withdraw_user_route(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    owner_user_id: UUID,
+) -> UserRouteDraftOut:
+    route = await session.get(Route, route_id)
+    if (
+        route is None
+        or route.owner_user_id != owner_user_id
+        or route.source not in {"user_created", "generated"}
+    ):
+        raise AppError(code="route_not_found", message="Route not found", status_code=404)
+    if route.publication_status not in {"pending_review", "published"}:
+        raise AppError(
+            code="route_not_withdrawable",
+            message="Route cannot be withdrawn in its current status",
+            status_code=409,
+        )
+    route.publication_status = "draft"
+    route.visibility = "private"
+    route.lifecycle_status = "draft"
+    route.updated_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(route)
+    return UserRouteDraftOut(
+        id=route.id,
+        publication_status=type_cast(RoutePublicationStatus, route.publication_status),
+        updated_at=route.updated_at,
+    )
+
+
 async def clear_user_route_media(
     session: AsyncSession,
     *,

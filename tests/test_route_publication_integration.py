@@ -222,3 +222,102 @@ async def test_user_route_stays_private_until_admin_approval(
             if disposable_route is not None:
                 await session.delete(disposable_route)
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_withdraw_route_from_pending_and_published(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    client, app = publication_context
+    tokens = await _login(client, f"+7907{uuid4().int % 10_000_000:07d}")
+    other = await _login(client, f"+7908{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+
+    places = await client.get(
+        "/api/v1/places",
+        params={"region_slug": "crimea", "limit": 2},
+    )
+    assert places.status_code == 200, places.text
+    place_ids = [item["id"] for item in places.json()["items"][:2]]
+    assert len(place_ids) == 2
+
+    saved = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json={
+            "name": "Маршрут для отзыва",
+            "description": "",
+            "place_ids": place_ids,
+            "filters": [],
+            "pace": "calm",
+            "difficulty": 2,
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    route_id = saved.json()["id"]
+
+    draft_withdraw = await client.post(
+        f"/api/v1/routes/{route_id}/withdraw",
+        headers=headers,
+    )
+    assert draft_withdraw.status_code == 409, draft_withdraw.text
+
+    await client.post(
+        f"/api/v1/routes/drafts/{route_id}/media",
+        headers=headers,
+        data={"position": "0"},
+        files={"file": ("route.png", _png_bytes(), "image/png")},
+    )
+    submitted = await client.post(f"/api/v1/routes/{route_id}/submit", headers=headers)
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["publication_status"] == "pending_review"
+
+    try:
+        foreign_withdraw = await client.post(
+            f"/api/v1/routes/{route_id}/withdraw",
+            headers=other_headers,
+        )
+        assert foreign_withdraw.status_code == 404
+
+        withdrawn = await client.post(
+            f"/api/v1/routes/{route_id}/withdraw",
+            headers=headers,
+        )
+        assert withdrawn.status_code == 200, withdrawn.text
+        assert withdrawn.json()["publication_status"] == "draft"
+
+        repeat_withdraw = await client.post(
+            f"/api/v1/routes/{route_id}/withdraw",
+            headers=headers,
+        )
+        assert repeat_withdraw.status_code == 409
+
+        async with app.state.session_factory() as session:
+            route = await session.get(Route, UUID(route_id))
+            assert route is not None
+            route.publication_status = "published"
+            route.visibility = "public"
+            route.lifecycle_status = "active"
+            await session.commit()
+
+        withdrawn_from_published = await client.post(
+            f"/api/v1/routes/{route_id}/withdraw",
+            headers=headers,
+        )
+        assert withdrawn_from_published.status_code == 200, withdrawn_from_published.text
+        body = withdrawn_from_published.json()
+        assert body["publication_status"] == "draft"
+        assert (await client.get(f"/api/v1/routes/{route_id}")).status_code == 404
+    finally:
+        async with app.state.session_factory() as session:
+            await session.execute(
+                delete(MediaAttachment).where(
+                    MediaAttachment.entity_type == "route",
+                    MediaAttachment.entity_id == UUID(route_id),
+                )
+            )
+            route = await session.get(Route, UUID(route_id))
+            if route is not None:
+                await session.delete(route)
+            await session.commit()

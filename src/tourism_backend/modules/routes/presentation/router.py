@@ -114,6 +114,19 @@ async def submit_route(
     )
 
 
+@router.post("/routes/{route_id}/withdraw", response_model=UserRouteDraftOut)
+async def withdraw_route(
+    route_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> UserRouteDraftOut:
+    return await routes_service.withdraw_user_route(
+        session,
+        route_id=route_id,
+        owner_user_id=user_id,
+    )
+
+
 @router.get("/routes", response_model=RouteListOut)
 async def get_routes(
     session: DbSession,
