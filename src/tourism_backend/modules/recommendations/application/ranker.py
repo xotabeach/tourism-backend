@@ -136,6 +136,12 @@ def rerank_for_diversity(
     if not scored:
         return []
     size = min(deck_size, len(scored))
+    # A single-region catalogue (everything is in Crimea today) would other-
+    # wise hit the region cap and truncate the deck to half its size no
+    # matter how many candidates exist. The cap only means something when
+    # there is more than one region to balance between.
+    regions = {item.candidate.region_id for item in scored}
+    apply_region_cap = len(regions) > 1
     exploration_pool = [item for item in scored if item.exploration]
     exploration_target = 0
     if size >= 5 and exploration_pool:
@@ -152,7 +158,7 @@ def rerank_for_diversity(
             item,
             deck_size=size,
             max_category_share=max_category_share,
-            max_region_share=max_region_share,
+            max_region_share=max_region_share if apply_region_cap else None,
         ):
             return False
         selected.append(item)
@@ -186,19 +192,23 @@ def _respects_caps(
     *,
     deck_size: int,
     max_category_share: float,
-    max_region_share: float,
+    max_region_share: float | None,
 ) -> bool:
     if deck_size < 5 or not selected:
         return True
     max_category = max(1, int(deck_size * max_category_share))
-    max_region = max(1, int(deck_size * max_region_share))
     category = primary_category(candidate.candidate.category_slugs)
-    region_id = candidate.candidate.region_id
     category_count = sum(
         1 for item in selected if primary_category(item.candidate.category_slugs) == category
     )
+    if category_count >= max_category:
+        return False
+    if max_region_share is None:
+        return True
+    max_region = max(1, int(deck_size * max_region_share))
+    region_id = candidate.candidate.region_id
     region_count = sum(1 for item in selected if item.candidate.region_id == region_id)
-    return category_count < max_category and region_count < max_region
+    return region_count < max_region
 
 
 def _score_one(

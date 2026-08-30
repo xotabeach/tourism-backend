@@ -186,3 +186,45 @@ def test_fresh_route_beats_stale_when_everything_else_is_equal() -> None:
     )
     assert scored[0].candidate.route_id == _id(2)
     assert scored[0].explanation_code in {"fresh_route", "cold_start"}
+
+
+def _profile() -> RecommendationProfile:
+    return RecommendationProfile()
+
+
+def test_single_region_catalogue_fills_the_whole_deck() -> None:
+    """Crimea-only catalogue: the region cap must not halve the deck.
+
+    With one region the cap can never balance anything — it only truncated
+    the deck to max_region_share of its size, which is why a user with
+    plenty of eligible routes still saw a short deck.
+    """
+    candidates = [
+        _candidate(n, region=1, categories=frozenset({f"cat-{n % 6}"})) for n in range(1, 21)
+    ]
+    scored = score_candidates(
+        candidates, _profile(), season="лето", as_of=datetime(2026, 8, 30, tzinfo=UTC)
+    )
+
+    deck = rerank_for_diversity(scored, deck_size=16)
+
+    assert len(deck) == 16
+
+
+def test_multi_region_catalogue_still_balances_regions() -> None:
+    candidates = [
+        _candidate(
+            n,
+            region=1 if n <= 18 else 2,
+            categories=frozenset({f"cat-{n % 6}"}),
+        )
+        for n in range(1, 21)
+    ]
+    scored = score_candidates(
+        candidates, _profile(), season="лето", as_of=datetime(2026, 8, 30, tzinfo=UTC)
+    )
+
+    deck = rerank_for_diversity(scored, deck_size=16)
+
+    crowded = sum(1 for item in deck if item.candidate.region_id == _id(1))
+    assert crowded <= 8
