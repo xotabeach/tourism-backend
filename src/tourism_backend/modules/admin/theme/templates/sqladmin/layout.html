@@ -178,5 +178,71 @@
   });
   lightbox.addEventListener("close", function () { image.removeAttribute("src"); });
 })();
+(function () {
+  // SQLAdmin's stock sidebar markup renders every section's .dropdown-menu
+  // permanently expanded (class="dropdown-menu show" is in the raw HTML,
+  // not toggled by JS) and Tabler's vertical-navbar CSS keeps it
+  // position:static — so with ~30 sections it's one long flat list with no
+  // working collapse. This drives the whole show/hide state ourselves.
+  var STORAGE_KEY = "ct-admin-sidebar-collapsed";
+  var categories = document.querySelectorAll(".wrapper > aside li.nav-item.dropdown");
+  if (!categories.length) return;
+
+  // { "<group name>": true|false }, only for groups the user has actually
+  // touched or that were previously computed — NOT a delta/action log, or
+  // toggling one group would silently "forget" every other group's default
+  // state on the very next load (every untouched name would read as
+  // "not collapsed" instead of keeping its default).
+  function readState() {
+    try {
+      var raw = window.localStorage.getItem(STORAGE_KEY);
+      var parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (err) {
+      return {};
+    }
+  }
+  function writeState(state) {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (err) {
+      // Private browsing / quota — the toggle still works for this load,
+      // it just won't be remembered next time.
+    }
+  }
+  function setDom(li, toggle, menu, collapsed) {
+    li.classList.toggle("ct-group-collapsed", collapsed);
+    menu.hidden = collapsed;
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  }
+
+  var state = readState();
+
+  categories.forEach(function (li) {
+    var toggle = li.querySelector(":scope > a.nav-link.dropdown-toggle");
+    var menu = li.querySelector(":scope > .dropdown-menu");
+    if (!toggle || !menu) return;
+    var titleEl = toggle.querySelector(".nav-link-title");
+    var name = (titleEl ? titleEl.textContent : toggle.textContent).trim();
+    var hasActiveChild = !!menu.querySelector(".nav-link.active");
+
+    // A group this user has never toggled defaults to "collapsed unless it
+    // holds the current page" every load, including a newly-active group —
+    // only an explicit past click on THIS group overrides that default.
+    var collapsed = Object.prototype.hasOwnProperty.call(state, name)
+      ? !!state[name]
+      : !hasActiveChild;
+    setDom(li, toggle, menu, collapsed);
+
+    toggle.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      var nowCollapsed = !li.classList.contains("ct-group-collapsed");
+      setDom(li, toggle, menu, nowCollapsed);
+      state[name] = nowCollapsed;
+      writeState(state);
+    });
+  });
+})();
 </script>
 {% endblock %}

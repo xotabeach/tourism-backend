@@ -185,6 +185,66 @@ body.ct-login {
   padding: 0.85rem 1rem 0.3rem;
 }
 
+/* —— Sidebar group hierarchy ——
+   SQLAdmin renders every section as a Bootstrap "dropdown" that Tabler's
+   vertical-navbar CSS keeps permanently expanded inline (no floating
+   popover, no working collapse) — category header and child link came out
+   pixel-identical (same 16px padding-left, same weight/color) because a
+   more specific Tabler rule (.navbar-vertical .navbar-nav .nav-link, 3
+   classes) was beating our plain .nav-link override (2 classes + 1 type) on
+   padding specifically, even though it lost on color. Confirmed via
+   computed styles in a real render, not guessed from the stylesheet alone
+   — the !important below targets exactly the properties that were losing.
+   ct-group-collapsed / [hidden] are driven by the toggle script in
+   layout.html, not by Bootstrap's own (non-functional here) dropdown JS. */
+.wrapper > aside li.nav-item.dropdown > a.nav-link.dropdown-toggle {
+  font-weight: 600 !important;
+  font-size: 0.76rem !important;
+  color: rgba(255, 255, 255, 0.88) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-top: 0.65rem !important;
+  padding-bottom: 0.3rem !important;
+  cursor: pointer;
+}
+
+.wrapper > aside li.nav-item.dropdown > a.nav-link.dropdown-toggle .nav-link-icon {
+  opacity: 0.55;
+}
+
+.wrapper > aside .dropdown-menu a.nav-link {
+  padding-left: 2.3rem !important;
+  font-size: 0.85rem !important;
+  color: rgba(255, 255, 255, 0.68) !important;
+}
+
+.wrapper > aside .dropdown-menu a.nav-link.active {
+  color: #fff !important;
+}
+
+/* Breathing room + a divider between groups (not before the first one). */
+.wrapper > aside li.nav-item.dropdown + li.nav-item.dropdown {
+  margin-top: 0.3rem;
+  padding-top: 0.3rem;
+  border-top: 1px solid var(--ct-nav-line);
+}
+
+/* Chevron rotates to reflect collapsed state instead of always pointing
+   down — Tabler paints it via .dropdown-toggle::after, no icon markup
+   needed here. */
+.wrapper > aside li.nav-item.dropdown > a.nav-link.dropdown-toggle::after {
+  margin-left: auto;
+  transition: transform 150ms ease;
+}
+
+.wrapper > aside li.nav-item.dropdown.ct-group-collapsed > a.nav-link.dropdown-toggle::after {
+  transform: rotate(-90deg);
+}
+
+.wrapper > aside li.nav-item.dropdown .dropdown-menu[hidden] {
+  display: none !important;
+}
+
 .wrapper > aside .btn-secondary {
   background: rgba(255, 255, 255, 0.12);
   border: 1px solid rgba(255, 255, 255, 0.2);
