@@ -7,7 +7,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from tourism_backend.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
-ENTITY_TYPES = ("user", "place", "route", "review", "place_review", "support_ticket")
+ENTITY_TYPES = (
+    "user",
+    "place",
+    "route",
+    "review",
+    "place_review",
+    "support_ticket",
+    "article",
+)
 ROLES = ("avatar", "cover", "gallery")
 STATUSES = ("active", "archived")
 
@@ -16,7 +24,8 @@ class MediaAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "media_attachments"
     __table_args__ = (
         CheckConstraint(
-            "entity_type IN ('user', 'place', 'route', 'review', 'place_review', 'support_ticket')",
+            "entity_type IN ('user', 'place', 'route', 'review', 'place_review', "
+            "'support_ticket', 'article')",
             name="entity_type",
         ),
         CheckConstraint(

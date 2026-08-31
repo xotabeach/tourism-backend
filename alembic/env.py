@@ -6,6 +6,7 @@ from sqlalchemy import engine_from_config, pool
 from tourism_backend.config import get_settings
 from tourism_backend.db.base import Base
 from tourism_backend.modules.admin.infrastructure import models as admin_models
+from tourism_backend.modules.content.infrastructure import models as content_models
 from tourism_backend.modules.favorites.infrastructure import models as favorites_models
 from tourism_backend.modules.geography.infrastructure import models as geography_models
 from tourism_backend.modules.identity.infrastructure import models as identity_models
@@ -58,6 +59,7 @@ _ = (
     route_builder_models,
     knowledge_models,
     runtime_config_models,
+    content_models,
 )
 target_metadata = Base.metadata
 

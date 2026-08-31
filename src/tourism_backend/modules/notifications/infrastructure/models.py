@@ -24,13 +24,17 @@ class Notification(Base, UUIDPrimaryKeyMixin):
             "'support_reply', "
             "'review_reply', "
             "'expert_granted', "
-            "'expert_revoked'"
+            "'expert_revoked', "
+            "'article_published', "
+            "'article_rejected', "
+            "'article_comment', "
+            "'article_about_your_route'"
             ")",
             name="kind",
         ),
         CheckConstraint(
             "target_type IS NULL OR target_type IN "
-            "('route', 'user', 'achievement', 'support_ticket')",
+            "('route', 'user', 'achievement', 'support_ticket', 'article')",
             name="target_type",
         ),
         Index("ix_notifications_inbox", "user_id", "is_read", "created_at"),
