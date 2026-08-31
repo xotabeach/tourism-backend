@@ -18,8 +18,14 @@ from tourism_backend.modules.identity.infrastructure.models import (
     User,
 )
 from tourism_backend.modules.media.application import service as media_service
+from tourism_backend.modules.places.infrastructure.models import PlaceReview
+from tourism_backend.modules.route_execution.infrastructure.models import (
+    RouteExecution,
+    RouteRoutingSnapshot,
+)
 from tourism_backend.modules.routes.application import service as routes_service
 from tourism_backend.modules.routes.application.schemas import RouteListOut
+from tourism_backend.modules.routes.infrastructure.models import RouteReview
 
 
 async def _rank_for_points(session: AsyncSession, points: int) -> TravelRank | None:
@@ -71,6 +77,9 @@ async def _public_user(
     place: int | None = None,
     followers_count: int = 0,
     following_count: int = 0,
+    completed_routes_count: int = 0,
+    reviews_written_count: int = 0,
+    total_distance_meters: int = 0,
 ) -> PublicUserOut:
     rank = await _resolve_rank(session, user)
     return PublicUserOut(
@@ -89,6 +98,49 @@ async def _public_user(
         is_expert=user.is_expert,
         followers_count=followers_count,
         following_count=following_count,
+        completed_routes_count=completed_routes_count,
+        reviews_written_count=reviews_written_count,
+        total_distance_meters=total_distance_meters,
+    )
+
+
+async def _profile_activity_stats(session: AsyncSession, user_id: UUID) -> tuple[int, int, int]:
+    """(completed_routes_count, reviews_written_count, total_distance_meters).
+
+    Distance sums the immutable routing-snapshot distance recorded at
+    execution start (the same source the travel-points algorithm uses,
+    see route_execution.application.rewards) — never a live route field
+    that could have changed since the user actually walked it.
+    """
+    completed_count, distance_sum = (
+        await session.execute(
+            select(
+                func.count(RouteExecution.id),
+                func.coalesce(func.sum(RouteRoutingSnapshot.distance_meters), 0),
+            )
+            .select_from(RouteExecution)
+            .outerjoin(
+                RouteRoutingSnapshot,
+                RouteRoutingSnapshot.id == RouteExecution.routing_snapshot_id,
+            )
+            .where(RouteExecution.user_id == user_id, RouteExecution.status == "completed")
+        )
+    ).one()
+
+    route_reviews = await session.scalar(
+        select(func.count())
+        .select_from(RouteReview)
+        .where(RouteReview.author_user_id == user_id, RouteReview.status == "published")
+    )
+    place_reviews = await session.scalar(
+        select(func.count())
+        .select_from(PlaceReview)
+        .where(PlaceReview.author_user_id == user_id, PlaceReview.status == "published")
+    )
+    return (
+        int(completed_count or 0),
+        int(route_reviews or 0) + int(place_reviews or 0),
+        int(distance_sum or 0),
     )
 
 
@@ -293,6 +345,9 @@ async def get_public_user(
         liked_by_me = (await session.get(ProfileLike, (viewer_id, user_id))) is not None
     counts = await _follow_counts(session, [user.id])
     followers, following = counts.get(user.id, (0, 0))
+    completed_routes, reviews_written, distance_meters = await _profile_activity_stats(
+        session, user.id
+    )
     result = await _public_user(
         session,
         user,
@@ -301,6 +356,9 @@ async def get_public_user(
         liked_by_me=liked_by_me,
         followers_count=followers,
         following_count=following,
+        completed_routes_count=completed_routes,
+        reviews_written_count=reviews_written,
+        total_distance_meters=distance_meters,
     )
     await session.commit()
     return result

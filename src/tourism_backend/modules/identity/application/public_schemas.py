@@ -20,6 +20,12 @@ class PublicUserOut(BaseModel):
     is_expert: bool = False
     followers_count: int = Field(default=0, ge=0)
     following_count: int = Field(default=0, ge=0)
+    # Only computed for a single-profile fetch (get_public_user) — search/
+    # leaderboard/subscriptions list rows reuse this same schema but stay at
+    # the default 0 rather than pay for a per-row aggregation query.
+    completed_routes_count: int = Field(default=0, ge=0)
+    reviews_written_count: int = Field(default=0, ge=0)
+    total_distance_meters: int = Field(default=0, ge=0)
 
 
 class PublicUserListOut(BaseModel):

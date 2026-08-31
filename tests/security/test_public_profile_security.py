@@ -138,6 +138,9 @@ async def test_public_profile_hides_phone_and_is_readable(
         "is_expert",
         "followers_count",
         "following_count",
+        "completed_routes_count",
+        "reviews_written_count",
+        "total_distance_meters",
     }
 
 
@@ -181,6 +184,9 @@ async def test_public_user_search_returns_profile_media_without_pii(
         "is_expert",
         "followers_count",
         "following_count",
+        "completed_routes_count",
+        "reviews_written_count",
+        "total_distance_meters",
     }
     assert "phone" not in str(found).lower()
 
@@ -264,6 +270,9 @@ async def test_users_leaderboard_is_public_and_ordered_by_points(
         "is_expert",
         "followers_count",
         "following_count",
+        "completed_routes_count",
+        "reviews_written_count",
+        "total_distance_meters",
     }
     oversized = await live_client.get(
         "/api/v1/users/leaderboard",
@@ -472,3 +481,85 @@ async def test_achievement_unlock_notifies_owner_inbox(live_client: AsyncClient)
     assert unlocked[0]["target_type"] == "achievement"
     assert unlocked[0]["target_id"]
     assert "phone" not in str(unlocked[0]).lower()
+
+
+@pytest.mark.asyncio
+async def test_public_profile_reports_completed_routes_reviews_and_distance(
+    live_client: AsyncClient,
+) -> None:
+    """Workstream F: profile activity stats come from real completed
+    executions and published reviews — not just published-routes count."""
+    tokens = await _login(
+        live_client,
+        phone=f"+7903{uuid4().int % 10_000_000:07d}",
+        name="Активный турист",
+    )
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    me = await live_client.get("/api/v1/me", headers=headers)
+    user_id = me.json()["id"]
+
+    before = await live_client.get(f"/api/v1/users/{user_id}")
+    assert before.status_code == 200, before.text
+    assert before.json()["completed_routes_count"] == 0
+    assert before.json()["reviews_written_count"] == 0
+    assert before.json()["total_distance_meters"] == 0
+
+    catalog = await live_client.get("/api/v1/routes", params={"limit": 1})
+    assert catalog.status_code == 200, catalog.text
+    route_id = catalog.json()["items"][0]["id"]
+
+    started = await live_client.post(
+        "/api/v1/route-executions",
+        json={"route_id": route_id},
+        headers=headers,
+    )
+    assert started.status_code == 201, started.text
+    execution = started.json()
+    for stop in execution["stops"]:
+        completed_stop = await live_client.put(
+            f"/api/v1/route-executions/{execution['id']}/stops/{stop['id']}/complete",
+            headers=headers,
+        )
+        assert completed_stop.status_code == 200, completed_stop.text
+    finished = await live_client.post(
+        f"/api/v1/route-executions/{execution['id']}/complete",
+        headers=headers,
+    )
+    assert finished.status_code == 200, finished.text
+
+    review = await live_client.post(
+        f"/api/v1/routes/{route_id}/reviews",
+        headers=headers,
+        json={"body": "Прошёл маршрут, очень понравилось", "rating": 5},
+    )
+    assert review.status_code in {200, 201}, review.text
+    review_id = review.json()["id"]
+
+    # Fresh reviews start pending_review; publish it directly like a
+    # moderator would, so the count reflects only what's actually public.
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE route_reviews SET status = 'published' WHERE id = :id"),
+            {"id": review_id},
+        )
+        snapshot_id = (
+            await conn.execute(
+                text("SELECT routing_snapshot_id FROM route_executions WHERE id = :id"),
+                {"id": execution["id"]},
+            )
+        ).scalar_one()
+        expected_distance = (
+            await conn.execute(
+                text("SELECT distance_meters FROM route_routing_snapshots WHERE id = :id"),
+                {"id": snapshot_id},
+            )
+        ).scalar_one()
+    await engine.dispose()
+
+    after = await live_client.get(f"/api/v1/users/{user_id}")
+    assert after.status_code == 200, after.text
+    body = after.json()
+    assert body["completed_routes_count"] == 1
+    assert body["reviews_written_count"] == 1
+    assert body["total_distance_meters"] == (expected_distance or 0)
