@@ -9,7 +9,17 @@ import pytest
 
 from tourism_backend.config import AIProvider, Settings, validate_settings
 from tourism_backend.modules.route_builder.application.ai import ChatMessage
-from tourism_backend.modules.route_builder.infrastructure.gemini import GeminiProvider
+from tourism_backend.modules.route_builder.infrastructure.gemini import (
+    GeminiProvider,
+    reset_gemini_circuit_for_tests,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_circuit() -> None:
+    """The breaker is process-wide, so one test's failures must not skip
+    another test's models."""
+    reset_gemini_circuit_for_tests()
 
 
 def _provider(handler: httpx.MockTransport) -> GeminiProvider:
@@ -386,3 +396,73 @@ def test_duplicate_and_blank_fallback_entries_are_ignored() -> None:
     )
 
     assert provider._model_chain == ("gemini-primary", "gemini-fallback")
+
+
+@pytest.mark.asyncio
+async def test_a_failing_model_is_skipped_on_the_next_request() -> None:
+    """The mobile client gives the whole turn 20s, so paying a dead model's
+    timeout on every single request is what made the chat unusable."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("gemini-primary:generateContent"):
+            return httpx.Response(503, json={"error": {"message": "high demand"}})
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"assistant_text":"ok"}'}]}}]},
+        )
+
+    provider = GeminiProvider(
+        api_key="secret-token",
+        model="gemini-primary",
+        fallback_models=("gemini-fallback",),
+        timeout_seconds=5,
+        transport=httpx.MockTransport(handler),
+    )
+
+    for _ in range(3):
+        result = await provider.chat_turn(
+            messages=[ChatMessage(role="user", content="привет")],
+            constraints={},
+            confirmed_fields=[],
+        )
+        assert result.assistant_text == "ok"
+
+    primary_attempts = [path for path in calls if path.endswith("gemini-primary:generateContent")]
+    # Two strikes open the breaker, so the third turn skips the dead model
+    # entirely rather than waiting on it again.
+    assert len(primary_attempts) == 2
+    assert len(calls) == 5
+
+
+@pytest.mark.asyncio
+async def test_the_breaker_never_leaves_the_chain_empty() -> None:
+    """With every model in cooldown the preferred one is still attempted —
+    failing without trying would turn a recovered outage into a dead chat."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) <= 4:
+            return httpx.Response(503, json={"error": {"message": "high demand"}})
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"assistant_text":"ok"}'}]}}]},
+        )
+
+    provider = GeminiProvider(
+        api_key="secret-token",
+        model="gemini-primary",
+        fallback_models=("gemini-fallback",),
+        timeout_seconds=5,
+        transport=httpx.MockTransport(handler),
+    )
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="503"):
+            await provider.probe()
+
+    recovered = await provider.probe()
+    assert recovered.response_text == '{"assistant_text":"ok"}'
+    assert calls[-1].endswith("gemini-primary:generateContent")

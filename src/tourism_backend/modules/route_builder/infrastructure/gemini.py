@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -59,15 +60,63 @@ _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 # thinking early never bills the rest.
 _THINKING_TOKEN_HEADROOM = 2048
 
-# A model that hangs must not eat the whole request budget: the chain is
-# walked within the caller's overall timeout, so each rung gets a bounded
-# slice with a floor generous enough for a healthy model (observed healthy
-# replies land in 1-4s).
-_MIN_ATTEMPT_TIMEOUT_SECONDS = 12.0
+# A model that hangs must not eat the whole request budget. Healthy replies
+# were measured at 1-4s, so a rung that has produced nothing after this long
+# is hanging, not thinking — and the mobile client gives the whole request
+# only 20s (Dio receiveTimeout) before it reports "Network request failed",
+# which is the budget the entire walk has to fit inside.
+_ATTEMPT_TIMEOUT_SECONDS = 7.0
+# Stop starting new attempts once this much of the caller's budget is gone,
+# so the walk fails with a real error instead of the client timing out.
+_CHAIN_DEADLINE_FRACTION = 0.75
+
+# Per-model breaker, same shape and rationale as two_gis_tsp.py's: while a
+# model is down, paying its timeout on every single request would make the
+# newest-model-first preference cost every user 7s for nothing. One request
+# per cooldown pays the probe; the rest skip straight to a model that works.
+_CIRCUIT_FAILURE_THRESHOLD = 2
+_CIRCUIT_COOLDOWN_SECONDS = 120.0
 
 
 class _RetryableGeminiError(Exception):
     """A failure worth re-trying on the next model rather than surfacing."""
+
+
+class _ModelCircuitBreaker:
+    """Process-wide health memory keyed by model name."""
+
+    def __init__(self) -> None:
+        self._failures: dict[str, int] = {}
+        self._opened_at: dict[str, float] = {}
+
+    def is_open(self, model: str) -> bool:
+        opened = self._opened_at.get(model)
+        if opened is None:
+            return False
+        if time.monotonic() - opened < _CIRCUIT_COOLDOWN_SECONDS:
+            return True
+        # Cooldown elapsed — let the next request probe it again.
+        self._opened_at.pop(model, None)
+        self._failures.pop(model, None)
+        return False
+
+    def record_success(self, model: str) -> None:
+        self._failures.pop(model, None)
+        self._opened_at.pop(model, None)
+
+    def record_failure(self, model: str) -> None:
+        count = self._failures.get(model, 0) + 1
+        self._failures[model] = count
+        if count >= _CIRCUIT_FAILURE_THRESHOLD:
+            self._opened_at[model] = time.monotonic()
+
+
+_circuit = _ModelCircuitBreaker()
+
+
+def reset_gemini_circuit_for_tests() -> None:
+    global _circuit
+    _circuit = _ModelCircuitBreaker()
 
 
 def _model_chain(primary: str, fallbacks: tuple[str, ...]) -> tuple[str, ...]:
@@ -103,9 +152,10 @@ class GeminiProvider:
         self._model_chain = _model_chain(model, fallback_models)
         self._base_url = base_url.rstrip("/")
         self._timeout = httpx.Timeout(timeout_seconds)
-        self._attempt_timeout = httpx.Timeout(
-            max(_MIN_ATTEMPT_TIMEOUT_SECONDS, timeout_seconds / len(self._model_chain))
-        )
+        # Never longer than the caller's own budget — a one-model chain with
+        # a 3s budget must not sit for 7s.
+        self._attempt_timeout = httpx.Timeout(min(_ATTEMPT_TIMEOUT_SECONDS, timeout_seconds))
+        self._chain_deadline = timeout_seconds * _CHAIN_DEADLINE_FRACTION
         self._transport = transport
 
     async def probe(self) -> AIProviderProbeResult:
@@ -214,9 +264,25 @@ class GeminiProvider:
         straight away — walking the rest of the chain would only repeat it —
         but every transient shape (rate limit, 5xx, timeout, and a turn whose
         whole budget went into thinking) advances to the next rung.
+
+        Two things keep "prefer the newest model" from costing every caller
+        the newest model's downtime: a model that has just failed twice is
+        skipped for a cooldown, and the walk stops starting new attempts once
+        the caller's budget is nearly spent, so the client gets an error from
+        us rather than a timeout of its own.
         """
+        started = time.monotonic()
+        candidates = [model for model in self._model_chain if not _circuit.is_open(model)]
+        if not candidates:
+            # Everything is in cooldown: rather than fail without trying,
+            # spend the budget on the preferred model.
+            candidates = [self._model_chain[0]]
+
         last_error = "no model attempted"
-        for index, model in enumerate(self._model_chain):
+        for index, model in enumerate(candidates):
+            if index > 0 and time.monotonic() - started >= self._chain_deadline:
+                last_error = f"{last_error} (chain deadline reached)"
+                break
             try:
                 text = await self._generate_once(
                     client,
@@ -226,19 +292,21 @@ class GeminiProvider:
                     max_output_tokens=max_output_tokens,
                 )
             except _RetryableGeminiError as exc:
+                _circuit.record_failure(model)
                 last_error = str(exc)
-                if index + 1 >= len(self._model_chain):
+                if index + 1 >= len(candidates):
                     break
                 _logger.warning(
                     "gemini_model_unavailable_falling_back",
                     extra={
                         "model": model,
-                        "next_model": self._model_chain[index + 1],
+                        "next_model": candidates[index + 1],
                         "reason": last_error,
                     },
                 )
                 continue
-            if index > 0:
+            _circuit.record_success(model)
+            if model != self._model_chain[0]:
                 _logger.info("gemini_model_fallback_served_request", extra={"model": model})
             return text
         raise ValueError(f"Gemini request failed: {last_error}")
