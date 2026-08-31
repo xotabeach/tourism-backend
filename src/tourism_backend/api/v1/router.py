@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from tourism_backend.modules.content.presentation.router import router as content_router
 from tourism_backend.modules.favorites.presentation.router import router as favorites_router
 from tourism_backend.modules.geography.presentation.router import router as geography_router
 from tourism_backend.modules.identity.presentation.router import router as identity_router
@@ -38,6 +39,7 @@ router.include_router(support_router)
 router.include_router(notifications_router)
 router.include_router(subscriptions_router)
 router.include_router(maps_router)
+router.include_router(content_router)
 
 
 @router.get("")

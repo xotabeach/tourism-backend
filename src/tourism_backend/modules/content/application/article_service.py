@@ -484,7 +484,7 @@ async def delete_own_article(
     await session.commit()
 
 
-async def _own_article_block(
+async def ensure_own_article_block(
     session: AsyncSession,
     *,
     article_id: UUID,
@@ -514,7 +514,7 @@ async def add_article_block_image(
     block_id: UUID,
     saved: SavedArticleImage,
 ) -> ArticleBlockOut:
-    article, block = await _own_article_block(
+    article, block = await ensure_own_article_block(
         session, article_id=article_id, block_id=block_id, author_user_id=author_user_id
     )
     active = (
@@ -567,6 +567,10 @@ async def add_article_block_image(
     session.add(attachment)
     await session.flush()
     block.media_attachment_id = attachment.id
+    # Flush before recomputing the cover: _refresh_cover asks the database
+    # which blocks have an image, so the link has to be in the database and
+    # not merely on the in-memory object for it to be counted.
+    await session.flush()
     await _refresh_cover(session, article)
     article.updated_at = now
     await session.commit()
@@ -588,7 +592,7 @@ async def delete_article_block_image(
     article_id: UUID,
     block_id: UUID,
 ) -> None:
-    article, block = await _own_article_block(
+    article, block = await ensure_own_article_block(
         session, article_id=article_id, block_id=block_id, author_user_id=author_user_id
     )
     if block.media_attachment_id is None:
