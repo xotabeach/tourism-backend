@@ -41,6 +41,34 @@ _ROLE_MAP = {"user": "user", "assistant": "model"}
 
 _logger = logging.getLogger("tourism_backend.gemini")
 
+# Failures another model in the chain could plausibly survive. 503 in
+# particular is Gemini's "this model is currently experiencing high demand"
+# and was observed rolling across the newest models minute-to-minute while
+# an older one answered in ~2s, so treating only 429 as retryable took the
+# whole chat down for a failure the chain exists to absorb.
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+# Gemini 3.x flash models are *thinking* models: reasoning tokens are spent
+# from the same `maxOutputTokens` budget as the answer, and thinking cannot
+# be disabled on them (`thinkingConfig.thinkingBudget: 0` is rejected with
+# 400 INVALID_ARGUMENT). Verified live: an 40-token cap returned an empty
+# `content` with `finishReason: MAX_TOKENS`, while the same prompt with room
+# to think answered normally after spending ~120-200 tokens on thoughts. The
+# caller's allowance therefore gets headroom on top rather than being
+# silently consumed. This is a cap, not a spend — a model that finishes
+# thinking early never bills the rest.
+_THINKING_TOKEN_HEADROOM = 2048
+
+# A model that hangs must not eat the whole request budget: the chain is
+# walked within the caller's overall timeout, so each rung gets a bounded
+# slice with a floor generous enough for a healthy model (observed healthy
+# replies land in 1-4s).
+_MIN_ATTEMPT_TIMEOUT_SECONDS = 12.0
+
+
+class _RetryableGeminiError(Exception):
+    """A failure worth re-trying on the next model rather than surfacing."""
+
 
 def _model_chain(primary: str, fallbacks: tuple[str, ...]) -> tuple[str, ...]:
     seen: set[str] = set()
@@ -75,6 +103,9 @@ class GeminiProvider:
         self._model_chain = _model_chain(model, fallback_models)
         self._base_url = base_url.rstrip("/")
         self._timeout = httpx.Timeout(timeout_seconds)
+        self._attempt_timeout = httpx.Timeout(
+            max(_MIN_ATTEMPT_TIMEOUT_SECONDS, timeout_seconds / len(self._model_chain))
+        )
         self._transport = transport
 
     async def probe(self) -> AIProviderProbeResult:
@@ -176,52 +207,99 @@ class GeminiProvider:
         contents: list[dict[str, Any]],
         max_output_tokens: int,
     ) -> str:
-        """Try the preferred model, then fall back on rate limiting only.
+        """Try the preferred model, moving on whenever another model could help.
 
-        A 429 on the preferred model moves to the next model in the chain —
-        the exact "быстро переключаться" behaviour requested — but any other
-        failure (bad request, server error, timeout) raises immediately
-        instead of burning through the rest of the chain for an error that
-        switching models will not fix.
+        Implements the "быстро переключаться на другую модель" requirement.
+        A permanent, model-independent failure (401/403/404/400) still raises
+        straight away — walking the rest of the chain would only repeat it —
+        but every transient shape (rate limit, 5xx, timeout, and a turn whose
+        whole budget went into thinking) advances to the next rung.
         """
-        last_status: int | None = None
+        last_error = "no model attempted"
         for index, model in enumerate(self._model_chain):
-            url = f"{self._base_url}/models/{model}:generateContent"
             try:
-                response = await client.post(
-                    url,
-                    params={"key": self._api_key},
-                    json={
-                        "contents": contents,
-                        "systemInstruction": {"parts": [{"text": system_instruction}]},
-                        "generationConfig": {
-                            "maxOutputTokens": max_output_tokens,
-                            "temperature": 0.3,
-                        },
+                text = await self._generate_once(
+                    client,
+                    model=model,
+                    system_instruction=system_instruction,
+                    contents=contents,
+                    max_output_tokens=max_output_tokens,
+                )
+            except _RetryableGeminiError as exc:
+                last_error = str(exc)
+                if index + 1 >= len(self._model_chain):
+                    break
+                _logger.warning(
+                    "gemini_model_unavailable_falling_back",
+                    extra={
+                        "model": model,
+                        "next_model": self._model_chain[index + 1],
+                        "reason": last_error,
                     },
                 )
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code
-                has_next = index + 1 < len(self._model_chain)
-                if status == 429 and has_next:
-                    last_status = status
-                    _logger.warning(
-                        "gemini_model_rate_limited_falling_back",
-                        extra={"model": model, "next_model": self._model_chain[index + 1]},
-                    )
-                    continue
-                # Never echo the request (the API key rides in its `?key=`
-                # query param) — only the status code is safe to surface.
-                raise ValueError(f"Gemini request failed with status {status}") from exc
-            payload: Any = response.json()
-            try:
-                text = payload["candidates"][0]["content"]["parts"][0]["text"]
-            except (KeyError, IndexError, TypeError) as exc:
-                raise ValueError("Gemini returned an invalid payload") from exc
-            if not isinstance(text, str) or not text.strip():
-                raise ValueError("Gemini returned empty content")
+                continue
             if index > 0:
                 _logger.info("gemini_model_fallback_served_request", extra={"model": model})
-            return text.strip()
-        raise ValueError(f"Gemini request failed with status {last_status}")
+            return text
+        raise ValueError(f"Gemini request failed: {last_error}")
+
+    async def _generate_once(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        model: str,
+        system_instruction: str,
+        contents: list[dict[str, Any]],
+        max_output_tokens: int,
+    ) -> str:
+        url = f"{self._base_url}/models/{model}:generateContent"
+        try:
+            response = await client.post(
+                url,
+                # The key goes in a header, never the `?key=` query param the
+                # API also accepts: httpx logs every request URL at INFO and
+                # the service runs at LOG_LEVEL=INFO, so the query-param form
+                # wrote the raw API key into container logs (and would leak it
+                # into any proxy log or URL-bearing error message too).
+                headers={"x-goog-api-key": self._api_key},
+                json={
+                    "contents": contents,
+                    "systemInstruction": {"parts": [{"text": system_instruction}]},
+                    "generationConfig": {
+                        "maxOutputTokens": max_output_tokens + _THINKING_TOKEN_HEADROOM,
+                        "temperature": 0.3,
+                    },
+                },
+                timeout=self._attempt_timeout,
+            )
+            response.raise_for_status()
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            raise _RetryableGeminiError(f"{type(exc).__name__} on {model}") from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in _RETRYABLE_STATUSES:
+                raise _RetryableGeminiError(f"status {status}") from exc
+            # Never echo the request (the API key rides in its `?key=`
+            # query param) — only the status code is safe to surface.
+            raise ValueError(f"Gemini request failed with status {status}") from exc
+
+        payload: Any = response.json()
+        try:
+            candidate = payload["candidates"][0]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError("Gemini returned an invalid payload") from exc
+        if not isinstance(candidate, dict):
+            raise ValueError("Gemini returned an invalid payload")
+        content = candidate.get("content")
+        parts = content.get("parts") if isinstance(content, dict) else None
+        if not parts:
+            if candidate.get("finishReason") == "MAX_TOKENS":
+                # Reasoning burned the entire budget before a single answer
+                # token. A model that thinks less may still answer this turn.
+                raise _RetryableGeminiError(f"{model} spent the whole budget on thinking")
+            raise ValueError("Gemini returned an invalid payload")
+        first = parts[0]
+        text = first.get("text") if isinstance(first, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Gemini returned empty content")
+        return text.strip()

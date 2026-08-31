@@ -25,7 +25,11 @@ def _provider(handler: httpx.MockTransport) -> GeminiProvider:
 async def test_probe_checks_the_configured_model_via_generate_content() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1beta/models/gemini-test:generateContent"
-        assert request.url.params["key"] == "secret-token"
+        # The key must ride in a header, never the URL — httpx logs request
+        # URLs at INFO, which is the level the service actually runs at.
+        assert request.headers["x-goog-api-key"] == "secret-token"
+        assert "key" not in request.url.params
+        assert "secret-token" not in str(request.url)
         body = json.loads(request.content)
         assert body["contents"][0]["role"] == "user"
         return httpx.Response(
@@ -139,6 +143,28 @@ async def test_http_failure_never_leaks_the_api_key() -> None:
     assert "secret-token" not in str(error.value)
 
 
+@pytest.mark.asyncio
+async def test_api_key_never_appears_in_the_request_url() -> None:
+    """Regression: the key used to ride in `?key=`, which httpx logs at INFO."""
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"assistant_text":"ok"}'}]}}]},
+        )
+
+    await _provider(httpx.MockTransport(handler)).chat_turn(
+        messages=[ChatMessage(role="user", content="привет")],
+        constraints={},
+        confirmed_fields=[],
+    )
+
+    assert urls
+    assert all("secret-token" not in url for url in urls)
+
+
 def test_gemini_provider_requires_the_api_key_when_ai_planning_enabled() -> None:
     # _env_file=None: isolate from a real developer .env, which may already
     # define GEMINI_API_KEY and would otherwise mask this check. The model
@@ -186,12 +212,13 @@ async def test_falls_back_to_the_next_model_on_rate_limit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_rate_limit_error_never_cascades_to_the_next_model() -> None:
+async def test_permanent_error_never_cascades_to_the_next_model() -> None:
+    """A 400 is the same on every model — burning the chain on it is waste."""
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.path)
-        return httpx.Response(500, json={"error": {"message": "boom"}})
+        return httpx.Response(400, json={"error": {"message": "bad request"}})
 
     provider = GeminiProvider(
         api_key="secret-token",
@@ -201,10 +228,132 @@ async def test_non_rate_limit_error_never_cascades_to_the_next_model() -> None:
         transport=httpx.MockTransport(handler),
     )
 
-    with pytest.raises(ValueError, match="500"):
+    with pytest.raises(ValueError, match="400"):
         await provider.probe()
 
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_overloaded_model_falls_back_instead_of_failing_the_turn() -> None:
+    """503 "high demand" is what the newest models actually answer under load."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("gemini-primary:generateContent"):
+            return httpx.Response(503, json={"error": {"message": "high demand"}})
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"assistant_text":"ok"}'}]}}]},
+        )
+
+    provider = GeminiProvider(
+        api_key="secret-token",
+        model="gemini-primary",
+        fallback_models=("gemini-fallback",),
+        timeout_seconds=5,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await provider.chat_turn(
+        messages=[ChatMessage(role="user", content="привет")],
+        constraints={},
+        confirmed_fields=[],
+    )
+
+    assert len(calls) == 2
+    assert result.assistant_text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_hanging_model_falls_back_instead_of_failing_the_turn() -> None:
+    """The newest model was observed hanging outright, not just erroring."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("gemini-primary:generateContent"):
+            raise httpx.ReadTimeout("timed out", request=request)
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"assistant_text":"ok"}'}]}}]},
+        )
+
+    provider = GeminiProvider(
+        api_key="secret-token",
+        model="gemini-primary",
+        fallback_models=("gemini-fallback",),
+        timeout_seconds=5,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await provider.chat_turn(
+        messages=[ChatMessage(role="user", content="привет")],
+        constraints={},
+        confirmed_fields=[],
+    )
+
+    assert len(calls) == 2
+    assert result.assistant_text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_budget_spent_on_thinking_falls_back_to_a_model_that_thinks_less() -> None:
+    """Thinking models can return finishReason=MAX_TOKENS with no content."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("gemini-primary:generateContent"):
+            return httpx.Response(
+                200,
+                json={"candidates": [{"content": {}, "finishReason": "MAX_TOKENS", "index": 0}]},
+            )
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"assistant_text":"ok"}'}]}}]},
+        )
+
+    provider = GeminiProvider(
+        api_key="secret-token",
+        model="gemini-primary",
+        fallback_models=("gemini-fallback",),
+        timeout_seconds=5,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await provider.chat_turn(
+        messages=[ChatMessage(role="user", content="привет")],
+        constraints={},
+        confirmed_fields=[],
+    )
+
+    assert len(calls) == 2
+    assert result.assistant_text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_request_reserves_headroom_for_thinking_tokens() -> None:
+    """Reasoning is billed from maxOutputTokens, so the answer needs its own room."""
+    seen: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["generationConfig"]["maxOutputTokens"])
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"assistant_text":"ok"}'}]}}]},
+        )
+
+    await _provider(httpx.MockTransport(handler)).chat_turn(
+        messages=[ChatMessage(role="user", content="привет")],
+        constraints={},
+        confirmed_fields=[],
+        max_tokens=360,
+    )
+
+    assert seen
+    assert seen[0] > 360
 
 
 @pytest.mark.asyncio

@@ -95,11 +95,18 @@ class Settings(BaseSettings):
     # Never hardcode this as the *only* option: gemini_fallback_models below is
     # what actually protects a chat turn when this one is rate-limited.
     gemini_model: str = "gemini-3.7-flash"
-    # Older/cheaper models tried in order, left to right, only on a 429 from
-    # a model earlier in the chain — never on other failures. Keep this in
-    # sync with gemini_model when Google ships a newer GA model: move the
-    # previous gemini_model to the front of this list instead of dropping it.
-    gemini_fallback_models: str = "gemini-3.6-flash,gemini-3.5-flash,gemini-2.5-flash"
+    # Older/cheaper models tried in order, left to right, whenever a model
+    # earlier in the chain fails in a way another model could plausibly
+    # survive (rate limit, 5xx, timeout — see gemini._RETRYABLE_STATUSES).
+    # Keep this in sync with gemini_model when Google ships a newer GA model:
+    # move the previous gemini_model to the front of this list instead of
+    # dropping it. Every entry here was checked against the live API on
+    # 2026-08-31 — gemini-2.5-flash used to sit at the end of this chain and
+    # had to be removed: it still appears in the account's model list but
+    # generateContent answers 404 "no longer available to new users", so it
+    # was a dead rung. gemini-3.1-flash-lite anchors the chain because it is
+    # the one model here that does no thinking at all (~26 tokens/turn).
+    gemini_fallback_models: str = "gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-flash-lite"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     rag_enabled: bool = False
     rag_top_k: int = Field(default=4, ge=1, le=8)
