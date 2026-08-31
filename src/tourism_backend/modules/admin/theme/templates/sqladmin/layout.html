@@ -222,6 +222,16 @@
     var toggle = li.querySelector(":scope > a.nav-link.dropdown-toggle");
     var menu = li.querySelector(":scope > .dropdown-menu");
     if (!toggle || !menu) return;
+    // Bootstrap auto-initializes its own dropdown behavior off this
+    // attribute (delegated at document level, so stopPropagation on our
+    // click handler doesn't reach it in time to block it) and toggles its
+    // own "show" class independently of the collapse state above. The menu
+    // ships with "show" hardcoded (see _macros.html) and Tabler's
+    // vertical-navbar CSS only forces display:block while "show" is
+    // present — so Bootstrap's very first click removes "show" and the
+    // menu goes display:none regardless of our [hidden] toggling. Strip
+    // the attribute so Bootstrap never touches this element at all.
+    toggle.removeAttribute("data-bs-toggle");
     var titleEl = toggle.querySelector(".nav-link-title");
     var name = (titleEl ? titleEl.textContent : toggle.textContent).trim();
     var hasActiveChild = !!menu.querySelector(".nav-link.active");
