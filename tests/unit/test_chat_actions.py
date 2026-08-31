@@ -3,9 +3,11 @@
 from tourism_backend.modules.route_builder.application.chat_actions import (
     build_actions_block,
     clarification_action_blocks,
+    interactive_control_blocks,
     known_constraints,
     merge_constraint_patch,
     normalize_action_id,
+    patch_for_action,
     sanitize_confirmed_fields,
 )
 
@@ -136,3 +138,19 @@ def test_form_draft_excludes_confirmed_and_placeholder_city() -> None:
     assert draft["people"] == 2
     assert draft["interests"] == ["природа"]
     assert "pace" not in draft
+
+
+def test_save_preferences_is_a_recognized_no_patch_action() -> None:
+    assert normalize_action_id("save_preferences") == "save_preferences"
+    assert patch_for_action("save_preferences") is None
+
+
+def test_avoid_crowds_toggle_appears_alongside_children_and_pets() -> None:
+    blocks = interactive_control_blocks(
+        ask_field="ready",
+        constraints={"avoid_crowds": True},
+    )
+    by_id = {block.id: block for block in blocks}
+    assert "avoid_crowds" in by_id
+    assert by_id["avoid_crowds"].value is True
+    assert by_id["with_children"].value is False

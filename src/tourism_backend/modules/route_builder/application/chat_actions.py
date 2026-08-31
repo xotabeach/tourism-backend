@@ -45,6 +45,15 @@ _ACTION_CATALOG: dict[str, dict[str, Any]] = {
         "field": None,
     },
     "clear_params": {"label": "Очистить мои параметры", "patch": None, "field": None},
+    # Explicit-confirmation cross-session write-back (Workstream C) — see
+    # identity.application.chat_preferences.apply_chat_preferences. Never
+    # triggered automatically; only offered/accepted as a chip tap or an
+    # explicit model-suggested action_id.
+    "save_preferences": {
+        "label": "Запомнить эти предпочтения",
+        "patch": None,
+        "field": None,
+    },
     "pace_calm": {
         "label": "Спокойный маршрут",
         "patch": {"pace": "calm"},
@@ -504,6 +513,13 @@ def interactive_control_blocks(
                 id="with_pets",
                 label="С питомцами",
                 value=bool(constraints.get("with_pets")),
+            )
+        )
+        out.append(
+            ToggleBlockOut(
+                id="avoid_crowds",
+                label="Избегать толп и очередей",
+                value=bool(constraints.get("avoid_crowds")),
             )
         )
     return out

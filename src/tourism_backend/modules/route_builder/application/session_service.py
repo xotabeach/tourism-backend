@@ -13,6 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings, get_settings
+from tourism_backend.modules.identity.application.chat_preferences import (
+    apply_chat_preferences,
+)
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.knowledge.infrastructure.retriever import (
     RetrievalRequest,
@@ -84,6 +87,9 @@ from tourism_backend.modules.route_builder.infrastructure.models import (
     RoutePlanningMessage,
     RoutePlanningSession,
 )
+from tourism_backend.modules.runtime_config.application.service import (
+    effective_ai_provider_settings,
+)
 from tourism_backend.modules.subscriptions.application.entitlements import require_ai_chat
 from tourism_backend.modules.subscriptions.application.service import (
     refresh_user_travel_plus,
@@ -94,9 +100,10 @@ logger = logging.getLogger(__name__)
 _HISTORY_LIMIT = 12
 _SESSION_LIST_MAX = 50
 _MESSAGE_LIST_MAX = 100
-_CONTROL_ACTION_IDS = frozenset({"budget_amount", "with_children", "with_pets"})
+_CONTROL_ACTION_IDS = frozenset({"budget_amount", "with_children", "with_pets", "avoid_crowds"})
 _MATCH_FIRST_ACTIONS = frozenset({"want_generate"})
 _CUSTOM_GENERATE_ACTIONS = frozenset({"build_custom_route"})
+_SAVE_PREFERENCES_ACTIONS = frozenset({"save_preferences"})
 
 
 def llm_history_stmt(
@@ -369,6 +376,8 @@ async def post_message(
         intent = "generate"
     elif canonical_action == "clear_params":
         flow = "clear_params"
+    elif canonical_action in _SAVE_PREFERENCES_ACTIONS:
+        flow = "save_preferences"
     elif is_control_only:
         flow = "control_ack"
 
@@ -431,6 +440,30 @@ async def post_message(
                 ],
             )
         ]
+    elif flow == "save_preferences":
+        # Explicit confirmation only — never triggered by a plain chat turn.
+        # Mutates `user` in place; the outer commit below persists it.
+        changed = apply_chat_preferences(
+            user,
+            constraints=constraints_dict,
+            confirmed_fields=confirmed,
+        )
+        provider_name = "save_preferences_ack"
+        ask_field = prefer_ready_ask_field(confirmed)
+        if changed:
+            assistant_text = "Запомнил: " + ", ".join(changed) + ". Учту это в следующий раз."
+        else:
+            assistant_text = (
+                "Пока нечего запомнить — сначала подтверди пару предпочтений в этом чате."
+            )
+        blocks = _compose_assistant_blocks(
+            constraints=constraints_dict,
+            confirmed_fields=confirmed,
+            ask_field=ask_field,
+            action_ids=["want_generate"] if ask_field == "ready" else None,
+            tool_context={},
+            include_recommendations=False,
+        )
     elif flow == "control_ack":
         # Slider/toggle: merge already done — short ack, no LLM reprint.
         ask_field = prefer_ready_ask_field(confirmed)
@@ -501,6 +534,7 @@ async def post_message(
             constraints=constraints_dict,
             confirmed_fields=confirmed,
             settings=cfg,
+            user=user,
         )
         assistant_text = turn.assistant_text
         ask_field = turn.ask_field or prefer_ready_ask_field(confirmed)
@@ -580,6 +614,7 @@ async def _assistant_from_ai(
     constraints: dict[str, Any],
     confirmed_fields: list[str],
     settings: Settings,
+    user: User,
 ) -> tuple[ChatTurnResult, str | None, bool, dict[str, Any], list[dict[str, str]]]:
     history_rows = list((await session.scalars(llm_history_stmt(planning.id))).all())
     history_rows.reverse()
@@ -597,6 +632,13 @@ async def _assistant_from_ai(
     draft = form_draft_constraints(constraints, confirmed_fields)
     if draft:
         tool_context = {**tool_context, "form_draft_not_facts": draft}
+    # Workstream C: cross-session soft prior from the persisted profile — the
+    # same source the catalog ranker already uses (see
+    # 2gis-personalization-offline-plan, 5.2). Advisory only; the prompt
+    # tells the model this loses to anything the user actually says here.
+    preferences_prior = _persisted_preferences_prior(user)
+    if preferences_prior:
+        tool_context = {**tool_context, "user_preferences_prior": preferences_prior}
     place_hints = list(tool_context.get("place_candidates") or [])
     if not place_hints and "city" in confirmed_fields:
         place_hints = await _place_hints(session, constraints)
@@ -676,7 +718,8 @@ async def _assistant_from_ai(
         return result, result.provider, True, tool_context, explicit_places
 
     try:
-        provider = get_ai_planning_provider(settings)
+        effective_settings = await effective_ai_provider_settings(session, settings)
+        provider = get_ai_planning_provider(effective_settings)
         result = await _once(provider, tool_context)
         tools_round = 1 if parse_tool_calls(list(result.tool_requests)) else 0
         result, tool_context, explicit_places = await _run_tool_rounds(
@@ -956,11 +999,35 @@ def _control_patch(
         return {"with_children": control_value}
     if action_id == "with_pets" and isinstance(control_value, bool):
         return {"with_pets": control_value}
+    if action_id == "avoid_crowds" and isinstance(control_value, bool):
+        return {"avoid_crowds": control_value}
     if action_id == "with_children":
         return {"with_children": True}
     if action_id == "with_pets":
         return {"with_pets": True}
+    if action_id == "avoid_crowds":
+        return {"avoid_crowds": True}
     return None
+
+
+def _persisted_preferences_prior(user: User) -> dict[str, Any]:
+    """Cross-session soft signal for the chat prompt (Workstream C).
+
+    Same fields the catalog ranker already uses as a soft prior — see
+    ``identity.application.chat_preferences`` for the write side. Deliberately
+    a plain dict of only the signals that are actually set, so an empty
+    profile adds nothing to the prompt instead of a block of nulls.
+    """
+    prior: dict[str, Any] = {}
+    if user.preferred_categories:
+        prior["interests"] = list(user.preferred_categories)[:6]
+    if user.preferred_difficulty:
+        prior["pace_hint"] = user.preferred_difficulty
+    if user.travels_with_kids:
+        prior["with_children"] = True
+    if user.travels_with_pets:
+        prior["with_pets"] = True
+    return prior
 
 
 async def _place_hints(

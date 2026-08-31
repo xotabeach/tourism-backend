@@ -52,6 +52,7 @@ from tourism_backend.modules.route_builder.application.schemas import (
 from tourism_backend.modules.route_builder.application.scoring import (
     UserPreferenceSignals,
 )
+from tourism_backend.modules.route_builder.application.tsp import TspError, TspProvider
 from tourism_backend.modules.route_builder.infrastructure.models import (
     RouteGenerationEvent,
     RouteProposal,
@@ -62,6 +63,9 @@ from tourism_backend.modules.route_builder.infrastructure.routing_factory import
 )
 from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
     StubRoutingProvider,
+)
+from tourism_backend.modules.route_builder.infrastructure.tsp_factory import (
+    get_tsp_provider,
 )
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 from tourism_backend.modules.subscriptions.application import service as travel_plus
@@ -330,6 +334,43 @@ async def _route_places(
             status_code=422,
         )
     return routing
+
+
+async def _maybe_optimize_stop_order(
+    session: AsyncSession,
+    *,
+    places: list[PickedPlace],
+    params: RouteMatchParamsIn,
+    provider: TspProvider | None = None,
+) -> list[PickedPlace]:
+    """Best-effort TSP reorder of already-selected stops (Workstream A).
+
+    Runs once, right after place selection and before the proposal/route is
+    built from ``places`` — the optimized order becomes the route's one
+    canonical stop order everywhere downstream (proposal card, routing legs,
+    persisted RouteStop.position), instead of drifting from a
+    separately-reordered geometry. Any provider failure or timeout keeps the
+    caller's original order; this must never fail route generation.
+    """
+    if len(places) < 3:
+        return places
+    if provider is None:
+        try:
+            provider = get_tsp_provider(get_settings())
+        except RuntimeError:
+            return places
+    waypoints = await _waypoints_for_places(session, places)
+    try:
+        result = await provider.optimize_order(
+            waypoints=waypoints,
+            transport_mode=_transport_mode(params),
+        )
+    except TspError as exc:
+        _logger.info("tsp_optimize_skipped", extra={"tsp_error_code": exc.code})
+        return places
+    if not result.optimized:
+        return places
+    return [places[index] for index in result.order]
 
 
 def _title_for(params: RouteMatchParamsIn) -> str:
@@ -615,6 +656,7 @@ async def generate_route(
             travels_with_pets=user.travels_with_pets,
         ),
     )
+    places = await _maybe_optimize_stop_order(session, places=places, params=params)
     road_events = await _road_events_for_places(session, places)
     routing = await _route_places(
         session,

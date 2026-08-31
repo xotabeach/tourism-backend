@@ -774,3 +774,127 @@ def test_place_publication_gate_fails_closed() -> None:
         temporary_closure_status=None,
     )
     assert is_ready_for_publication(incomplete) is False
+
+
+async def test_runtime_config_ai_provider_save_persists_and_audits(
+    admin_client: AsyncClient,
+) -> None:
+    """Workstream E: the admin AI-provider switch actually writes through to
+    the runtime_settings table the chat reads at request time, and leaves an
+    audit trail — not just a form that appears to save."""
+    headers = {"Origin": "http://test"}
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+
+    show = await admin_client.get("/admin/config/ai-provider", headers=headers)
+    assert show.status_code == 200, show.text
+    assert "AI-провайдер" in show.text
+
+    save = await admin_client.post(
+        "/admin/config/ai-provider/save",
+        data={"ai_provider": "gemini"},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert save.status_code == 303, save.text
+
+    after = await admin_client.get("/admin/config/ai-provider", headers=headers)
+    assert after.status_code == 200, after.text
+    assert "переопределено в админке" in after.text
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(text("SELECT value FROM runtime_settings WHERE key = 'ai_provider'"))
+        ).one()
+        assert row.value == "gemini"
+        audit_row = (
+            await conn.execute(
+                text(
+                    "SELECT action, metadata_json FROM admin_audit_events "
+                    "WHERE entity_type = 'runtime_setting' AND entity_id = 'ai_provider' "
+                    "ORDER BY created_at DESC LIMIT 1"
+                )
+            )
+        ).one()
+        assert audit_row.action == "runtime_config.ai_provider.update"
+    await engine.dispose()
+
+    # Reject an unlisted/unknown provider outright — never write garbage.
+    rejected = await admin_client.post(
+        "/admin/config/ai-provider/save",
+        data={"ai_provider": "not-a-real-provider"},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert rejected.status_code == 303, rejected.text
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(text("SELECT value FROM runtime_settings WHERE key = 'ai_provider'"))
+        ).one()
+        assert row.value == "gemini"  # unchanged from the earlier valid save
+    await engine.dispose()
+
+
+async def test_runtime_config_requires_admin_role_not_just_login(
+    admin_client: AsyncClient,
+) -> None:
+    """An operator with only the "ops" role must not be able to reach or
+    change the AI-provider switch — breaking it takes down chat for everyone."""
+    ops_login = "ops-only-test"
+    ops_password = "ops-only-password-ok"
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    async with engine.connect() as conn:
+        existing = (
+            await conn.execute(
+                text("SELECT id FROM admin_principals WHERE login = :login"),
+                {"login": ops_login},
+            )
+        ).first()
+        if existing is None:
+            principal_id = uuid4()
+            await conn.execute(
+                text(
+                    "INSERT INTO admin_principals "
+                    "(id, login, password_hash, is_active, created_at, updated_at) "
+                    "VALUES (:id, :login, :hash, true, now(), now())"
+                ),
+                {"id": principal_id, "login": ops_login, "hash": hash_password(ops_password)},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO admin_role_bindings (id, principal_id, role, created_at) "
+                    "VALUES (:id, :principal_id, 'ops', now())"
+                ),
+                {"id": uuid4(), "principal_id": principal_id},
+            )
+            await conn.commit()
+    await engine.dispose()
+
+    headers = {"Origin": "http://test"}
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": ops_login, "password": ops_password},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+
+    show = await admin_client.get(
+        "/admin/config/ai-provider", headers=headers, follow_redirects=False
+    )
+    assert show.status_code == 303, show.text
+
+    save = await admin_client.post(
+        "/admin/config/ai-provider/save",
+        data={"ai_provider": "mock"},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert save.status_code == 303, save.text

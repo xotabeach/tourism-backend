@@ -25,6 +25,9 @@ from tourism_backend.modules.route_execution.infrastructure import (
     models as route_execution_models,
 )
 from tourism_backend.modules.routes.infrastructure import models as routes_models
+from tourism_backend.modules.runtime_config.infrastructure import (
+    models as runtime_config_models,
+)
 from tourism_backend.modules.subscriptions.infrastructure import (
     models as subscriptions_models,
 )
@@ -54,6 +57,7 @@ _ = (
     subscriptions_models,
     route_builder_models,
     knowledge_models,
+    runtime_config_models,
 )
 target_metadata = Base.metadata
 

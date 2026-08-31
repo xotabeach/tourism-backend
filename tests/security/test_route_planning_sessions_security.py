@@ -347,3 +347,62 @@ async def test_short_affirmative_does_not_generate_mid_clarification(
     )
     assert confirm.status_code == 200, confirm.text
     assert confirm.json()["intent"] == "generate"
+
+
+@pytest.mark.asyncio
+async def test_save_preferences_action_persists_to_profile(live_client: AsyncClient) -> None:
+    """Workstream C: explicit save_preferences writes confirmed session
+    fields back to the user's profile — and only fields actually confirmed
+    this session, never an unconfirmed form draft."""
+    phone = f"+7907{uuid4().int % 10_000_000:07d}"
+    tokens = await _login(live_client, phone)
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    await _travel_plus(live_client, headers)
+
+    before = await live_client.get("/api/v1/me", headers=headers)
+    assert before.status_code == 200, before.text
+    assert before.json()["preferred_categories"] == []
+    assert before.json()["preferred_difficulty"] is None
+
+    created = await live_client.post(
+        "/api/v1/route-builder/sessions",
+        headers=headers,
+        json={
+            "params": {
+                "city": "Ялта",
+                "pace": "active",
+                "interests": ["горы"],
+                "with_pets": True,
+            },
+            # with_pets is deliberately left unconfirmed — a form draft the
+            # user never actually stated in this chat, and it must not be
+            # written to the profile.
+            "confirmed_fields": ["city", "pace", "interests"],
+        },
+    )
+    assert created.status_code == 200, created.text
+    session_id = created.json()["session_id"]
+
+    save = await live_client.post(
+        f"/api/v1/route-builder/sessions/{session_id}/messages",
+        headers=headers,
+        json={"text": "запомни это", "action_id": "save_preferences"},
+    )
+    assert save.status_code == 200, save.text
+    assert "запомнил" in save.json()["text"].casefold()
+
+    after = await live_client.get("/api/v1/me", headers=headers)
+    assert after.status_code == 200, after.text
+    body = after.json()
+    assert body["preferred_categories"] == ["горы"]
+    assert body["preferred_difficulty"] == "hard"
+    assert body["travels_with_pets"] is False
+
+    # Idempotent on an unchanged profile: nothing new to report.
+    again = await live_client.post(
+        f"/api/v1/route-builder/sessions/{session_id}/messages",
+        headers=headers,
+        json={"text": "запомни ещё раз", "action_id": "save_preferences"},
+    )
+    assert again.status_code == 200, again.text
+    assert "нечего" in again.json()["text"].casefold()

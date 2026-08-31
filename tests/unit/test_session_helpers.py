@@ -10,6 +10,7 @@ from tourism_backend.modules.route_builder.application.session_service import (
     _catalog_match_block,
     _compose_assistant_blocks,
     _parse_blocks,
+    _persisted_preferences_prior,
     _provider_error_turn,
     _session_out,
     _stored_message_out,
@@ -183,3 +184,29 @@ def test_llm_history_stmt_trims_in_sql_and_omits_flagged_user_turns() -> None:
     assert "redacted" in bound
     assert "crisis" in bound
     assert "injection_attempt" in bound
+
+
+def test_empty_profile_yields_no_prior() -> None:
+    user = SimpleNamespace(
+        preferred_categories=None,
+        preferred_difficulty=None,
+        travels_with_kids=False,
+        travels_with_pets=False,
+    )
+    assert _persisted_preferences_prior(user) == {}
+
+
+def test_populated_profile_yields_only_the_set_fields() -> None:
+    user = SimpleNamespace(
+        preferred_categories=["горы", "море"],
+        preferred_difficulty="hard",
+        travels_with_kids=False,
+        travels_with_pets=True,
+    )
+    prior = _persisted_preferences_prior(user)
+    assert prior == {
+        "interests": ["горы", "море"],
+        "pace_hint": "hard",
+        "with_pets": True,
+    }
+    assert "with_children" not in prior

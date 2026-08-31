@@ -89,6 +89,18 @@ class Settings(BaseSettings):
     lm_studio_base_url: str | None = None
     lm_studio_model: str | None = None
     lm_studio_api_key: SecretStr | None = None
+    gemini_api_key: SecretStr | None = None
+    # Defaults to the current GA "latest" text model per ai.google.dev (checked
+    # 2026-08-31 — re-verify before bumping, Google's model lineup moves fast).
+    # Never hardcode this as the *only* option: gemini_fallback_models below is
+    # what actually protects a chat turn when this one is rate-limited.
+    gemini_model: str = "gemini-3.7-flash"
+    # Older/cheaper models tried in order, left to right, only on a 429 from
+    # a model earlier in the chain — never on other failures. Keep this in
+    # sync with gemini_model when Google ships a newer GA model: move the
+    # previous gemini_model to the front of this list instead of dropping it.
+    gemini_fallback_models: str = "gemini-3.6-flash,gemini-3.5-flash,gemini-2.5-flash"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     rag_enabled: bool = False
     rag_top_k: int = Field(default=4, ge=1, le=8)
     rag_embedding_model: str = "hash-v1"
@@ -122,6 +134,18 @@ class Settings(BaseSettings):
     # quota is enforced by the vendor (429), this just flags unusual volume.
     two_gis_daily_call_budget: int = Field(default=500, ge=1)
 
+    # Workstream A: stop-order optimization for AI-assembled routes. Separate
+    # quota bucket from routing (2GIS TSP demo budget is 1000 tasks/month,
+    # billed points x agents), so it gets its own provider switch and budget
+    # rather than piggy-backing on routing_provider.
+    tsp_provider: Literal["stub", "2gis"] = "stub"
+    two_gis_tsp_daily_call_budget: int = Field(default=200, ge=1)
+
+    # Workstream A: batched distance/duration lookups (candidate ranking,
+    # "how far" hints). Own quota bucket and switch, same rationale as TSP.
+    distance_matrix_provider: Literal["stub", "2gis"] = "stub"
+    two_gis_distance_matrix_daily_call_budget: int = Field(default=300, ge=1)
+
     @property
     def otp_accept_any_enabled(self) -> bool:
         if self.auth_otp_accept_any is not None:
@@ -145,6 +169,12 @@ def validate_settings(settings: Settings) -> None:
             )
         if not settings.lm_studio_base_url.startswith(("http://", "https://")):
             raise RuntimeError("LM_STUDIO_BASE_URL must use http:// or https://")
+    if settings.ai_planning_enabled and settings.ai_provider is AIProvider.GEMINI:
+        key = settings.gemini_api_key
+        if key is None or not key.get_secret_value().strip():
+            raise RuntimeError(
+                "GEMINI_API_KEY is required when AI_PROVIDER=gemini and AI_PLANNING_ENABLED=true"
+            )
 
     if settings.app_env in {AppEnvironment.STAGING, AppEnvironment.PRODUCTION}:
         if settings.otp_accept_any_enabled:
@@ -168,6 +198,21 @@ def validate_settings(settings: Settings) -> None:
             )
         if not settings.two_gis_routing_base_url.startswith("https://"):
             raise RuntimeError("TWO_GIS_ROUTING_BASE_URL must use HTTPS")
+
+    if settings.tsp_provider == "2gis":
+        key = settings.two_gis_http_api_key
+        if key is None or not key.get_secret_value().strip():
+            raise RuntimeError(
+                "TWO_GIS_HTTP_API_KEY (or its legacy alias) is required when TSP_PROVIDER=2gis"
+            )
+
+    if settings.distance_matrix_provider == "2gis":
+        key = settings.two_gis_http_api_key
+        if key is None or not key.get_secret_value().strip():
+            raise RuntimeError(
+                "TWO_GIS_HTTP_API_KEY (or its legacy alias) is required when "
+                "DISTANCE_MATRIX_PROVIDER=2gis"
+            )
 
     if settings.app_env in {AppEnvironment.LOCAL, AppEnvironment.TEST}:
         return

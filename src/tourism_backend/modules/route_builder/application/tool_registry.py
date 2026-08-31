@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from geoalchemy2 import Geography
+from geoalchemy2 import Geography, Geometry
+from geoalchemy2.functions import ST_X, ST_Y
 from sqlalchemy import Select, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
+from tourism_backend.config import get_settings
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.route_builder.application.ai_candidates import (
@@ -19,6 +22,18 @@ from tourism_backend.modules.route_builder.application.ai_candidates import (
     detail_dto,
     is_ai_approved_place,
 )
+from tourism_backend.modules.route_builder.application.distance_matrix import (
+    DistanceMatrixError,
+)
+from tourism_backend.modules.route_builder.application.routing import (
+    RouteWaypoint,
+    normalize_transport_mode,
+)
+from tourism_backend.modules.route_builder.infrastructure.distance_matrix_factory import (
+    get_distance_matrix_provider,
+)
+
+_logger = logging.getLogger("tourism_backend.tool_registry")
 
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -416,12 +431,90 @@ async def _find_places_near_point(
             )
         )
     ).all()
-    places = [
-        candidate_dto(place)
-        for place in rows
-        if is_ai_approved_place(place, constraints=constraints)
-    ][:limit]
+    approved = [place for place in rows if is_ai_approved_place(place, constraints=constraints)][
+        :limit
+    ]
+    places = [candidate_dto(place) for place in approved]
+    await _attach_travel_hints(
+        session,
+        places=places,
+        source_places=approved,
+        near_lat=float(lat),
+        near_lng=float(lng),
+        transport_mode=str(constraints.get("transport_mode") or "walk"),
+    )
     return {"places": places, "near_lat": lat, "near_lng": lng, "radius_m": radius_m}
+
+
+async def _attach_travel_hints(
+    session: AsyncSession,
+    *,
+    places: list[dict[str, Any]],
+    source_places: list[Any],
+    near_lat: float,
+    near_lng: float,
+    transport_mode: str,
+) -> None:
+    """Best-effort real travel time from the query point (Workstream A).
+
+    ``candidate_dto`` deliberately excludes coordinates (the model must never
+    receive raw coords), so this looks the approved ORM rows back up by id
+    rather than parsing the dict. A distance-matrix failure — or the stub
+    provider, the default — must never remove or reorder ``places``, only
+    skip adding the two extra hint keys.
+    """
+    settings = get_settings()
+    if settings.distance_matrix_provider != "2gis" or not source_places:
+        return
+    try:
+        provider = get_distance_matrix_provider(settings)
+    except RuntimeError:
+        return
+
+    place_ids = [place.id for place in source_places]
+    geom = cast(Place.location, Geometry)
+    rows = (
+        await session.execute(
+            select(Place.id, ST_X(geom), ST_Y(geom)).where(Place.id.in_(place_ids))
+        )
+    ).all()
+    coords_by_id = {
+        place_id: (float(lng), float(lat))
+        for place_id, lng, lat in rows
+        if lng is not None and lat is not None
+    }
+    targets: list[RouteWaypoint] = []
+    ordered_ids: list[str] = []
+    for place in source_places:
+        coords = coords_by_id.get(place.id)
+        if coords is None:
+            continue
+        targets.append(RouteWaypoint(lng=coords[0], lat=coords[1]))
+        ordered_ids.append(str(place.id))
+    if not targets:
+        return
+
+    try:
+        result = await provider.compute(
+            sources=[RouteWaypoint(lng=near_lng, lat=near_lat)],
+            targets=targets,
+            transport_mode=normalize_transport_mode(transport_mode),
+        )
+    except DistanceMatrixError as exc:
+        _logger.info("distance_matrix_hint_skipped", extra={"error_code": exc.code})
+        return
+
+    by_place_id = {place["place_id"]: place for place in places}
+    for target_index, place_id in enumerate(ordered_ids):
+        card = by_place_id.get(place_id)
+        if card is None:
+            continue
+        duration = result.duration_seconds(source_index=0, target_index=target_index)
+        distance = result.distance_meters(source_index=0, target_index=target_index)
+        if duration is not None:
+            card["travel_duration_min"] = max(1, round(duration / 60))
+        if distance is not None:
+            card["travel_distance_m"] = distance
 
 
 def _approved_place_sql() -> tuple[ColumnElement[bool], ...]:

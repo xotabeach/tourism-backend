@@ -8,8 +8,9 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
-from sqladmin import ModelView, action, expose
+from sqladmin import BaseView, ModelView, action, expose
 from sqladmin.filters import AllUniqueStringValuesFilter, OperationColumnFilter
+from sqladmin.flash import Flash
 from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
@@ -112,6 +113,11 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
 )
 from tourism_backend.modules.routes.application import review_service
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
+from tourism_backend.modules.runtime_config.application.service import (
+    AI_PROVIDER_KEY,
+    get_runtime_setting,
+    set_runtime_setting,
+)
 from tourism_backend.modules.subscriptions.application import service as travel_plus_service
 from tourism_backend.modules.subscriptions.infrastructure.models import TravelPlusSubscription
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
@@ -2423,6 +2429,111 @@ class PlaceImageAdmin(ModelView, model=PlaceImage):
     page_size = 50
 
 
+# (key, human label) — deliberately excludes AIProvider.OLLAMA: it's a valid
+# config enum value but ai_factory.get_ai_planning_provider() has no adapter
+# for it yet, so offering it here would let an admin switch the chat to a
+# provider that immediately fails every turn.
+_SELECTABLE_AI_PROVIDERS: tuple[tuple[str, str], ...] = (
+    ("mock", "Mock — заглушка без реального ИИ (dev/test)"),
+    ("lmstudio", "LM Studio — локальная модель (домашний хаб)"),
+    ("gemini", "Gemini API — облако (Google)"),
+)
+
+
+class RuntimeConfigAdmin(BaseView):
+    """Runtime-configurable switches that override static env config on read.
+
+    Workstream B/E: the AI provider toggle needed a place to live that
+    doesn't require a redeploy — see
+    ``tourism_backend.modules.runtime_config`` for the read/write service
+    and ``docs/ai-dual-provider-content-backlog-2026-08-31.md`` for why.
+    Gated to the ``admin`` role, not ``ops``: a wrong provider here breaks
+    the AI chat for every user until corrected.
+    """
+
+    name = "AI-провайдер"
+    category = "Конфигурация"
+    category_icon = "fa-solid fa-sliders"
+    icon = "fa-solid fa-robot"
+
+    # add_base_view() (unlike add_model_view()) never wires this — BaseView
+    # has no bound model for SQLAdmin to infer a session from — so
+    # register_views() sets it manually after admin.add_view(...). Typed
+    # Any: sqladmin's SESSION_MAKER alias lives in a private (_types) module.
+    session_maker: ClassVar[Any]
+
+    def is_accessible(self, request: Request) -> bool:
+        return require_admin_role(request)
+
+    def is_visible(self, request: Request) -> bool:
+        return require_admin_role(request)
+
+    @expose("/config/ai-provider", methods=["GET"], identity="config-ai-provider")
+    async def show(self, request: Request) -> Response:
+        if not require_admin_role(request):
+            Flash.error(request, "Доступно только роли admin.")
+            return RedirectResponse(request.url_for("admin:index"), status_code=303)
+        settings: Settings = request.app.state.settings
+        async with self.session_maker(expire_on_commit=False) as session:
+            override = await get_runtime_setting(session, AI_PROVIDER_KEY)
+        return await self.templates.TemplateResponse(
+            request,
+            "sqladmin/runtime_config.html",
+            context=self._context(settings, override),
+        )
+
+    @expose("/config/ai-provider/save", methods=["POST"])
+    async def save(self, request: Request) -> Response:
+        redirect_url = request.url_for("admin:view-config-ai-provider")
+        if not require_admin_role(request):
+            Flash.error(request, "Доступно только роли admin.")
+            return RedirectResponse(redirect_url, status_code=303)
+
+        form = await request.form()
+        value = str(form.get("ai_provider") or "").strip()
+        allowed = {key for key, _label in _SELECTABLE_AI_PROVIDERS}
+        if value not in allowed:
+            Flash.error(request, "Недопустимое значение провайдера ИИ.")
+            return RedirectResponse(redirect_url, status_code=303)
+
+        actor_id = session_principal_id(request)
+        async with self.session_maker(expire_on_commit=False) as session:
+            await set_runtime_setting(
+                session,
+                key=AI_PROVIDER_KEY,
+                value=value,
+                updated_by_principal_id=actor_id,
+            )
+            await record_audit(
+                session,
+                actor_id=actor_id,
+                action="runtime_config.ai_provider.update",
+                entity_type="runtime_setting",
+                entity_id=AI_PROVIDER_KEY,
+                metadata={"value": value},
+                ip=request.client.host if request.client else None,
+                commit=True,
+            )
+        Flash.success(
+            request,
+            f"Провайдер ИИ переключён на «{value}». Подхватится на следующем ходу чата, "
+            "без перезапуска бэкенда.",
+        )
+        return RedirectResponse(redirect_url, status_code=303)
+
+    def _context(self, settings: Settings, override: str | None) -> dict[str, Any]:
+        return {
+            "env_default": settings.ai_provider.value,
+            "override": override,
+            "effective": override or settings.ai_provider.value,
+            "providers": _SELECTABLE_AI_PROVIDERS,
+            "gemini_key_configured": bool(
+                settings.gemini_api_key and settings.gemini_api_key.get_secret_value().strip()
+            ),
+            "lmstudio_configured": bool(settings.lm_studio_base_url and settings.lm_studio_model),
+        }
+
+
 class MediaAttachmentAdmin(ModelView, model=MediaAttachment):
     category = "Медиа"
     category_icon = "fa-solid fa-photo-film"
@@ -2567,3 +2678,12 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(DeviceTokenAdmin)
     admin.add_view(PlaceImageAdmin)
     admin.add_view(MediaAttachmentAdmin)
+    admin.add_view(RuntimeConfigAdmin)
+    # add_base_view (unlike add_model_view) does not wire session_maker —
+    # BaseView has no bound model for SQLAdmin to infer a session from. A
+    # real sqladmin.Admin always has one; lightweight `register_views(fake,
+    # settings)` test doubles used to introspect ModelView attributes may
+    # not, so this stays optional rather than a hard requirement.
+    session_maker = getattr(admin, "session_maker", None)
+    if session_maker is not None:
+        RuntimeConfigAdmin.session_maker = session_maker

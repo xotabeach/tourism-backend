@@ -1,0 +1,60 @@
+{% extends "sqladmin/layout.html" %}
+{% block content_header %}
+<div class="row align-items-center">
+  <div class="col">
+    <h2 class="page-title">AI-провайдер</h2>
+    <div class="page-pretitle">Переключение вступает в силу на следующем ходу чата, без перезапуска</div>
+  </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="col-12 col-xl-8">
+  <div class="card">
+    <div class="card-body">
+      <div class="mb-4">
+        <div class="text-secondary mb-1">Сейчас отвечает</div>
+        <div class="d-flex align-items-center gap-2">
+          <span class="ct-badge ct-badge-ops" style="font-size: 0.95rem; padding: 0.35rem 0.8rem;">
+            {{ effective }}
+          </span>
+          {% if override %}
+          <span class="text-secondary">— переопределено в админке (переменная окружения: {{ env_default }})</span>
+          {% else %}
+          <span class="text-secondary">— значение из переменной окружения AI_PROVIDER, без переопределения</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <form action="/admin/config/ai-provider/save" method="POST">
+        <div class="mb-3">
+          <label class="form-label">Провайдер</label>
+          {% for value, label in providers %}
+          <div class="form-selectgroup-boxes mb-2">
+            <label class="form-selectgroup-item d-flex align-items-center gap-2">
+              <input type="radio" name="ai_provider" value="{{ value }}" class="form-selectgroup-input"
+                {% if value == effective %}checked{% endif %}>
+              <span class="form-selectgroup-label flex-fill">{{ label }}</span>
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="mb-3">
+          {% if not gemini_key_configured %}
+          <div class="text-secondary" style="font-size: 0.85rem;">
+            ⚠ GEMINI_API_KEY не задан в текущем окружении — переключение на Gemini без него не заработает.
+          </div>
+          {% endif %}
+          {% if not lmstudio_configured %}
+          <div class="text-secondary" style="font-size: 0.85rem;">
+            ⚠ LM_STUDIO_BASE_URL/LM_STUDIO_MODEL не заданы в текущем окружении — переключение на LM Studio без них не заработает.
+          </div>
+          {% endif %}
+        </div>
+
+        <button type="submit" class="btn btn-primary ct-btn-primary">Сохранить</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
