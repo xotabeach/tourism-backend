@@ -52,6 +52,14 @@ _REVIEW_STATUS_LABELS = {
     "deleted": ("Удалён", "ct-badge-route-deleted"),
 }
 
+_ARTICLE_STATUS_LABELS = {
+    "draft": ("Черновик", "ct-badge-route-draft"),
+    "pending_review": ("На модерации", "ct-badge-route-pending"),
+    "published": ("Опубликована", "ct-badge-route-published"),
+    "rejected": ("Отклонена", "ct-badge-route-rejected"),
+    "deleted": ("Удалена", "ct-badge-route-deleted"),
+}
+
 _ALLOWED_CSS = frozenset(
     {
         "ct-badge-open",
@@ -131,6 +139,11 @@ def format_place_publication_status(model: object, attribute: object) -> Markup:
 
 def format_review_status(model: object, attribute: object) -> Markup:
     return _badge(getattr(model, "status", None), _REVIEW_STATUS_LABELS)
+
+
+def format_article_status(model: object, attribute: object) -> Markup:
+    """Articles carry one status reviews do not: an author-only draft."""
+    return _badge(getattr(model, "status", None), _ARTICLE_STATUS_LABELS)
 
 
 def _entity_cache(request: Request | None, key: str) -> dict[UUID, str]:

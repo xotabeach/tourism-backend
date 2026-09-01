@@ -41,6 +41,7 @@ from tourism_backend.modules.admin.presentation.filters import (
 )
 from tourism_backend.modules.admin.presentation.formatters import (
     format_admin_role,
+    format_article_status,
     format_debug_code,
     format_expert_status,
     format_masked_token,
@@ -59,6 +60,11 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_user_cover,
     format_user_fk,
     format_user_id_peek,
+)
+from tourism_backend.modules.content.infrastructure.models import (
+    Article,
+    ArticleBlock,
+    ArticleComment,
 )
 from tourism_backend.modules.geography.infrastructure.models import (
     Country,
@@ -2566,6 +2572,179 @@ class MediaAttachmentAdmin(ModelView, model=MediaAttachment):
     page_size = 50
 
 
+class ArticleAdmin(ModelView, model=Article):
+    category = "Контент"
+    category_icon = "fa-solid fa-newspaper"
+    name = "Статья"
+    name_plural = "Статьи"
+    icon = "fa-solid fa-newspaper"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        Article.status,
+        Article.title,
+        Article.author_user_id,
+        Article.related_route_id,
+        Article.created_at,
+        Article.published_at,
+    ]
+    column_labels = {
+        Article.status: "Статус",
+        Article.title: "Заголовок",
+        Article.author_user_id: "Автор",
+        Article.related_route_id: "Маршрут",
+        Article.related_place_id: "Локация",
+        Article.moderator_note: "Заметка модератора",
+        Article.moderated_at: "Модерирована",
+        Article.created_at: "Создана",
+        Article.published_at: "Опубликована",
+        Article.updated_at: "Обновлена",
+    }
+    column_formatters = {
+        Article.status: format_article_status,
+        Article.author_user_id: format_user_fk,
+        Article.related_route_id: format_route_fk,
+    }
+    column_formatters_detail = {
+        Article.status: format_article_status,
+        Article.author_user_id: format_user_fk,
+        Article.related_route_id: format_route_fk,
+    }
+    column_searchable_list = [Article.title]
+    column_sortable_list = [
+        Article.status,
+        Article.created_at,
+        Article.published_at,
+    ]
+    column_default_sort = (Article.created_at, True)
+    column_filters: ClassVar[list[Any]] = [
+        AllUniqueStringValuesFilter(Article.status),
+        OperationColumnFilter(Article.author_user_id, title="ID автора"),
+        OperationColumnFilter(Article.related_route_id, title="ID маршрута"),
+    ]
+    # Editable only for the moderator note; status moves through the
+    # service so its notifications and published_at stamping cannot be
+    # bypassed by editing the column directly.
+    form_columns = [
+        Article.moderator_note,
+    ]
+    form_args = {
+        "moderator_note": {"label": "Заметка модератора"},
+    }
+    can_create = False
+    can_edit = True
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        request.state.user_names = await _preload_user_names(
+            self.session_maker,
+            [row.author_user_id for row in pagination.rows],
+        )
+        request.state.route_names = await _preload_route_names(
+            self.session_maker,
+            [row.related_route_id for row in pagination.rows if row.related_route_id],
+        )
+        return pagination
+
+
+class ArticleBlockAdmin(ModelView, model=ArticleBlock):
+    category = "Контент"
+    category_icon = "fa-solid fa-newspaper"
+    name = "Блок статьи"
+    name_plural = "Блоки статей"
+    icon = "fa-solid fa-layer-group"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        ArticleBlock.article_id,
+        ArticleBlock.position,
+        ArticleBlock.block_type,
+        ArticleBlock.text_content,
+    ]
+    column_labels = {
+        ArticleBlock.article_id: "Статья",
+        ArticleBlock.position: "Позиция",
+        ArticleBlock.block_type: "Тип",
+        ArticleBlock.text_content: "Текст",
+        ArticleBlock.media_attachment_id: "Изображение",
+    }
+    column_sortable_list = [ArticleBlock.position]
+    column_filters: ClassVar[list[Any]] = [
+        AllUniqueStringValuesFilter(ArticleBlock.block_type),
+        OperationColumnFilter(ArticleBlock.article_id, title="ID статьи"),
+    ]
+    # Read-only: blocks are rebuilt as a set when the author edits the
+    # article, so editing one here would be silently overwritten.
+    can_create = False
+    can_edit = False
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+
+class ArticleCommentAdmin(ModelView, model=ArticleComment):
+    category = "Контент"
+    category_icon = "fa-solid fa-newspaper"
+    name = "Комментарий"
+    name_plural = "Комментарии статей"
+    icon = "fa-solid fa-comment-dots"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        ArticleComment.status,
+        ArticleComment.article_id,
+        ArticleComment.author_user_id,
+        ArticleComment.body,
+        ArticleComment.created_at,
+    ]
+    column_labels = {
+        ArticleComment.status: "Статус",
+        ArticleComment.article_id: "Статья",
+        ArticleComment.author_user_id: "Автор",
+        ArticleComment.body: "Текст",
+        ArticleComment.reply_to_comment_id: "Ответ на",
+        ArticleComment.moderator_note: "Заметка модератора",
+        ArticleComment.moderated_at: "Модерирован",
+        ArticleComment.created_at: "Создан",
+        ArticleComment.updated_at: "Обновлён",
+    }
+    column_formatters = {
+        ArticleComment.status: format_review_status,
+        ArticleComment.author_user_id: format_user_fk,
+    }
+    column_formatters_detail = {
+        ArticleComment.status: format_review_status,
+        ArticleComment.author_user_id: format_user_fk,
+    }
+    column_searchable_list = [ArticleComment.body]
+    column_sortable_list = [ArticleComment.status, ArticleComment.created_at]
+    column_default_sort = (ArticleComment.created_at, True)
+    column_filters: ClassVar[list[Any]] = [
+        AllUniqueStringValuesFilter(ArticleComment.status),
+        OperationColumnFilter(ArticleComment.article_id, title="ID статьи"),
+        OperationColumnFilter(ArticleComment.author_user_id, title="ID автора"),
+    ]
+    form_columns = [
+        ArticleComment.moderator_note,
+    ]
+    form_args = {
+        "moderator_note": {"label": "Заметка модератора"},
+    }
+    can_create = False
+    can_edit = True
+    can_delete = False
+    can_export = False
+    page_size = 50
+
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        request.state.user_names = await _preload_user_names(
+            self.session_maker,
+            [row.author_user_id for row in pagination.rows],
+        )
+        return pagination
+
+
 def register_views(admin: Any, settings: Settings) -> None:
     show_debug = settings.otp_store_debug_code_enabled
 
@@ -2659,6 +2838,9 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(PlaceAdmin)
     admin.add_view(RouteAdmin)
     admin.add_view(RouteReviewAdmin)
+    admin.add_view(ArticleAdmin)
+    admin.add_view(ArticleBlockAdmin)
+    admin.add_view(ArticleCommentAdmin)
     admin.add_view(PlaceReviewAdmin)
     admin.add_view(AdminPrincipalAdmin)
     admin.add_view(AdminRoleBindingAdmin)

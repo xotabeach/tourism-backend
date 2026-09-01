@@ -898,3 +898,47 @@ async def test_runtime_config_requires_admin_role_not_just_login(
         follow_redirects=False,
     )
     assert save.status_code == 303, save.text
+
+
+def test_article_admin_views_are_registered_and_write_gated() -> None:
+    """Articles reach ops read-only apart from the moderator note.
+
+    Status must not be hand-editable: publishing goes through
+    article_service.set_article_status, which is what stamps published_at
+    and sends the author their notification. Editing the column directly
+    would skip both.
+    """
+    from tourism_backend.modules.admin.presentation.views import (
+        ArticleAdmin,
+        ArticleBlockAdmin,
+        ArticleCommentAdmin,
+    )
+    from tourism_backend.modules.content.infrastructure.models import (
+        Article,
+        ArticleBlock,
+        ArticleComment,
+    )
+
+    class _FakeAdmin:
+        def __init__(self) -> None:
+            self.views: list[object] = []
+
+        def add_view(self, view: object) -> None:
+            self.views.append(view)
+
+    admin = _FakeAdmin()
+    register_views(admin, Settings(app_env="test"))
+    models = {getattr(v, "model", None) for v in admin.views}
+    assert {Article, ArticleBlock, ArticleComment} <= models
+
+    for view in (ArticleAdmin, ArticleBlockAdmin, ArticleCommentAdmin):
+        assert view.can_create is False
+        assert view.can_delete is False
+
+    assert Article.status not in ArticleAdmin.form_columns
+    assert ArticleAdmin.form_columns == [Article.moderator_note]
+    assert ArticleComment.status not in ArticleCommentAdmin.form_columns
+
+    # Blocks are rebuilt as a set whenever the author edits the article, so
+    # an ops edit here would be silently overwritten.
+    assert ArticleBlockAdmin.can_edit is False
