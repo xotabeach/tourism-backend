@@ -60,15 +60,25 @@ _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 # thinking early never bills the rest.
 _THINKING_TOKEN_HEADROOM = 2048
 
-# A model that hangs must not eat the whole request budget. Healthy replies
-# were measured at 1-4s, so a rung that has produced nothing after this long
-# is hanging, not thinking — and the mobile client gives the whole request
-# only 20s (Dio receiveTimeout) before it reports "Network request failed",
-# which is the budget the entire walk has to fit inside.
-_ATTEMPT_TIMEOUT_SECONDS = 7.0
+# A model that hangs must not eat the whole request budget. The mobile
+# client gives the whole turn 20s (Dio receiveTimeout) before it reports
+# "Network request failed", so the entire walk has to fit inside that.
+#
+# Each attempt therefore gets an equal share of what is left rather than a
+# fixed slice: with a fixed 7s slot and two hanging models the budget ran
+# out before the walk ever reached a model that answers, so the first
+# request after a restart failed every time (measured on the server: 14.6s
+# then an error, while later requests took 3.5s because the breaker had
+# learned which models were down). Sharing the remainder keeps early rungs
+# short — they are cheap probes of the preferred model — while the last
+# rung still gets a usable slice, since it is the one that has to answer.
+# Healthy single-model replies measured 1.2-5.7s, so the floor stays above
+# that; the ceiling keeps one hanging model from eating a large budget.
+_MIN_ATTEMPT_TIMEOUT_SECONDS = 3.5
+_MAX_ATTEMPT_TIMEOUT_SECONDS = 8.0
 # Stop starting new attempts once this much of the caller's budget is gone,
 # so the walk fails with a real error instead of the client timing out.
-_CHAIN_DEADLINE_FRACTION = 0.75
+_CHAIN_DEADLINE_FRACTION = 0.9
 
 # Per-model breaker, same shape and rationale as two_gis_tsp.py's: while a
 # model is down, paying its timeout on every single request would make the
@@ -152,9 +162,6 @@ class GeminiProvider:
         self._model_chain = _model_chain(model, fallback_models)
         self._base_url = base_url.rstrip("/")
         self._timeout = httpx.Timeout(timeout_seconds)
-        # Never longer than the caller's own budget — a one-model chain with
-        # a 3s budget must not sit for 7s.
-        self._attempt_timeout = httpx.Timeout(min(_ATTEMPT_TIMEOUT_SECONDS, timeout_seconds))
         self._chain_deadline = timeout_seconds * _CHAIN_DEADLINE_FRACTION
         self._transport = transport
 
@@ -280,9 +287,16 @@ class GeminiProvider:
 
         last_error = "no model attempted"
         for index, model in enumerate(candidates):
-            if index > 0 and time.monotonic() - started >= self._chain_deadline:
+            remaining = self._chain_deadline - (time.monotonic() - started)
+            if index > 0 and remaining <= 0:
                 last_error = f"{last_error} (chain deadline reached)"
                 break
+            # Split what is left evenly across the models still to try, so a
+            # hanging rung cannot starve the ones behind it.
+            attempt_seconds = min(
+                _MAX_ATTEMPT_TIMEOUT_SECONDS,
+                max(_MIN_ATTEMPT_TIMEOUT_SECONDS, remaining / (len(candidates) - index)),
+            )
             try:
                 text = await self._generate_once(
                     client,
@@ -290,6 +304,7 @@ class GeminiProvider:
                     system_instruction=system_instruction,
                     contents=contents,
                     max_output_tokens=max_output_tokens,
+                    attempt_seconds=attempt_seconds,
                 )
             except _RetryableGeminiError as exc:
                 _circuit.record_failure(model)
@@ -319,6 +334,7 @@ class GeminiProvider:
         system_instruction: str,
         contents: list[dict[str, Any]],
         max_output_tokens: int,
+        attempt_seconds: float,
     ) -> str:
         url = f"{self._base_url}/models/{model}:generateContent"
         try:
@@ -338,7 +354,7 @@ class GeminiProvider:
                         "temperature": 0.3,
                     },
                 },
-                timeout=self._attempt_timeout,
+                timeout=httpx.Timeout(attempt_seconds),
             )
             response.raise_for_status()
         except (httpx.TimeoutException, httpx.ConnectError) as exc:

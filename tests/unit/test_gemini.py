@@ -466,3 +466,48 @@ async def test_the_breaker_never_leaves_the_chain_empty() -> None:
     recovered = await provider.probe()
     assert recovered.response_text == '{"assistant_text":"ok"}'
     assert calls[-1].endswith("gemini-primary:generateContent")
+
+
+@pytest.mark.asyncio
+async def test_hanging_models_do_not_starve_the_rest_of_the_chain() -> None:
+    """Regression: a fixed per-attempt slot let two hanging models spend the
+    whole budget, so the walk never reached a model that answers and the
+    first request after a restart always failed (measured: 14.6s, error)."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path.rsplit("/", 1)[-1].split(":")[0])
+        if len(calls) < 4:
+            raise httpx.ReadTimeout("hanging", request=request)
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"assistant_text":"ok"}'}]}}]},
+        )
+
+    provider = GeminiProvider(
+        api_key="secret-token",
+        model="model-a",
+        fallback_models=("model-b", "model-c", "model-d"),
+        timeout_seconds=18,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await provider.chat_turn(
+        messages=[ChatMessage(role="user", content="привет")],
+        constraints={},
+        confirmed_fields=[],
+    )
+
+    assert result.assistant_text == "ok"
+    assert calls == ["model-a", "model-b", "model-c", "model-d"]
+
+
+def test_every_attempt_fits_inside_the_callers_budget() -> None:
+    """Four attempts must not be able to outlast the client's patience."""
+    provider = GeminiProvider(
+        api_key="secret-token",
+        model="model-a",
+        fallback_models=("model-b", "model-c", "model-d"),
+        timeout_seconds=18,
+    )
+    assert provider._chain_deadline < 18
