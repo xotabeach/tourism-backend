@@ -25,6 +25,7 @@ from tourism_backend.modules.content.application.article_schemas import (
 )
 from tourism_backend.modules.content.infrastructure.models import Article, ArticleBlock
 from tourism_backend.modules.identity.infrastructure.models import User
+from tourism_backend.modules.notifications.infrastructure.models import Notification
 
 DATABASE_URL = "postgresql+asyncpg://tourism:local-tourism-password@localhost:5433/tourism"
 
@@ -55,6 +56,7 @@ async def author(session: AsyncSession) -> AsyncIterator[User]:
     user_id = user.id
     yield user
     await session.rollback()
+    await session.execute(delete(Notification).where(Notification.user_id == user_id))
     await session.execute(delete(Article).where(Article.author_user_id == user_id))
     await session.execute(delete(User).where(User.id == user_id))
     await session.commit()
@@ -346,3 +348,107 @@ async def test_database_rejects_mixed_shape_blocks(
     with pytest.raises(IntegrityError):
         await session.commit()
     await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_publishing_notifies_the_author_and_stamps_published_at(
+    session: AsyncSession, author: User
+) -> None:
+    created = await article_service.create_article_draft(
+        session, author_user_id=author.id, payload=_payload()
+    )
+    article_id = UUID(created.id)
+    await article_service.submit_article_for_review(
+        session, author_user_id=author.id, article_id=article_id
+    )
+
+    changed = await article_service.set_article_status(
+        session, article_ids=[article_id], status="published"
+    )
+    assert changed == 1
+
+    row = await session.get(Article, article_id)
+    assert row is not None
+    assert row.status == "published"
+    # published_at is separate from moderated_at because the feed sorts by
+    # when the article went live, and moderated_at is stamped on rejection too.
+    assert row.published_at is not None
+    assert row.moderated_at is not None
+
+    inbox = (
+        await session.scalars(
+            select(Notification).where(
+                Notification.user_id == author.id,
+                Notification.target_id == article_id,
+            )
+        )
+    ).all()
+    assert [item.kind for item in inbox] == ["article_published"]
+
+
+@pytest.mark.asyncio
+async def test_rejecting_notifies_the_author_without_publishing(
+    session: AsyncSession, author: User
+) -> None:
+    created = await article_service.create_article_draft(
+        session, author_user_id=author.id, payload=_payload()
+    )
+    article_id = UUID(created.id)
+    await article_service.submit_article_for_review(
+        session, author_user_id=author.id, article_id=article_id
+    )
+    await article_service.set_article_status(session, article_ids=[article_id], status="rejected")
+
+    row = await session.get(Article, article_id)
+    assert row is not None
+    assert row.status == "rejected"
+    assert row.published_at is None
+
+    inbox = (
+        await session.scalars(
+            select(Notification).where(
+                Notification.user_id == author.id,
+                Notification.target_id == article_id,
+            )
+        )
+    ).all()
+    assert [item.kind for item in inbox] == ["article_rejected"]
+
+    # A rejected article goes back to the author to fix, not into limbo.
+    reopened = await article_service.update_article_draft(
+        session,
+        author_user_id=author.id,
+        article_id=article_id,
+        payload=_payload(title="Доработано"),
+    )
+    assert reopened.title == "Доработано"
+
+
+@pytest.mark.asyncio
+async def test_moderating_an_already_published_article_changes_nothing(
+    session: AsyncSession, author: User
+) -> None:
+    """Re-approving must not fire a second notification at the author."""
+    created = await article_service.create_article_draft(
+        session, author_user_id=author.id, payload=_payload()
+    )
+    article_id = UUID(created.id)
+    await article_service.submit_article_for_review(
+        session, author_user_id=author.id, article_id=article_id
+    )
+    await article_service.set_article_status(session, article_ids=[article_id], status="published")
+
+    again = await article_service.set_article_status(
+        session, article_ids=[article_id], status="published"
+    )
+    assert again == 0
+
+    inbox = (
+        await session.scalars(
+            select(Notification).where(
+                Notification.user_id == author.id,
+                Notification.target_id == article_id,
+            )
+        )
+    ).all()
+    assert len(inbox) == 1

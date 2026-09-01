@@ -166,6 +166,84 @@ async def create_review_moderation_notification(
     return notification
 
 
+async def create_article_moderation_notification(
+    session: AsyncSession,
+    *,
+    author_user_id: UUID,
+    article_id: UUID,
+    article_title: str,
+    approved: bool,
+) -> Notification:
+    """Notify the article author after ops approve/reject it."""
+    short_title = _clip(article_title, 48)
+    if approved:
+        kind = "article_published"
+        title = "Статья опубликована"
+        body = f"Ваша статья «{short_title}» прошла модерацию"
+    else:
+        kind = "article_rejected"
+        title = "Статья отклонена"
+        body = f"Ваша статья «{short_title}» не прошла модерацию. Вы можете её доработать"
+    notification = _build_notification(
+        user_id=author_user_id,
+        kind=kind,
+        title=title,
+        body=body,
+        target_type="article",
+        target_id=article_id,
+    )
+    session.add(notification)
+    return notification
+
+
+async def create_article_comment_notification(
+    session: AsyncSession,
+    *,
+    author_user_id: UUID,
+    actor_user_id: UUID,
+    article_id: UUID,
+    article_title: str,
+) -> Notification | None:
+    """Tell the article author a comment was published under their text."""
+    if author_user_id == actor_user_id:
+        return None
+    notification = _build_notification(
+        user_id=author_user_id,
+        actor_user_id=actor_user_id,
+        kind="article_comment",
+        title="Новый комментарий",
+        body=f"Оставил комментарий к вашей статье «{_clip(article_title, 48)}»",
+        target_type="article",
+        target_id=article_id,
+    )
+    session.add(notification)
+    return notification
+
+
+async def create_article_about_route_notification(
+    session: AsyncSession,
+    *,
+    owner_user_id: UUID,
+    actor_user_id: UUID,
+    article_id: UUID,
+    article_title: str,
+) -> Notification | None:
+    """Tell a route/place owner someone published an article about it."""
+    if owner_user_id == actor_user_id:
+        return None
+    notification = _build_notification(
+        user_id=owner_user_id,
+        actor_user_id=actor_user_id,
+        kind="article_about_your_route",
+        title="Статья о вашем маршруте",
+        body=f"Опубликовал статью «{_clip(article_title, 48)}» о вашем маршруте",
+        target_type="article",
+        target_id=article_id,
+    )
+    session.add(notification)
+    return notification
+
+
 async def create_profile_like_notification(
     session: AsyncSession,
     *,

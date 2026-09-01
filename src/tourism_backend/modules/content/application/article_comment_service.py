@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import get_settings
 from tourism_backend.modules.content.application.article_schemas import (
     ArticleCommentCreateIn,
     ArticleCommentListOut,
@@ -23,6 +24,7 @@ from tourism_backend.modules.content.application.article_schemas import (
 from tourism_backend.modules.content.infrastructure.models import Article, ArticleComment
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
+from tourism_backend.modules.notifications.application import service as notifications_service
 
 # Same window reviews use: long enough to undo a regretted comment, short
 # enough that a conversation others have replied to cannot be rewritten.
@@ -226,6 +228,7 @@ async def set_comment_status(
             await session.scalars(select(ArticleComment).where(ArticleComment.id.in_(comment_ids)))
         ).all()
     )
+    settings = get_settings()
     now = datetime.now(UTC)
     changed = 0
     for comment in rows:
@@ -235,5 +238,32 @@ async def set_comment_status(
         comment.moderated_at = now
         comment.updated_at = now
         changed += 1
+
+        if status != "published":
+            continue
+        article = await session.get(Article, comment.article_id)
+        if article is None:
+            continue
+        # Notify only once the comment is actually visible — telling an
+        # author about a comment nobody can read yet would send them to an
+        # empty thread.
+        notif = await notifications_service.create_article_comment_notification(
+            session,
+            author_user_id=article.author_user_id,
+            actor_user_id=comment.author_user_id,
+            article_id=article.id,
+            article_title=article.title,
+        )
+        if notif is not None:
+            await notifications_service.maybe_push_notification(
+                session,
+                settings,
+                user_id=article.author_user_id,
+                kind=notif.kind,
+                title=notif.title,
+                body=notif.body,
+                target_type="article",
+                target_id=article.id,
+            )
     await session.commit()
     return changed

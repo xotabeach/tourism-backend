@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import get_settings
 from tourism_backend.modules.content.application.article_media import (
     SavedArticleImage,
     delete_article_image,
@@ -33,6 +34,7 @@ from tourism_backend.modules.content.infrastructure.models import (
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
+from tourism_backend.modules.notifications.application import service as notifications_service
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.routes.infrastructure.models import Route
 
@@ -625,3 +627,77 @@ async def _refresh_cover(session: AsyncSession, article: Article) -> None:
         .limit(1)
     )
     article.cover_media_attachment_id = first.media_attachment_id if first is not None else None
+
+
+async def set_article_status(
+    session: AsyncSession,
+    *,
+    article_ids: list[UUID],
+    status: str,
+) -> int:
+    """Moderation entry point, mirroring set_review_status.
+
+    Publishing stamps ``published_at`` separately from ``moderated_at``:
+    the feed sorts by when an article went live, and ``moderated_at`` is
+    also stamped on a rejection.
+    """
+    if status not in {"published", "rejected", "deleted"}:
+        raise AppError(code="validation_error", message="Invalid status", status_code=400)
+    if not article_ids:
+        return 0
+    rows = list((await session.scalars(select(Article).where(Article.id.in_(article_ids)))).all())
+    settings = get_settings()
+    now = datetime.now(UTC)
+    changed = 0
+    for article in rows:
+        if status in {"published", "rejected"} and article.status != "pending_review":
+            continue
+        article.status = status
+        article.moderated_at = now
+        article.updated_at = now
+        if status == "published":
+            article.published_at = now
+        changed += 1
+
+        if status in {"published", "rejected"}:
+            author_notif = await notifications_service.create_article_moderation_notification(
+                session,
+                author_user_id=article.author_user_id,
+                article_id=article.id,
+                article_title=article.title,
+                approved=status == "published",
+            )
+            await notifications_service.maybe_push_notification(
+                session,
+                settings,
+                user_id=article.author_user_id,
+                kind=author_notif.kind,
+                title=author_notif.title,
+                body=author_notif.body,
+                target_type="article",
+                target_id=article.id,
+            )
+
+        if status == "published" and article.related_route_id is not None:
+            route = await session.get(Route, article.related_route_id)
+            if route is not None and route.owner_user_id is not None:
+                owner_notif = await notifications_service.create_article_about_route_notification(
+                    session,
+                    owner_user_id=route.owner_user_id,
+                    actor_user_id=article.author_user_id,
+                    article_id=article.id,
+                    article_title=article.title,
+                )
+                if owner_notif is not None:
+                    await notifications_service.maybe_push_notification(
+                        session,
+                        settings,
+                        user_id=route.owner_user_id,
+                        kind=owner_notif.kind,
+                        title=owner_notif.title,
+                        body=owner_notif.body,
+                        target_type="article",
+                        target_id=article.id,
+                    )
+    await session.commit()
+    return changed
