@@ -11,9 +11,16 @@ from uuid import UUID
 from fastapi import APIRouter, File, Query, UploadFile, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, OptionalCurrentUserId
-from tourism_backend.modules.content.application import article_media, article_service
+from tourism_backend.modules.content.application import (
+    article_comment_service,
+    article_media,
+    article_service,
+)
 from tourism_backend.modules.content.application.article_schemas import (
     ArticleBlockOut,
+    ArticleCommentCreateIn,
+    ArticleCommentListOut,
+    ArticleCommentOut,
     ArticleListOut,
     ArticleOut,
     ArticleWriteIn,
@@ -151,4 +158,55 @@ async def delete_article_block_image(
 ) -> None:
     await article_service.delete_article_block_image(
         session, author_user_id=user_id, article_id=article_id, block_id=block_id
+    )
+
+
+@router.get(
+    "/articles/{article_id}/comments",
+    response_model=ArticleCommentListOut,
+)
+async def list_article_comments(
+    article_id: UUID,
+    session: DbSession,
+    viewer_user_id: OptionalCurrentUserId,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ArticleCommentListOut:
+    return await article_comment_service.list_article_comments(
+        session,
+        article_id=article_id,
+        viewer_user_id=viewer_user_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post(
+    "/articles/{article_id}/comments",
+    response_model=ArticleCommentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_article_comment(
+    article_id: UUID,
+    payload: ArticleCommentCreateIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> ArticleCommentOut:
+    return await article_comment_service.create_article_comment(
+        session, article_id=article_id, author_user_id=user_id, payload=payload
+    )
+
+
+@router.delete(
+    "/articles/{article_id}/comments/{comment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_article_comment(
+    article_id: UUID,
+    comment_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> None:
+    await article_comment_service.delete_own_comment(
+        session, article_id=article_id, comment_id=comment_id, author_user_id=user_id
     )

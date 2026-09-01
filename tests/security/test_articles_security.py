@@ -303,3 +303,128 @@ async def test_article_cannot_point_at_a_route_that_does_not_exist(
     )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "article_subject_not_found"
+
+
+async def _publish(client: AsyncClient, token: str) -> dict:
+    """A published article, via the same path moderation would take."""
+    from uuid import UUID as _UUID
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from tourism_backend.modules.content.infrastructure.models import Article
+
+    draft = await _create_draft(client, token)
+    await client.post(f"/api/v1/articles/{draft['id']}/submit", headers=_auth(token))
+    engine = create_async_engine(DATABASE_URL)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        from tourism_backend.modules.content.application import (
+            article_comment_service,  # noqa: F401
+        )
+
+        row = await session.get(Article, _UUID(draft["id"]))
+        assert row is not None
+        row.status = "published"
+        row.published_at = row.updated_at
+        await session.commit()
+    await engine.dispose()
+    return draft
+
+
+@pytest.mark.asyncio
+async def test_comment_requires_auth_and_starts_unmoderated(live_client: AsyncClient) -> None:
+    author = await _login(live_client)
+    article = await _publish(live_client, author)
+
+    anonymous = await live_client.post(
+        f"/api/v1/articles/{article['id']}/comments", json={"body": "Аноним"}
+    )
+    assert anonymous.status_code == 401
+
+    reader = await _login(live_client, name="Читатель")
+    created = await live_client.post(
+        f"/api/v1/articles/{article['id']}/comments",
+        json={"body": "Полезная статья, спасибо!"},
+        headers=_auth(reader),
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["status"] == "pending_review"
+
+
+@pytest.mark.asyncio
+async def test_pending_comment_is_visible_only_to_its_own_author(
+    live_client: AsyncClient,
+) -> None:
+    author = await _login(live_client)
+    article = await _publish(live_client, author)
+    reader = await _login(live_client, name="Читатель")
+    stranger = await _login(live_client, name="Прохожий")
+
+    posted = await live_client.post(
+        f"/api/v1/articles/{article['id']}/comments",
+        json={"body": "Жду модерации"},
+        headers=_auth(reader),
+    )
+    comment_id = posted.json()["id"]
+
+    # Its author sees it, or posting would look broken.
+    own = await live_client.get(f"/api/v1/articles/{article['id']}/comments", headers=_auth(reader))
+    assert comment_id in {item["id"] for item in own.json()["items"]}
+
+    for headers in ({}, _auth(stranger)):
+        other = await live_client.get(f"/api/v1/articles/{article['id']}/comments", headers=headers)
+        assert comment_id not in {item["id"] for item in other.json()["items"]}
+
+
+@pytest.mark.asyncio
+async def test_cannot_comment_on_an_unpublished_article(live_client: AsyncClient) -> None:
+    author = await _login(live_client)
+    draft = await _create_draft(live_client, author)
+    reader = await _login(live_client, name="Читатель")
+
+    response = await live_client.post(
+        f"/api/v1/articles/{draft['id']}/comments",
+        json={"body": "Рано"},
+        headers=_auth(reader),
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_only_the_comment_author_can_delete_it(live_client: AsyncClient) -> None:
+    author = await _login(live_client)
+    article = await _publish(live_client, author)
+    reader = await _login(live_client, name="Читатель")
+    stranger = await _login(live_client, name="Прохожий")
+
+    posted = await live_client.post(
+        f"/api/v1/articles/{article['id']}/comments",
+        json={"body": "Мой комментарий"},
+        headers=_auth(reader),
+    )
+    comment_id = posted.json()["id"]
+
+    theirs = await live_client.delete(
+        f"/api/v1/articles/{article['id']}/comments/{comment_id}", headers=_auth(stranger)
+    )
+    assert theirs.status_code == 404
+
+    mine = await live_client.delete(
+        f"/api/v1/articles/{article['id']}/comments/{comment_id}", headers=_auth(reader)
+    )
+    assert mine.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_reply_must_point_at_a_visible_comment(live_client: AsyncClient) -> None:
+    author = await _login(live_client)
+    article = await _publish(live_client, author)
+    reader = await _login(live_client, name="Читатель")
+
+    response = await live_client.post(
+        f"/api/v1/articles/{article['id']}/comments",
+        json={"body": "Отвечаю в пустоту", "reply_to_comment_id": str(uuid4())},
+        headers=_auth(reader),
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "article_comment_parent_not_found"
