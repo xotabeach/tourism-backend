@@ -8,9 +8,10 @@ file" ordering so the database stays authoritative if the unlink fails.
 """
 
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -21,8 +22,10 @@ from tourism_backend.modules.content.application.article_media import (
 )
 from tourism_backend.modules.content.application.article_schemas import (
     ArticleBlockOut,
+    ArticleLikeStatusOut,
     ArticleListOut,
     ArticleOut,
+    ArticleSaveStatusOut,
     ArticleSummaryOut,
     ArticleWriteIn,
 )
@@ -30,8 +33,14 @@ from tourism_backend.modules.content.infrastructure.models import (
     MAX_IMAGES_PER_ARTICLE,
     Article,
     ArticleBlock,
+    ArticleBookmark,
+    ArticleLike,
 )
-from tourism_backend.modules.identity.infrastructure.models import User
+from tourism_backend.modules.identity.infrastructure.models import (
+    EXPERT_RANK_ID,
+    TravelRank,
+    User,
+)
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.notifications.application import service as notifications_service
@@ -44,6 +53,11 @@ _EDITABLE_STATUSES = frozenset({"draft", "rejected"})
 _SUBMIT_WINDOW = timedelta(hours=24)
 _MAX_SUBMISSIONS_PER_WINDOW = 3
 _ANONYMOUS_AUTHOR = "Путешественник"
+_EXCERPT_LENGTH = 200
+# Rough Russian silent-reading speed, in characters per minute — good enough
+# for a "N мин чтения" estimate, not meant to be precise.
+_READING_CHARS_PER_MINUTE = 800
+_RELATED_ARTICLES_LIMIT = 4
 
 
 def _not_found() -> AppError:
@@ -55,6 +69,34 @@ async def _authors(session: AsyncSession, user_ids: list[UUID]) -> dict[UUID, Us
         return {}
     rows = (await session.scalars(select(User).where(User.id.in_(user_ids)))).all()
     return {user.id: user for user in rows}
+
+
+async def _rank_titles(session: AsyncSession, users: list[User]) -> dict[UUID, str]:
+    """Travel rank title per user, by ``travel_points``.
+
+    Same resolution as ``routes/application/service.py`` uses for a route's
+    owner, kept here rather than shared so the content module does not reach
+    into another module's application layer for it.
+    """
+    if not users:
+        return {}
+    ranks_sorted = sorted(
+        (await session.scalars(select(TravelRank).where(TravelRank.id != EXPERT_RANK_ID))).all(),
+        key=lambda rank: rank.min_points,
+        reverse=True,
+    )
+    out: dict[UUID, str] = {}
+    for user in users:
+        if getattr(user, "is_expert", False):
+            out[user.id] = "Эксперт"
+            continue
+        title = "Новичок"
+        for rank in ranks_sorted:
+            if user.travel_points >= rank.min_points:
+                title = rank.title
+                break
+        out[user.id] = title
+    return out
 
 
 async def _cover_urls(session: AsyncSession, articles: list[Article]) -> dict[UUID, str]:
@@ -77,12 +119,106 @@ async def _cover_urls(session: AsyncSession, articles: list[Article]) -> dict[UU
     return {wanted[row.id]: row.public_path for row in rows if row.id in wanted}
 
 
+def _truncate_excerpt(text: str, *, limit: int = _EXCERPT_LENGTH) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    cut = cleaned[:limit]
+    boundary = cut.rfind(" ")
+    if boundary > 0:
+        cut = cut[:boundary]
+    return f"{cut.rstrip()}…"
+
+
+async def _excerpts_and_reading_times(
+    session: AsyncSession, articles: list[Article]
+) -> tuple[dict[UUID, str | None], dict[UUID, int]]:
+    """Batch-computed, not stored — same principle as route rating aggregates.
+
+    Excerpt comes only from the first genuine ``text`` block (a quote or a
+    list item makes a strange opening line for a card preview); reading time
+    sums every block that carries prose (``text``/``quote``/``list``).
+    """
+    if not articles:
+        return {}, {}
+    article_ids = [article.id for article in articles]
+    rows = list(
+        (
+            await session.scalars(
+                select(ArticleBlock)
+                .where(
+                    ArticleBlock.article_id.in_(article_ids),
+                    ArticleBlock.block_type.in_(("text", "quote", "list")),
+                )
+                .order_by(ArticleBlock.article_id, ArticleBlock.position)
+            )
+        ).all()
+    )
+    by_article: dict[UUID, list[ArticleBlock]] = {}
+    for block in rows:
+        by_article.setdefault(block.article_id, []).append(block)
+
+    excerpts: dict[UUID, str | None] = {}
+    reading_times: dict[UUID, int] = {}
+    for article_id, blocks in by_article.items():
+        first_text_content = next(
+            (
+                block.text_content
+                for block in blocks
+                if block.block_type == "text" and block.text_content
+            ),
+            None,
+        )
+        excerpts[article_id] = (
+            _truncate_excerpt(first_text_content) if first_text_content is not None else None
+        )
+        total_chars = sum(len(block.text_content or "") for block in blocks)
+        reading_times[article_id] = max(1, ceil(total_chars / _READING_CHARS_PER_MINUTE))
+    for article in articles:
+        excerpts.setdefault(article.id, None)
+        reading_times.setdefault(article.id, 1)
+    return excerpts, reading_times
+
+
+async def _liked_article_ids(
+    session: AsyncSession, viewer_user_id: UUID | None, article_ids: list[UUID]
+) -> set[UUID]:
+    if viewer_user_id is None or not article_ids:
+        return set()
+    rows = await session.scalars(
+        select(ArticleLike.article_id).where(
+            ArticleLike.user_id == viewer_user_id,
+            ArticleLike.article_id.in_(article_ids),
+        )
+    )
+    return set(rows.all())
+
+
+async def _saved_article_ids(
+    session: AsyncSession, viewer_user_id: UUID | None, article_ids: list[UUID]
+) -> set[UUID]:
+    if viewer_user_id is None or not article_ids:
+        return set()
+    rows = await session.scalars(
+        select(ArticleBookmark.article_id).where(
+            ArticleBookmark.user_id == viewer_user_id,
+            ArticleBookmark.article_id.in_(article_ids),
+        )
+    )
+    return set(rows.all())
+
+
 def _summary_out(
     article: Article,
     *,
     authors: dict[UUID, User],
     avatars: dict[UUID, str],
+    ranks: dict[UUID, str],
     covers: dict[UUID, str],
+    excerpts: dict[UUID, str | None],
+    reading_times: dict[UUID, int],
+    liked_article_ids: set[UUID],
+    saved_article_ids: set[UUID],
 ) -> ArticleSummaryOut:
     author = authors.get(article.author_user_id)
     return ArticleSummaryOut(
@@ -92,9 +228,18 @@ def _summary_out(
         author_user_id=str(article.author_user_id),
         author_display_name=author.display_name if author is not None else _ANONYMOUS_AUTHOR,
         author_avatar_url=avatars.get(article.author_user_id),
+        author_rank_title=ranks.get(article.author_user_id),
         related_route_id=str(article.related_route_id) if article.related_route_id else None,
         related_place_id=str(article.related_place_id) if article.related_place_id else None,
         cover_image_url=covers.get(article.id),
+        tags=list(article.tags),
+        excerpt=excerpts.get(article.id),
+        reading_time_minutes=reading_times.get(article.id, 1),
+        like_count=article.like_count,
+        liked_by_me=article.id in liked_article_ids,
+        saved_by_me=article.id in saved_article_ids,
+        view_count=article.view_count,
+        is_featured=article.is_featured,
         created_at=article.created_at,
         published_at=article.published_at,
     )
@@ -145,7 +290,9 @@ async def _blocks_out(session: AsyncSession, article_id: UUID) -> list[ArticleBl
     return result
 
 
-async def _article_out(session: AsyncSession, article: Article) -> ArticleOut:
+async def _article_out(
+    session: AsyncSession, article: Article, *, viewer_user_id: UUID | None
+) -> ArticleOut:
     authors = await _authors(session, [article.author_user_id])
     avatars = await media_service.resolve_urls(
         session,
@@ -153,7 +300,11 @@ async def _article_out(session: AsyncSession, article: Article) -> ArticleOut:
         entity_ids=[article.author_user_id],
         role="avatar",
     )
+    ranks = await _rank_titles(session, list(authors.values()))
     covers = await _cover_urls(session, [article])
+    excerpts, reading_times = await _excerpts_and_reading_times(session, [article])
+    liked_ids = await _liked_article_ids(session, viewer_user_id, [article.id])
+    saved_ids = await _saved_article_ids(session, viewer_user_id, [article.id])
     author = authors.get(article.author_user_id)
     return ArticleOut(
         id=str(article.id),
@@ -162,10 +313,19 @@ async def _article_out(session: AsyncSession, article: Article) -> ArticleOut:
         author_user_id=str(article.author_user_id),
         author_display_name=author.display_name if author is not None else _ANONYMOUS_AUTHOR,
         author_avatar_url=avatars.get(article.author_user_id),
+        author_rank_title=ranks.get(article.author_user_id),
         related_route_id=str(article.related_route_id) if article.related_route_id else None,
         related_place_id=str(article.related_place_id) if article.related_place_id else None,
         cover_image_url=covers.get(article.id),
         moderator_note=article.moderator_note,
+        tags=list(article.tags),
+        excerpt=excerpts.get(article.id),
+        reading_time_minutes=reading_times.get(article.id, 1),
+        like_count=article.like_count,
+        liked_by_me=article.id in liked_ids,
+        saved_by_me=article.id in saved_ids,
+        view_count=article.view_count,
+        is_featured=article.is_featured,
         created_at=article.created_at,
         published_at=article.published_at,
         blocks=await _blocks_out(session, article.id),
@@ -238,6 +398,8 @@ async def _replace_blocks(
                 position=position,
                 block_type=block_in.block_type,
                 text_content=block_in.text_content,
+                caption=block_in.caption,
+                list_style=block_in.list_style,
                 media_attachment_id=None,
             )
         )
@@ -250,6 +412,7 @@ async def list_published_articles(
     related_route_id: UUID | None = None,
     related_place_id: UUID | None = None,
     author_user_id: UUID | None = None,
+    viewer_user_id: UUID | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> ArticleListOut:
@@ -277,6 +440,7 @@ async def list_published_articles(
     )
     author_ids = list({row.author_user_id for row in rows})
     authors = await _authors(session, author_ids)
+    ranks = await _rank_titles(session, list(authors.values()))
     avatars = await media_service.resolve_urls(
         session,
         entity_type="user",
@@ -284,8 +448,24 @@ async def list_published_articles(
         role="avatar",
     )
     covers = await _cover_urls(session, rows)
+    excerpts, reading_times = await _excerpts_and_reading_times(session, rows)
+    liked_ids = await _liked_article_ids(session, viewer_user_id, [row.id for row in rows])
+    saved_ids = await _saved_article_ids(session, viewer_user_id, [row.id for row in rows])
     return ArticleListOut(
-        items=[_summary_out(row, authors=authors, avatars=avatars, covers=covers) for row in rows],
+        items=[
+            _summary_out(
+                row,
+                authors=authors,
+                avatars=avatars,
+                ranks=ranks,
+                covers=covers,
+                excerpts=excerpts,
+                reading_times=reading_times,
+                liked_article_ids=liked_ids,
+                saved_article_ids=saved_ids,
+            )
+            for row in rows
+        ],
         total=total,
     )
 
@@ -314,6 +494,7 @@ async def list_my_articles(
         ).all()
     )
     authors = await _authors(session, [author_user_id])
+    ranks = await _rank_titles(session, list(authors.values()))
     avatars = await media_service.resolve_urls(
         session,
         entity_type="user",
@@ -321,8 +502,24 @@ async def list_my_articles(
         role="avatar",
     )
     covers = await _cover_urls(session, rows)
+    excerpts, reading_times = await _excerpts_and_reading_times(session, rows)
+    liked_ids = await _liked_article_ids(session, author_user_id, [row.id for row in rows])
+    saved_ids = await _saved_article_ids(session, author_user_id, [row.id for row in rows])
     return ArticleListOut(
-        items=[_summary_out(row, authors=authors, avatars=avatars, covers=covers) for row in rows],
+        items=[
+            _summary_out(
+                row,
+                authors=authors,
+                avatars=avatars,
+                ranks=ranks,
+                covers=covers,
+                excerpts=excerpts,
+                reading_times=reading_times,
+                liked_article_ids=liked_ids,
+                saved_article_ids=saved_ids,
+            )
+            for row in rows
+        ],
         total=total,
     )
 
@@ -340,7 +537,17 @@ async def get_article(
         # Same shape as a missing article on purpose: a draft's existence
         # is not something a stranger should be able to probe for.
         raise _not_found()
-    return await _article_out(session, article)
+    if article.status == "published":
+        # Atomic increment — avoids a read-then-write race under concurrent
+        # views, and no dedup by viewer: an approximate counter is the point.
+        await session.execute(
+            update(Article)
+            .where(Article.id == article.id)
+            .values(view_count=Article.view_count + 1)
+        )
+        await session.commit()
+        await session.refresh(article)
+    return await _article_out(session, article, viewer_user_id=viewer_user_id)
 
 
 async def create_article_draft(
@@ -358,6 +565,7 @@ async def create_article_draft(
         status="draft",
         related_route_id=payload.related_route_id,
         related_place_id=payload.related_place_id,
+        tags=payload.tags,
         created_at=now,
         updated_at=now,
     )
@@ -371,12 +579,14 @@ async def create_article_draft(
                 position=position,
                 block_type=block_in.block_type,
                 text_content=block_in.text_content,
+                caption=block_in.caption,
+                list_style=block_in.list_style,
                 media_attachment_id=None,
             )
         )
     await session.commit()
     await session.refresh(article)
-    return await _article_out(session, article)
+    return await _article_out(session, article, viewer_user_id=author_user_id)
 
 
 async def _own_editable_article(
@@ -413,11 +623,12 @@ async def update_article_draft(
     article.title = payload.title
     article.related_route_id = payload.related_route_id
     article.related_place_id = payload.related_place_id
+    article.tags = payload.tags
     article.updated_at = datetime.now(UTC)
     await _replace_blocks(session, article=article, payload=payload)
     await session.commit()
     await session.refresh(article)
-    return await _article_out(session, article)
+    return await _article_out(session, article, viewer_user_id=author_user_id)
 
 
 async def submit_article_for_review(
@@ -467,7 +678,7 @@ async def submit_article_for_review(
     article.updated_at = datetime.now(UTC)
     await session.commit()
     await session.refresh(article)
-    return await _article_out(session, article)
+    return await _article_out(session, article, viewer_user_id=author_user_id)
 
 
 async def delete_own_article(
@@ -484,6 +695,185 @@ async def delete_own_article(
     article.status = "deleted"
     article.updated_at = datetime.now(UTC)
     await session.commit()
+
+
+async def set_article_like(
+    session: AsyncSession,
+    *,
+    article_id: UUID,
+    user_id: UUID,
+    liked: bool,
+) -> ArticleLikeStatusOut:
+    """Idempotent toggle, same shape as `favorites/application/service.py`'s
+    add/remove pair — only a published article can be liked."""
+    article = await session.get(Article, article_id)
+    if article is None or article.status != "published":
+        raise _not_found()
+    existing = await session.get(ArticleLike, (article_id, user_id))
+    if liked and existing is None:
+        session.add(
+            ArticleLike(article_id=article_id, user_id=user_id, created_at=datetime.now(UTC))
+        )
+        article.like_count += 1
+        await session.commit()
+    elif not liked and existing is not None:
+        await session.delete(existing)
+        article.like_count = max(0, article.like_count - 1)
+        await session.commit()
+    await session.refresh(article)
+    return ArticleLikeStatusOut(like_count=article.like_count, liked_by_me=liked)
+
+
+async def set_article_saved(
+    session: AsyncSession,
+    *,
+    article_id: UUID,
+    user_id: UUID,
+    saved: bool,
+) -> ArticleSaveStatusOut:
+    """A bookmark is private and unlike a like carries no counter — nothing
+    about the article itself changes, only this user's reading list."""
+    article = await session.get(Article, article_id)
+    if article is None or article.status != "published":
+        raise _not_found()
+    existing = await session.get(ArticleBookmark, (article_id, user_id))
+    if saved and existing is None:
+        session.add(
+            ArticleBookmark(article_id=article_id, user_id=user_id, created_at=datetime.now(UTC))
+        )
+        await session.commit()
+    elif not saved and existing is not None:
+        await session.delete(existing)
+        await session.commit()
+    return ArticleSaveStatusOut(saved_by_me=saved)
+
+
+async def list_saved_articles(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    limit: int = 20,
+    offset: int = 0,
+) -> ArticleListOut:
+    """The favorites screen's "Статьи" section — newest bookmark first, and
+    an article that has since been unpublished simply drops out."""
+    filters = (ArticleBookmark.user_id == user_id, Article.status == "published")
+    base = select(Article).join(ArticleBookmark, ArticleBookmark.article_id == Article.id)
+    total = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(Article)
+            .join(ArticleBookmark, ArticleBookmark.article_id == Article.id)
+            .where(*filters)
+        )
+        or 0
+    )
+    rows = list(
+        (
+            await session.scalars(
+                base.where(*filters)
+                .order_by(ArticleBookmark.created_at.desc(), Article.id)
+                .limit(limit)
+                .offset(offset)
+            )
+        ).all()
+    )
+    author_ids = list({row.author_user_id for row in rows})
+    authors = await _authors(session, author_ids)
+    ranks = await _rank_titles(session, list(authors.values()))
+    avatars = await media_service.resolve_urls(
+        session,
+        entity_type="user",
+        entity_ids=author_ids,
+        role="avatar",
+    )
+    covers = await _cover_urls(session, rows)
+    excerpts, reading_times = await _excerpts_and_reading_times(session, rows)
+    liked_ids = await _liked_article_ids(session, user_id, [row.id for row in rows])
+    saved_ids = await _saved_article_ids(session, user_id, [row.id for row in rows])
+    return ArticleListOut(
+        items=[
+            _summary_out(
+                row,
+                authors=authors,
+                avatars=avatars,
+                ranks=ranks,
+                covers=covers,
+                excerpts=excerpts,
+                reading_times=reading_times,
+                liked_article_ids=liked_ids,
+                saved_article_ids=saved_ids,
+            )
+            for row in rows
+        ],
+        total=total,
+    )
+
+
+async def list_related_articles(
+    session: AsyncSession,
+    *,
+    article_id: UUID,
+    viewer_user_id: UUID | None,
+    limit: int = _RELATED_ARTICLES_LIMIT,
+) -> ArticleListOut:
+    """Published articles sharing at least one tag — plain SQL, not a
+    separate ML pass, same "aggregate at query time" principle used
+    elsewhere in this module."""
+    article = await session.get(Article, article_id)
+    if article is None or article.status == "deleted":
+        raise _not_found()
+    if not article.tags:
+        return ArticleListOut(items=[], total=0)
+
+    filters = (
+        Article.status == "published",
+        Article.id != article.id,
+        Article.tags.overlap(article.tags),
+    )
+    total = int(
+        await session.scalar(select(func.count()).select_from(Article).where(*filters)) or 0
+    )
+    rows = list(
+        (
+            await session.scalars(
+                select(Article)
+                .where(*filters)
+                .order_by(Article.published_at.desc(), Article.id)
+                .limit(limit)
+            )
+        ).all()
+    )
+    author_ids = list({row.author_user_id for row in rows})
+    authors = await _authors(session, author_ids)
+    ranks = await _rank_titles(session, list(authors.values()))
+    avatars = await media_service.resolve_urls(
+        session,
+        entity_type="user",
+        entity_ids=author_ids,
+        role="avatar",
+    )
+    covers = await _cover_urls(session, rows)
+    excerpts, reading_times = await _excerpts_and_reading_times(session, rows)
+    liked_ids = await _liked_article_ids(session, viewer_user_id, [row.id for row in rows])
+    saved_ids = await _saved_article_ids(session, viewer_user_id, [row.id for row in rows])
+    return ArticleListOut(
+        items=[
+            _summary_out(
+                row,
+                authors=authors,
+                avatars=avatars,
+                ranks=ranks,
+                covers=covers,
+                excerpts=excerpts,
+                reading_times=reading_times,
+                liked_article_ids=liked_ids,
+                saved_article_ids=saved_ids,
+            )
+            for row in rows
+        ],
+        total=total,
+    )
 
 
 async def ensure_own_article_block(

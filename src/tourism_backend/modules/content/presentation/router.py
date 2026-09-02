@@ -21,8 +21,10 @@ from tourism_backend.modules.content.application.article_schemas import (
     ArticleCommentCreateIn,
     ArticleCommentListOut,
     ArticleCommentOut,
+    ArticleLikeStatusOut,
     ArticleListOut,
     ArticleOut,
+    ArticleSaveStatusOut,
     ArticleWriteIn,
 )
 
@@ -32,6 +34,7 @@ router = APIRouter(tags=["articles"])
 @router.get("/articles", response_model=ArticleListOut)
 async def list_articles(
     session: DbSession,
+    viewer_user_id: OptionalCurrentUserId,
     related_route_id: Annotated[UUID | None, Query()] = None,
     related_place_id: Annotated[UUID | None, Query()] = None,
     author_user_id: Annotated[UUID | None, Query()] = None,
@@ -44,6 +47,7 @@ async def list_articles(
         related_route_id=related_route_id,
         related_place_id=related_place_id,
         author_user_id=author_user_id,
+        viewer_user_id=viewer_user_id,
         limit=limit,
         offset=offset,
     )
@@ -70,6 +74,73 @@ async def get_article(
     """Published to everyone; anything else only to its author."""
     return await article_service.get_article(
         session, article_id=article_id, viewer_user_id=viewer_user_id
+    )
+
+
+@router.get("/articles/{article_id}/related", response_model=ArticleListOut)
+async def get_related_articles(
+    article_id: UUID,
+    session: DbSession,
+    viewer_user_id: OptionalCurrentUserId,
+) -> ArticleListOut:
+    return await article_service.list_related_articles(
+        session, article_id=article_id, viewer_user_id=viewer_user_id
+    )
+
+
+@router.put("/articles/{article_id}/like", response_model=ArticleLikeStatusOut)
+async def like_article(
+    article_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> ArticleLikeStatusOut:
+    return await article_service.set_article_like(
+        session, article_id=article_id, user_id=user_id, liked=True
+    )
+
+
+@router.delete("/articles/{article_id}/like", response_model=ArticleLikeStatusOut)
+async def unlike_article(
+    article_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> ArticleLikeStatusOut:
+    return await article_service.set_article_like(
+        session, article_id=article_id, user_id=user_id, liked=False
+    )
+
+
+@router.put("/articles/{article_id}/save", response_model=ArticleSaveStatusOut)
+async def save_article(
+    article_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> ArticleSaveStatusOut:
+    return await article_service.set_article_saved(
+        session, article_id=article_id, user_id=user_id, saved=True
+    )
+
+
+@router.delete("/articles/{article_id}/save", response_model=ArticleSaveStatusOut)
+async def unsave_article(
+    article_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> ArticleSaveStatusOut:
+    return await article_service.set_article_saved(
+        session, article_id=article_id, user_id=user_id, saved=False
+    )
+
+
+@router.get("/me/saved-articles", response_model=ArticleListOut)
+async def list_saved_articles(
+    session: DbSession,
+    user_id: CurrentUserId,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ArticleListOut:
+    return await article_service.list_saved_articles(
+        session, user_id=user_id, limit=limit, offset=offset
     )
 
 

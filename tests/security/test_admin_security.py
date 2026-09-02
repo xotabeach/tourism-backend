@@ -936,7 +936,7 @@ def test_article_admin_views_are_registered_and_write_gated() -> None:
         assert view.can_delete is False
 
     assert Article.status not in ArticleAdmin.form_columns
-    assert ArticleAdmin.form_columns == [Article.moderator_note]
+    assert ArticleAdmin.form_columns == [Article.moderator_note, Article.is_featured]
     assert ArticleComment.status not in ArticleCommentAdmin.form_columns
 
     # Blocks are rebuilt as a set whenever the author edits the article, so

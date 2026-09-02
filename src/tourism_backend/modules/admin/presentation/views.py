@@ -2584,6 +2584,9 @@ class ArticleAdmin(ModelView, model=Article):
         Article.title,
         Article.author_user_id,
         Article.related_route_id,
+        Article.is_featured,
+        Article.like_count,
+        Article.view_count,
         Article.created_at,
         Article.published_at,
     ]
@@ -2598,6 +2601,10 @@ class ArticleAdmin(ModelView, model=Article):
         Article.created_at: "Создана",
         Article.published_at: "Опубликована",
         Article.updated_at: "Обновлена",
+        Article.is_featured: "Избранное редакции",
+        Article.like_count: "Лайков",
+        Article.view_count: "Просмотров",
+        Article.tags: "Теги",
     }
     column_formatters = {
         Article.status: format_article_status,
@@ -2626,9 +2633,11 @@ class ArticleAdmin(ModelView, model=Article):
     # bypassed by editing the column directly.
     form_columns = [
         Article.moderator_note,
+        Article.is_featured,
     ]
     form_args = {
         "moderator_note": {"label": "Заметка модератора"},
+        "is_featured": {"label": "Избранное редакции"},
     }
     can_create = False
     can_edit = True
