@@ -425,7 +425,10 @@ def build_actions_block(
         if field not in _ASK_FIELD_DEFAULTS:
             field = first_missing_ask_field(confirmed_fields or [])
         resolved_field = field
-        ids = list(_ASK_FIELD_DEFAULTS.get(field, ()))
+        # Город спрашивается выпадающим списком (interactive_control_blocks),
+        # поэтому дублирующие чипы-города здесь не строим — иначе на один
+        # вопрос два разных ответа в интерфейсе.
+        ids = [] if field == "city" else list(_ASK_FIELD_DEFAULTS.get(field, ()))
     cap = _MAX_SHEET_ACTIONS if resolved_field in _SHEET_TITLES else _MAX_ACTIONS
     if (
         include_generate
@@ -473,19 +476,90 @@ def clarification_action_blocks(
     )
 
 
+# Слова, по которым видно, что реплика спрашивает стартовый город. Нужны как
+# страховка: модель регулярно спрашивает про город прозой, но не проставляет
+# ask_field="city", и тогда собирались общие чипы вместо выбора города —
+# человек видел вопрос, на который нечем ответить.
+_CITY_QUESTION_MARKERS = (
+    "какой город",
+    "каком городе",
+    "какого города",
+    "город или район",
+    "городе или районе",
+    "откуда вы",
+    "откуда начнём",
+    "откуда начнем",
+    "стартовый город",
+    "точка старта",
+)
+
+
+def ask_field_from_text(assistant_text: str | None, current: str | None) -> str | None:
+    """Correct ``ask_field`` when the model's prose and its structure disagree.
+
+    Only ever *adds* the city question — never overrides a field the model set
+    to something concrete other than the ready/greeting placeholders, so a
+    deliberate answer from the model is not second-guessed.
+    """
+    if current == "city" or not assistant_text:
+        return current
+    if current not in (None, "ready"):
+        return current
+    lowered = assistant_text.casefold()
+    if any(marker in lowered for marker in _CITY_QUESTION_MARKERS):
+        return "city"
+    return current
+
+
+def city_options() -> list[tuple[str, str]]:
+    """Start cities, derived from the city_* action catalog.
+
+    One source of truth: the chips and the dropdown cannot drift apart,
+    because both read the same catalog entries.
+    """
+    out: list[tuple[str, str]] = []
+    for action_id in _ASK_FIELD_DEFAULTS["city"]:
+        entry = _ACTION_CATALOG.get(action_id)
+        if entry is None:
+            continue
+        city = entry.get("patch", {}).get("city")
+        label = entry.get("label")
+        if isinstance(city, str) and isinstance(label, str):
+            out.append((city, label))
+    return out
+
+
 def interactive_control_blocks(
     *,
     ask_field: str | None,
     constraints: dict[str, Any] | None = None,
 ) -> list[Any]:
-    """Slider / toggle blocks matched to the current ask_field."""
+    """Slider / toggle / select blocks matched to the current ask_field."""
     from tourism_backend.modules.route_builder.application.schemas import (
+        SelectBlockOut,
+        SelectOptionOut,
         SliderBlockOut,
         ToggleBlockOut,
     )
 
     constraints = constraints or {}
     out: list[Any] = []
+    if ask_field == "city":
+        # Ten cities do not fit a chip row, and the modal sheet the chips used
+        # to open is a second mechanism for the same question — the design
+        # asks for a dropdown inside the bubble.
+        options = city_options()
+        if options:
+            current = constraints.get("city")
+            out.append(
+                SelectBlockOut(
+                    id="city",
+                    label="Стартовый город",
+                    placeholder="Город",
+                    value=current if isinstance(current, str) else None,
+                    options=[SelectOptionOut(value=value, label=label) for value, label in options],
+                )
+            )
     if ask_field in {"budget", "ready"}:
         current = constraints.get("budget_amount")
         value = float(current) if isinstance(current, int) else 3000.0

@@ -28,6 +28,7 @@ from tourism_backend.modules.route_builder.application.ai import (
     ChatTurnResult,
 )
 from tourism_backend.modules.route_builder.application.chat_actions import (
+    ask_field_from_text,
     clarification_action_blocks,
     field_for_action,
     fields_touched_by_patch,
@@ -538,6 +539,9 @@ async def post_message(
         )
         assistant_text = turn.assistant_text
         ask_field = turn.ask_field or prefer_ready_ask_field(confirmed)
+        # Модель нередко спрашивает город прозой, не проставив ask_field —
+        # тогда доверяем тексту, иначе человек видит вопрос, на который нечем ответить.
+        ask_field = ask_field_from_text(assistant_text, ask_field)
         if turn.proposed_constraints:
             constraints_dict = merge_constraint_patch(
                 constraints_dict,

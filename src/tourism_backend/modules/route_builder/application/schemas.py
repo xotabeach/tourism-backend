@@ -209,6 +209,30 @@ class ToggleBlockOut(BaseModel):
     value: bool = False
 
 
+class SelectOptionOut(BaseModel):
+    """One option in a :class:`SelectBlockOut`."""
+
+    value: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=120)
+
+
+class SelectBlockOut(BaseModel):
+    """Dropdown rendered inside the assistant bubble.
+
+    Deliberately generic rather than a "city picker": the agent supplies the
+    options and the client returns the chosen ``value`` through the same path
+    as slider and toggle values, knowing nothing about the field's meaning.
+    The start city is simply the first question asked this way.
+    """
+
+    type: Literal["select"] = "select"
+    id: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=80)
+    options: list[SelectOptionOut] = Field(min_length=1, max_length=40)
+    value: str | None = Field(default=None, max_length=120)
+    placeholder: str = Field(default="Выберите вариант", max_length=60)
+
+
 class RecommendationCardBlockOut(BaseModel):
     """Seasonal / editorial tip the user can accept with one tap."""
 
@@ -227,6 +251,7 @@ ChatBlockOut = (
     | ActionsBlockOut
     | SliderBlockOut
     | ToggleBlockOut
+    | SelectBlockOut
     | RecommendationCardBlockOut
 )
 

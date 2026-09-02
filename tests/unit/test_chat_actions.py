@@ -24,21 +24,21 @@ def test_clarification_actions_follow_ask_field() -> None:
     assert "pace_calm" not in ids
 
 
-def test_city_ask_field_renders_full_city_sheet() -> None:
+def test_city_ask_field_no_longer_duplicates_the_dropdown_as_chips() -> None:
+    """Cities moved to a select block (see test_chat_city_select.py).
+
+    They used to be repeated here as a ten-item modal sheet, which meant one
+    question answered two different ways in the UI.
+    """
     blocks = clarification_action_blocks(
         {},
         confirmed_fields=[],
         ask_field="city",
     )
-    block = blocks[0]
-    assert block.layout == "sheet"
-    assert block.sheet_title == "Выбрать город"
-    ids = {item["id"] for item in block.actions}
-    assert "city_yalta" in ids
-    assert "city_sevastopol" in ids
-    assert "city_sudak" in ids
-    # No truncation to the inline-chip cap: all localities fit in the sheet.
-    assert len(block.actions) == 10
+    ids = {item["id"] for block in blocks for item in block.actions}
+    assert not {"city_yalta", "city_sevastopol", "city_sudak"} & ids
+    # The escape hatch stays: the user can still ask for a route right away.
+    assert ids == {"want_generate"}
 
 
 def test_interests_ask_field_includes_history_and_nature() -> None:
