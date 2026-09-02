@@ -1,16 +1,42 @@
-# Emergency low-minutes mode (August 2026).
-# Pushes do not create pipelines. Build/deploy runs from a developer machine:
-#   ./scripts/deploy-production-local.sh
-# A registry-only build can still be started explicitly from GitLab → Run pipeline.
+# Lean CI for active development.
+# Quality gates (ruff/mypy/pytest) run locally, or in the full pipeline:
+#   .gitlab-ci.full.yml — enable with CI/CD variable CI_PIPELINE_MODE=full
+# Docs: tourism-platform/docs/ci-and-runners.md
+#
+# The August 2026 "emergency low-minutes" mode is over: since 2026-09-02 jobs
+# run on the self-hosted group runner `crimeatrip-prod`, so pushes no longer
+# spend the shared quota. This file now mirrors tourism-mobile and
+# tourism-platform instead of being the odd one out.
+
+include:
+  - local: ".gitlab-ci.full.yml"
+    rules:
+      - if: '$CI_PIPELINE_MODE == "full"'
 
 workflow:
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_MODE == "full"'
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "gamma"'
+    - if: '$CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"'
     - when: never
 
 stages:
+  - lean
   - publish
 
+ci-lean-notice:
+  stage: lean
+  image: alpine:3.21
+  script:
+    - 'echo "Lean CI — ruff/mypy/pytest run locally (uv run pytest)."'
+    - 'echo "Set CI_PIPELINE_MODE=full for style + tests + scanners + deploy."'
+  rules:
+    - if: '$CI_PIPELINE_MODE == "full"'
+      when: never
+    - when: on_success
+
+# Registry build. Manual in lean mode so an ordinary push does not rebuild a
+# 438MB image; the full pipeline has its own publish stage.
 backend-publish-manual:
   stage: publish
   image: docker:27-cli
@@ -25,5 +51,7 @@ backend-publish-manual:
     - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
     - docker push "$CI_REGISTRY_IMAGE:production"
   rules:
+    - if: '$CI_PIPELINE_MODE == "full"'
+      when: never
     - when: manual
       allow_failure: false
