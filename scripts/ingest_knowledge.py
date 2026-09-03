@@ -38,6 +38,26 @@ from tourism_backend.modules.routes.infrastructure.models import Route
 _ = _geo
 
 
+_BOILERPLATE_PROMPT_VERSIONS = frozenset({"heuristic-v1"})
+
+
+def _has_real_description(place: Place) -> bool:
+    """True unless `description` is the templated placeholder.
+
+    `content_enrichment.prompt_version` distinguishes the two heuristics in
+    `content_enrichment.py`: "heuristic-wikipedia-v1" wraps a real extract,
+    "heuristic-v1" is the "Описание сгенерировано автоматически..." template
+    used when no source text existed. 82.6% of `generated_draft` places are
+    the template (measured 2026-09-03) — indexing it teaches the retriever
+    nothing about the place and puts "требует редакционной проверки" one
+    retrieval away from a user's screen.
+    """
+    enrichment = place.content_enrichment
+    if not isinstance(enrichment, dict):
+        return True
+    return enrichment.get("prompt_version") not in _BOILERPLATE_PROMPT_VERSIONS
+
+
 def _iter_places(session: Session, *, limit: int) -> list[tuple[Place, str | None]]:
     return [
         (place, _locality_name(session, place.locality_id))
@@ -166,11 +186,12 @@ def main() -> None:
         routes = _iter_routes(session, limit=args.limit)
         pending_embed: list[tuple[UUID, str, str]] = []
         for place, locality in places:
+            real_description = place.description if _has_real_description(place) else None
             for cand in chunk_place_markdown(
                 place_id=str(place.id),
                 name=place.name,
                 short_description=place.short_description,
-                description=place.description,
+                description=real_description,
                 locality=locality,
                 source=args.source,
             ):
