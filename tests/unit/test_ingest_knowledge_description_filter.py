@@ -16,14 +16,38 @@ ingest_knowledge = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ingest_knowledge)
 
 
-def _place(*, content_enrichment: dict[str, object] | None) -> Place:
+def _place(
+    *, content_enrichment: dict[str, object] | None, description: str = ""
+) -> Place:
     place = Place()
     place.content_enrichment = content_enrichment
+    place.description = description
     return place
 
 
 def test_boilerplate_template_is_not_real_description() -> None:
-    place = _place(content_enrichment={"prompt_version": "heuristic-v1"})
+    place = _place(
+        content_enrichment={"prompt_version": "heuristic-v1"},
+        description=(
+            "Тестовое место — туристическое место (Горы) в Ялта. "
+            "Описание сгенерировано автоматически как черновик и требует "
+            "редакционной проверки."
+        ),
+    )
+    assert ingest_knowledge._has_real_description(place) is False
+
+
+def test_boilerplate_text_is_rejected_even_with_stale_or_missing_metadata() -> None:
+    # Ливадийский дворец / Херсонес Таврический / Долина привидений
+    # (2026-09-03): content_enrichment_status was reset to "missing" and
+    # prompt_version is absent, but the description column itself still
+    # carries the template. The text is the ground truth, not the metadata.
+    place = _place(
+        content_enrichment=None,
+        description="Х — туристическое место (Музеи) в Севастополь. "
+        "Описание сгенерировано автоматически как черновик и требует "
+        "редакционной проверки.",
+    )
     assert ingest_knowledge._has_real_description(place) is False
 
 

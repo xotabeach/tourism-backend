@@ -39,6 +39,15 @@ _ = _geo
 
 
 _BOILERPLATE_PROMPT_VERSIONS = frozenset({"heuristic-v1"})
+# The literal marker `content_enrichment.py` writes into `description` when
+# no source text existed. Checked directly rather than trusted to imply
+# `prompt_version` == "heuristic-v1": three seed places (Ливадийский дворец,
+# Херсонес Таврический, Долина привидений) carry this exact text in
+# `description` with `content_enrichment_status = "missing"` and no
+# `prompt_version` at all — their status was reset at some point without
+# clearing the stale text it had written. Metadata drifted; the string in
+# the column that actually gets indexed did not.
+_BOILERPLATE_MARKER = "Описание сгенерировано автоматически как черновик"
 
 
 def _has_real_description(place: Place) -> bool:
@@ -52,6 +61,9 @@ def _has_real_description(place: Place) -> bool:
     nothing about the place and puts "требует редакционной проверки" one
     retrieval away from a user's screen.
     """
+    description = place.description or ""
+    if _BOILERPLATE_MARKER in description:
+        return False
     enrichment = place.content_enrichment
     if not isinstance(enrichment, dict):
         return True
