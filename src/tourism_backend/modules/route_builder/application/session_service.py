@@ -915,15 +915,21 @@ def _compose_assistant_blocks(
                 subtitle=str(subtitle)[:120] if subtitle else None,
             )
         )
-    blocks.extend(interactive_control_blocks(ask_field=ask_field, constraints=constraints))
-    blocks.extend(
-        clarification_action_blocks(
-            constraints,
-            confirmed_fields=confirmed_fields,
-            ask_field=ask_field,
-            action_ids=action_ids,
+    controls = interactive_control_blocks(ask_field=ask_field, constraints=constraints)
+    blocks.extend(controls)
+    # Рядом с выпадающим списком чипы не нужны: выбор варианта сам уходит в
+    # чат, и «Подбери маршрут» под вопросом «в какой город?» читался как
+    # предложение пропустить ответ.
+    has_select = any(getattr(block, "type", None) == "select" for block in controls)
+    if not (has_select and not action_ids):
+        blocks.extend(
+            clarification_action_blocks(
+                constraints,
+                confirmed_fields=confirmed_fields,
+                ask_field=ask_field,
+                action_ids=action_ids,
+            )
         )
-    )
     return blocks
 
 

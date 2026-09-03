@@ -22,7 +22,7 @@ class TestCitySelectBlock:
         assert len(selects) == 1
         select = selects[0]
         assert select.id == "city"
-        assert select.placeholder == "Город"
+        assert select.placeholder == "Выберите город"
         assert [option.label for option in select.options] == [
             label for _, label in city_options()
         ]
@@ -40,6 +40,17 @@ class TestCitySelectBlock:
 
         select = next(block for block in blocks if isinstance(block, SelectBlockOut))
         assert select.value == "Судак"
+
+    def test_a_region_is_not_mistaken_for_a_chosen_city(self) -> None:
+        # The model puts "Крым" in constraints — a region, not a city. Shown
+        # as the dropdown's value it looked like a choice already made.
+        blocks = interactive_control_blocks(
+            ask_field="city", constraints={"city": "Крым"}
+        )
+
+        select = next(block for block in blocks if isinstance(block, SelectBlockOut))
+        assert select.value is None
+        assert select.placeholder == "Выберите город"
 
     def test_other_ask_fields_get_no_select(self) -> None:
         for field in ("pace", "budget", "interests", "ready"):

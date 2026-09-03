@@ -550,13 +550,18 @@ def interactive_control_blocks(
         # asks for a dropdown inside the bubble.
         options = city_options()
         if options:
+            # Подставляем только то, что реально есть в списке. Модель кладёт
+            # в constraints и «Крым» — это регион, а не город, и в свёрнутом
+            # селекте он выглядел как уже сделанный выбор.
             current = constraints.get("city")
+            known = {value for value, _ in options}
+            preselected = current if isinstance(current, str) and current in known else None
             out.append(
                 SelectBlockOut(
                     id="city",
                     label="Стартовый город",
-                    placeholder="Город",
-                    value=current if isinstance(current, str) else None,
+                    placeholder="Выберите город",
+                    value=preselected,
                     options=[SelectOptionOut(value=value, label=label) for value, label in options],
                 )
             )
