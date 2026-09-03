@@ -134,6 +134,7 @@ class ArticleOut(BaseModel):
     author_display_name: str
     author_avatar_url: str | None
     author_rank_title: str | None
+    author_is_expert: bool
     related_route_id: str | None
     related_place_id: str | None
     cover_image_url: str | None
@@ -163,6 +164,7 @@ class ArticleSummaryOut(BaseModel):
     author_display_name: str
     author_avatar_url: str | None
     author_rank_title: str | None
+    author_is_expert: bool
     related_route_id: str | None
     related_place_id: str | None
     cover_image_url: str | None
