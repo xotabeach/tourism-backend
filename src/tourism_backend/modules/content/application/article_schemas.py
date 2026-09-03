@@ -32,6 +32,13 @@ ListStyle = Literal["bullet", "numbered"]
 class ArticleBlockIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Id блока, уже существующего в этой статье. Блоки при сохранении
+    # пересоздаются, и без этой ссылки загруженная в блок картинка терялась
+    # при любой последующей правке статьи (баг 2026-09-03): сервер архивировал
+    # вложение и удалял файл, а новый блок создавался пустым. Чужой или
+    # выдуманный id просто не найдётся среди блоков статьи и будет
+    # проигнорирован — подставить чужую картинку через него нельзя.
+    id: UUID | None = None
     block_type: BlockType
     # Only text/quote/list blocks carry content on the way in. An image
     # block is created empty and its file is uploaded separately (see G.2),

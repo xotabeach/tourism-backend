@@ -372,8 +372,26 @@ async def _replace_blocks(
             await session.scalars(select(ArticleBlock).where(ArticleBlock.article_id == article.id))
         ).all()
     )
+    # Какую картинку какой блок несёт сейчас. Клиент присылает id тех блоков,
+    # что уже существуют, и их вложения переезжают на новые строки вместо того,
+    # чтобы быть удалёнными: блоки пересоздаются при каждом сохранении, и без
+    # переноса правка заголовка стирала все фотографии статьи (баг 2026-09-03).
+    attachment_by_block: dict[UUID, UUID] = {
+        block.id: block.media_attachment_id
+        for block in existing
+        if block.media_attachment_id is not None
+    }
+    kept_attachment_ids = {
+        attachment_id
+        for block_in in payload.blocks
+        if block_in.id is not None
+        and (attachment_id := attachment_by_block.get(block_in.id)) is not None
+    }
     stale_attachment_ids = [
-        block.media_attachment_id for block in existing if block.media_attachment_id is not None
+        block.media_attachment_id
+        for block in existing
+        if block.media_attachment_id is not None
+        and block.media_attachment_id not in kept_attachment_ids
     ]
     for block in existing:
         await session.delete(block)
@@ -403,10 +421,22 @@ async def _replace_blocks(
                 text_content=block_in.text_content,
                 caption=block_in.caption,
                 list_style=block_in.list_style,
-                media_attachment_id=None,
+                media_attachment_id=(
+                    attachment_by_block.get(block_in.id) if block_in.id is not None else None
+                ),
             )
         )
-    article.cover_media_attachment_id = None
+    # Обложка — первая сохранившаяся картинка; если ни одной не осталось,
+    # у статьи снова нет обложки.
+    article.cover_media_attachment_id = next(
+        (
+            attachment_id
+            for block_in in payload.blocks
+            if block_in.id is not None
+            and (attachment_id := attachment_by_block.get(block_in.id)) is not None
+        ),
+        None,
+    )
 
 
 async def list_published_articles(

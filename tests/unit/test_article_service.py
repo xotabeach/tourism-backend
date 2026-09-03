@@ -26,6 +26,7 @@ from tourism_backend.modules.content.application.article_schemas import (
 )
 from tourism_backend.modules.content.infrastructure.models import Article, ArticleBlock
 from tourism_backend.modules.identity.infrastructure.models import User
+from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.notifications.infrastructure.models import Notification
 
 DATABASE_URL = "postgresql+asyncpg://tourism:local-tourism-password@localhost:5433/tourism"
@@ -800,3 +801,109 @@ async def test_database_rejects_malformed_v2_block_shapes(
     with pytest.raises(IntegrityError):
         await session.commit()
     await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_editing_an_article_keeps_the_photos_already_uploaded(
+    session: AsyncSession, author: User
+) -> None:
+    """Saving again must not wipe the article's images.
+
+    Blocks are deleted and re-inserted on every update, and the update used
+    to archive every attachment they referenced (and delete the file), while
+    only *pending* uploads were re-sent by the client. So a photo survived
+    exactly until the next edit — the author added one, changed the title,
+    and it was gone (reported 2026-09-03).
+    """
+    created = await article_service.create_article_draft(
+        session,
+        author_user_id=author.id,
+        payload=_payload(
+            blocks=[
+                ArticleBlockIn(block_type="text", text_content="Вступление"),
+                ArticleBlockIn(block_type="image"),
+            ]
+        ),
+    )
+    image_block_id = UUID(next(b.id for b in created.blocks if b.block_type == "image"))
+
+    attachment = MediaAttachment(
+        id=uuid4(),
+        entity_type="article",
+        entity_id=UUID(created.id),
+        role="gallery",
+        storage_key="articles/x.jpg",
+        public_path="/media/articles/x.jpg",
+        content_type="image/jpeg",
+        byte_size=1234,
+        width=1600,
+        height=900,
+        status="active",
+    )
+    session.add(attachment)
+    block = await session.get(ArticleBlock, image_block_id)
+    assert block is not None
+    block.media_attachment_id = attachment.id
+    await session.commit()
+
+    updated = await article_service.update_article_draft(
+        session,
+        author_user_id=author.id,
+        article_id=UUID(created.id),
+        payload=_payload(
+            title="Как доехать до Ай-Петри зимой",
+            blocks=[
+                ArticleBlockIn(block_type="text", text_content="Вступление"),
+                ArticleBlockIn(id=image_block_id, block_type="image"),
+            ],
+        ),
+    )
+
+    image_out = next(b for b in updated.blocks if b.block_type == "image")
+    assert image_out.image_url == "/media/articles/x.jpg"
+    assert image_out.image_width == 1600
+    await session.refresh(attachment)
+    assert attachment.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_dropping_an_image_block_still_archives_its_attachment(
+    session: AsyncSession, author: User
+) -> None:
+    """The carry-over must not turn into a leak: an image the author removed
+    is still archived, and its bytes still go."""
+    created = await article_service.create_article_draft(
+        session,
+        author_user_id=author.id,
+        payload=_payload(blocks=[ArticleBlockIn(block_type="image")]),
+    )
+    image_block_id = UUID(created.blocks[0].id)
+    attachment = MediaAttachment(
+        id=uuid4(),
+        entity_type="article",
+        entity_id=UUID(created.id),
+        role="gallery",
+        storage_key="articles/gone.jpg",
+        public_path="/media/articles/gone.jpg",
+        content_type="image/jpeg",
+        byte_size=10,
+        width=100,
+        height=100,
+        status="active",
+    )
+    session.add(attachment)
+    block = await session.get(ArticleBlock, image_block_id)
+    assert block is not None
+    block.media_attachment_id = attachment.id
+    await session.commit()
+
+    await article_service.update_article_draft(
+        session,
+        author_user_id=author.id,
+        article_id=UUID(created.id),
+        payload=_payload(
+            blocks=[ArticleBlockIn(block_type="text", text_content="Только текст")]
+        ),
+    )
+    await session.refresh(attachment)
+    assert attachment.status == "archived"
