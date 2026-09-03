@@ -162,6 +162,49 @@ class WikimediaCommonsClient:
             payload: Any = response.json()
         return _parse_imageinfo_response(payload, title=title)
 
+    def geosearch(self, *, lat: float, lng: float, radius_m: int, limit: int = 5) -> list[str]:
+        """`File:` titles on Commons within `radius_m` of a coordinate.
+
+        Structurally safer than a name/type search: results are bounded by
+        actual GPS distance, so a monument named after a mass-produced
+        vehicle model (a MiG, a T-34) cannot match a museum photo of the
+        same model on another continent — the failure mode that made a
+        2026-09-03 name-based batch show Polish/Czech air force roundels on
+        Crimean tank and aircraft memorials. A generic-area photo (a canyon,
+        a summit) taken within a couple hundred metres is still visually the
+        right subject; a fortress photographed from 5000km away cannot be.
+        """
+        if not 1 <= radius_m <= 10_000:
+            raise ValueError("radius_m must be between 1 and 10000")
+        if not 1 <= limit <= 20:
+            raise ValueError("limit must be between 1 and 20")
+        with httpx.Client(
+            headers={"User-Agent": _USER_AGENT},
+            timeout=self._timeout,
+            transport=self._transport,
+        ) as client:
+            response = client.get(
+                _COMMONS_API_URL,
+                params={
+                    "action": "query",
+                    "list": "geosearch",
+                    "gscoord": f"{lat}|{lng}",
+                    "gsradius": str(radius_m),
+                    "gsnamespace": "6",
+                    "gslimit": str(limit),
+                    "format": "json",
+                    "formatversion": "2",
+                },
+            )
+            response.raise_for_status()
+            payload: Any = response.json()
+        results = payload.get("query", {}).get("geosearch", []) if isinstance(payload, dict) else []
+        titles: list[str] = []
+        for item in results:
+            if isinstance(item, dict) and isinstance(item.get("title"), str):
+                titles.append(item["title"])
+        return titles
+
     def fetch_commons_title_via_wikidata(self, qid: str) -> str | None:
         """Resolve a Wikidata item's P18 (image) claim to a Commons `File:` title."""
         if normalize_wikidata_qid(qid) != qid:

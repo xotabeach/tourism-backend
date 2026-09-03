@@ -10,10 +10,22 @@ touches disk (see `places.application.photo_storage`).
 Mapillary is a documented follow-up (needs its own API token) — not part of
 this slice; see tourism-platform/docs/progress.md.
 
+`--geosearch` adds a third source: for a place with no OSM `wikimedia_commons`
+/`image`/`wikidata` tag (the overwhelming majority — see photo_import.py's
+module docstring for the OSM/Wikidata yield), look up Commons photos within
+`--geosearch-radius-m` of the place's own coordinates instead. This is
+structurally safer than a name/type search would be: a candidate is bounded
+by real GPS distance, so a place named after a mass-produced object (a tank
+or aircraft model) cannot match an unrelated museum's copy of the same
+model — the exact failure found in a 2026-09-03 batch of technology
+memorials that had picked up Polish/Czech air force markings and mid-flight
+airshow photos with no geographic connection to Crimea at all.
+
 Examples:
   uv run python scripts/import_place_photos.py --limit 50
   uv run python scripts/import_place_photos.py --apply --limit 50
   uv run python scripts/import_place_photos.py --apply --all --limit 500
+  uv run python scripts/import_place_photos.py --apply --geosearch --limit 500
 """
 
 from __future__ import annotations
@@ -22,7 +34,9 @@ import argparse
 import time
 
 import httpx
-from sqlalchemy import create_engine, exists, select
+from geoalchemy2 import Geometry
+from geoalchemy2.functions import ST_X, ST_Y
+from sqlalchemy import cast, create_engine, exists, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.selectable import Exists
 
@@ -36,7 +50,6 @@ from tourism_backend.modules.media.application.service import upsert_place_file_
 from tourism_backend.modules.notifications.infrastructure import (
     models as _notifications_models,
 )
-from tourism_backend.modules.places.application.osm_import import OSM_SOURCE_NAME
 from tourism_backend.modules.places.application.photo_import import (
     WikimediaCommonsClient,
     commons_title_from_tags,
@@ -84,7 +97,16 @@ def _has_active_cover_subquery() -> Exists:
     )
 
 
-def _run(*, apply: bool, limit: int, offset: int, only_missing: bool, sleep_seconds: float) -> None:
+def _run(
+    *,
+    apply: bool,
+    limit: int,
+    offset: int,
+    only_missing: bool,
+    sleep_seconds: float,
+    geosearch: bool,
+    geosearch_radius_m: int,
+) -> None:
     settings = get_settings()
     engine = create_engine(settings.database_url_sync)
     client = WikimediaCommonsClient()
@@ -95,6 +117,10 @@ def _run(*, apply: bool, limit: int, offset: int, only_missing: bool, sleep_seco
         "via_wikidata": 0,
         "wikidata_no_image": 0,
         "wikidata_api_error": 0,
+        "via_geosearch": 0,
+        "geosearch_no_candidate": 0,
+        "geosearch_api_error": 0,
+        "no_source": 0,
         "commons_not_found": 0,
         "commons_api_error": 0,
         "license_rejected": 0,
@@ -110,73 +136,115 @@ def _run(*, apply: bool, limit: int, offset: int, only_missing: bool, sleep_seco
         # memory-bounded chunks — the backend container this runs inside has
         # a 192m hard limit shared with the live app; a single 5000-row pass
         # (Place ORM rows + Pillow, imported via photo_storage) OOM-killed it.
+        # Places sourced any other way (internal, wikivoyage) have no OSM
+        # tags to read, but every place carries coordinates — geosearch
+        # covers them too, so this query no longer filters by source_name.
+        geom = cast(Place.location, Geometry)
         stmt = (
-            select(Place)
-            .where(Place.source_name == OSM_SOURCE_NAME, Place.source_payload.is_not(None))
+            select(Place, ST_X(geom), ST_Y(geom))
             .order_by(Place.id)
             .offset(offset)
             .limit(limit)
         )
         if only_missing:
             stmt = stmt.where(~_has_active_cover_subquery())
-        places = list(session.scalars(stmt))
+        rows = session.execute(stmt).all()
 
-        for place in places:
+        for place, lng, lat in rows:
             counts["scanned"] += 1
             tags = (place.source_payload or {}).get("tags")
-            if not isinstance(tags, dict):
-                counts["no_commons_tag"] += 1
-                continue
-            title = commons_title_from_tags(tags)
-            if title is None:
+            titles: list[str] = []
+            source = "tag"
+
+            if isinstance(tags, dict):
+                tag_title = commons_title_from_tags(tags)
+                if tag_title is not None:
+                    titles = [tag_title]
+
+            if not titles and isinstance(tags, dict):
                 qid = normalize_wikidata_qid(tags.get("wikidata"))
-                if qid is None:
-                    counts["no_commons_tag"] += 1
+                if qid is not None:
+                    try:
+                        wikidata_title = client.fetch_commons_title_via_wikidata(qid)
+                    except httpx.HTTPError as exc:
+                        print(f"wikidata_api_error place={place.id} qid={qid!r} error={exc!r}")
+                        counts["wikidata_api_error"] += 1
+                        wikidata_title = None
+                    if wikidata_title is not None:
+                        titles = [wikidata_title]
+                        source = "wikidata"
+                        counts["via_wikidata"] += 1
+                    else:
+                        counts["wikidata_no_image"] += 1
+
+            if not titles and geosearch and lat is not None and lng is not None:
+                try:
+                    titles = client.geosearch(
+                        lat=lat, lng=lng, radius_m=geosearch_radius_m, limit=5
+                    )
+                except httpx.HTTPError as exc:
+                    print(f"geosearch_api_error place={place.id} error={exc!r}")
+                    counts["geosearch_api_error"] += 1
+                    titles = []
+                if titles:
+                    source = "geosearch"
+                else:
+                    counts["geosearch_no_candidate"] += 1
+
+            if not titles:
+                counts["no_source"] += 1
+                continue
+
+            # Several candidates only matters for geosearch (tag/wikidata
+            # resolve to exactly one) — a name/type search is never tried
+            # here, so trying the next nearby photo on a format/license
+            # failure cannot reintroduce the wrong-object risk geosearch
+            # exists to avoid.
+            imported = False
+            for title in titles:
+                try:
+                    info = client.fetch_file_info(title)
+                except httpx.HTTPError as exc:
+                    print(f"commons_api_error place={place.id} title={title!r} error={exc!r}")
+                    counts["commons_api_error"] += 1
+                    continue
+                if info is None:
+                    counts["commons_not_found"] += 1
+                    continue
+                if not is_license_allowed(info.license_short_name):
+                    print(
+                        f"license_rejected place={place.id} title={title!r} "
+                        f"license={info.license_short_name!r}"
+                    )
+                    counts["license_rejected"] += 1
+                    continue
+
+                if not apply:
+                    counts["would_import"] += 1
+                    imported = True
+                    break
+
+                try:
+                    raw = client.download_image(info.image_url)
+                except (httpx.HTTPError, ValueError) as exc:
+                    print(f"download_error place={place.id} title={title!r} error={exc!r}")
+                    counts["download_error"] += 1
                     continue
                 try:
-                    title = client.fetch_commons_title_via_wikidata(qid)
-                except httpx.HTTPError as exc:
-                    print(f"wikidata_api_error place={place.id} qid={qid!r} error={exc!r}")
-                    counts["wikidata_api_error"] += 1
+                    saved = save_place_photo(raw, place_id=place.id)
+                except InvalidPlacePhoto as exc:
+                    print(f"invalid_image place={place.id} title={title!r} error={exc!r}")
+                    counts["invalid_image"] += 1
                     continue
-                if title is None:
-                    counts["wikidata_no_image"] += 1
-                    continue
-                counts["via_wikidata"] += 1
+                imported = True
+                break
 
-            try:
-                info = client.fetch_file_info(title)
-            except httpx.HTTPError as exc:
-                print(f"commons_api_error place={place.id} title={title!r} error={exc!r}")
-                counts["commons_api_error"] += 1
+            if not apply or not imported:
                 continue
-            if info is None:
-                counts["commons_not_found"] += 1
-                continue
-            if not is_license_allowed(info.license_short_name):
-                print(
-                    f"license_rejected place={place.id} title={title!r} "
-                    f"license={info.license_short_name!r}"
-                )
-                counts["license_rejected"] += 1
-                continue
-
-            if not apply:
-                counts["would_import"] += 1
-                continue
-
-            try:
-                raw = client.download_image(info.image_url)
-            except (httpx.HTTPError, ValueError) as exc:
-                print(f"download_error place={place.id} title={title!r} error={exc!r}")
-                counts["download_error"] += 1
-                continue
-            try:
-                saved = save_place_photo(raw, place_id=place.id)
-            except InvalidPlacePhoto as exc:
-                print(f"invalid_image place={place.id} title={title!r} error={exc!r}")
-                counts["invalid_image"] += 1
-                continue
+            # `imported` is only set True once `info`/`saved` are assigned in
+            # the loop above, but mypy cannot see that across the break.
+            assert info is not None
+            assert saved is not None
 
             attachment = upsert_place_file_attachment(
                 session,
@@ -202,6 +270,8 @@ def _run(*, apply: bool, limit: int, offset: int, only_missing: bool, sleep_seco
                 alt_text=place.name,
             )
             counts["imported"] += 1
+            if source == "geosearch":
+                counts["via_geosearch"] += 1
             if sleep_seconds > 0:
                 time.sleep(sleep_seconds)
 
@@ -234,6 +304,20 @@ def main() -> None:
         default=0.5,
         help="Politeness delay between successful downloads (Wikimedia API etiquette)",
     )
+    parser.add_argument(
+        "--geosearch",
+        action="store_true",
+        help=(
+            "Fall back to a Commons geosearch (by the place's own coordinates) "
+            "when no OSM tag or Wikidata image matched"
+        ),
+    )
+    parser.add_argument(
+        "--geosearch-radius-m",
+        type=int,
+        default=200,
+        help="Search radius for --geosearch, in metres",
+    )
     args = parser.parse_args()
     if not 1 <= args.limit <= 5000:
         raise SystemExit("limit must be between 1 and 5000")
@@ -241,12 +325,16 @@ def main() -> None:
         raise SystemExit("sleep-seconds must be >= 0")
     if args.offset < 0:
         raise SystemExit("offset must be >= 0")
+    if not 1 <= args.geosearch_radius_m <= 10_000:
+        raise SystemExit("geosearch-radius-m must be between 1 and 10000")
     _run(
         apply=args.apply,
         limit=args.limit,
         offset=args.offset,
         only_missing=not args.all,
         sleep_seconds=args.sleep_seconds,
+        geosearch=args.geosearch,
+        geosearch_radius_m=args.geosearch_radius_m,
     )
 
 

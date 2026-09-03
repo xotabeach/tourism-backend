@@ -182,6 +182,51 @@ def test_fetch_commons_title_via_wikidata_rejects_non_qid() -> None:
         client.fetch_commons_title_via_wikidata("Q42; DROP TABLE places")
 
 
+def test_geosearch_returns_file_titles_within_radius() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["list"] == "geosearch"
+        assert request.url.params["gscoord"] == "44.4531|34.0453"
+        assert request.url.params["gsradius"] == "200"
+        assert request.url.params["gsnamespace"] == "6"
+        return httpx.Response(
+            200,
+            json={
+                "query": {
+                    "geosearch": [
+                        {"title": "File:Ai-Petri view.jpg", "lat": 44.4532, "lon": 34.0454},
+                        {"title": "File:Ai-Petri cable car.jpg", "lat": 44.4530, "lon": 34.0451},
+                        # A malformed entry must not crash the whole call.
+                        {"lat": 44.45, "lon": 34.04},
+                    ]
+                }
+            },
+        )
+
+    titles = _client(httpx.MockTransport(handler)).geosearch(
+        lat=44.4531, lng=34.0453, radius_m=200
+    )
+    assert titles == ["File:Ai-Petri view.jpg", "File:Ai-Petri cable car.jpg"]
+
+
+def test_geosearch_returns_empty_list_when_nothing_nearby() -> None:
+    handler = lambda request: httpx.Response(200, json={"query": {"geosearch": []}})  # noqa: E731
+    assert _client(httpx.MockTransport(handler)).geosearch(lat=0, lng=0, radius_m=50) == []
+
+
+@pytest.mark.parametrize("radius_m", [0, 10_001])
+def test_geosearch_rejects_radius_out_of_range(radius_m: int) -> None:
+    client = _client(httpx.MockTransport(lambda request: httpx.Response(200, json={})))
+    with pytest.raises(ValueError, match="radius_m"):
+        client.geosearch(lat=44.45, lng=34.04, radius_m=radius_m)
+
+
+@pytest.mark.parametrize("limit", [0, 21])
+def test_geosearch_rejects_limit_out_of_range(limit: int) -> None:
+    client = _client(httpx.MockTransport(lambda request: httpx.Response(200, json={})))
+    with pytest.raises(ValueError, match="limit"):
+        client.geosearch(lat=44.45, lng=34.04, radius_m=200, limit=limit)
+
+
 def test_download_image_enforces_size_cap() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"x" * 200)
