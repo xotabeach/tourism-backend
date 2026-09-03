@@ -41,6 +41,7 @@ from tourism_backend.modules.admin.presentation.filters import (
 )
 from tourism_backend.modules.admin.presentation.formatters import (
     format_admin_role,
+    format_article_block_image,
     format_article_status,
     format_debug_code,
     format_expert_status,
@@ -61,6 +62,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_user_fk,
     format_user_id_peek,
 )
+from tourism_backend.modules.content.application import article_service
 from tourism_backend.modules.content.infrastructure.models import (
     Article,
     ArticleBlock,
@@ -188,6 +190,32 @@ async def _preload_review_media(
     for row in rows:
         result.setdefault(row.entity_id, []).append(row.public_path)
     return result
+
+
+async def _preload_article_block_media(
+    session_maker: Any,
+    attachment_ids: list[UUID],
+) -> dict[UUID, str]:
+    """Map media-attachment id -> public path for article image blocks.
+
+    Keyed by the attachment id (not the block id) because that is what the
+    block row carries and what the formatter has on hand.
+    """
+    ids = list({item for item in attachment_ids if item is not None})
+    if not ids:
+        return {}
+    async with session_maker(expire_on_commit=False) as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(MediaAttachment).where(
+                        MediaAttachment.id.in_(ids),
+                        MediaAttachment.status == "active",
+                    )
+                )
+            ).all()
+        )
+    return {row.id: row.public_path for row in rows}
 
 
 _AUTHOR_RU = {
@@ -2657,6 +2685,61 @@ class ArticleAdmin(ModelView, model=Article):
         )
         return pagination
 
+    async def _set_status(self, request: Request, *, status_value: str) -> Response:
+        actor_id = session_principal_id(request)
+        if actor_id is None:
+            return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
+        raw_pks = request.query_params.get("pks", "")
+        article_ids: list[UUID] = []
+        for raw in raw_pks.split(","):
+            with contextlib.suppress(ValueError):
+                article_ids.append(UUID(raw.strip()))
+        if article_ids:
+            async with self.session_maker(expire_on_commit=False) as session:
+                # Через сервис, а не присваиванием status: он ставит published_at,
+                # moderated_at и шлёт автору уведомление о решении модератора.
+                await article_service.set_article_status(
+                    session,
+                    article_ids=article_ids,
+                    status=status_value,
+                )
+                for article_id in article_ids:
+                    await record_audit(
+                        session,
+                        actor_id=actor_id,
+                        action=f"admin.article_{status_value}",
+                        entity_type="article",
+                        entity_id=str(article_id),
+                        ip=request.client.host if request.client else None,
+                    )
+                await session.commit()
+        return RedirectResponse(
+            str(request.url_for("admin:list", identity=self.identity)),
+            status_code=303,
+        )
+
+    @action(
+        name="publish_articles",
+        label="Опубликовать",
+        confirmation_message=(
+            "Опубликовать выбранные статьи? Будут пропущены те, что не находятся на модерации."
+        ),
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def publish_articles(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="published")
+
+    @action(
+        name="reject_articles",
+        label="Отклонить",
+        confirmation_message="Отклонить выбранные статьи?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_articles(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="rejected")
+
 
 class ArticleBlockAdmin(ModelView, model=ArticleBlock):
     category = "Контент"
@@ -2669,6 +2752,7 @@ class ArticleBlockAdmin(ModelView, model=ArticleBlock):
         ArticleBlock.article_id,
         ArticleBlock.position,
         ArticleBlock.block_type,
+        ArticleBlock.media_attachment_id,
         ArticleBlock.text_content,
     ]
     column_labels = {
@@ -2678,6 +2762,8 @@ class ArticleBlockAdmin(ModelView, model=ArticleBlock):
         ArticleBlock.text_content: "Текст",
         ArticleBlock.media_attachment_id: "Изображение",
     }
+    column_formatters = {ArticleBlock.media_attachment_id: format_article_block_image}
+    column_formatters_detail = {ArticleBlock.media_attachment_id: format_article_block_image}
     column_sortable_list = [ArticleBlock.position]
     column_filters: ClassVar[list[Any]] = [
         AllUniqueStringValuesFilter(ArticleBlock.block_type),
@@ -2690,6 +2776,23 @@ class ArticleBlockAdmin(ModelView, model=ArticleBlock):
     can_delete = False
     can_export = False
     page_size = 50
+
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        request.state.article_block_media = await _preload_article_block_media(
+            self.session_maker,
+            [row.media_attachment_id for row in pagination.rows],
+        )
+        return pagination
+
+    async def get_object_for_details(self, request: Request) -> Any:
+        model = await super().get_object_for_details(request)
+        if model is not None:
+            request.state.article_block_media = await _preload_article_block_media(
+                self.session_maker,
+                [model.media_attachment_id],
+            )
+        return model
 
 
 class ArticleCommentAdmin(ModelView, model=ArticleComment):

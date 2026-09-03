@@ -272,6 +272,33 @@ def format_review_media_gallery(
     return Markup('<span class="ct-review-media-grid">{}</span>').format(buttons)
 
 
+def format_article_block_image(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    """Thumbnail for an image block, resolved through `request.state`.
+
+    Without this the admin showed a bare media-attachment UUID, so a moderator
+    deciding whether to publish an article could not see the pictures in it
+    (reported 2026-09-03).
+    """
+    attachment_id = getattr(model, "media_attachment_id", None)
+    if attachment_id is None:
+        return Markup('<span class="text-secondary">—</span>')
+    cache = getattr(getattr(request, "state", None), "article_block_media", None)
+    raw = cache.get(attachment_id) if isinstance(cache, dict) else None
+    url = _safe_media_url(raw)
+    if url is None:
+        return Markup('<span class="text-secondary">Нет фото</span>')
+    return Markup(
+        '<span class="ct-review-media-grid">'
+        '<button type="button" class="ct-review-media-thumb" '
+        'data-ct-review-image="{}" aria-label="Открыть изображение блока">'
+        '<img src="{}" alt="" loading="lazy" decoding="async"></button></span>'
+    ).format(escape(url), escape(url))
+
+
 def format_expert_status(model: object, attribute: object) -> Markup:
     if bool(getattr(model, "is_expert", False)):
         return Markup('<span class="ct-badge ct-badge-route-published">Эксперт</span>')

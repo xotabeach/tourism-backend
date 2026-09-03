@@ -942,3 +942,11 @@ def test_article_admin_views_are_registered_and_write_gated() -> None:
     # Blocks are rebuilt as a set whenever the author edits the article, so
     # an ops edit here would be silently overwritten.
     assert ArticleBlockAdmin.can_edit is False
+
+    # ...but read-only must not mean "no way to moderate": with status out of
+    # form_columns and no actions, the admin had no publish control at all and
+    # a pending article could never go live (reported 2026-09-03).
+    for handler in (ArticleAdmin.publish_articles, ArticleAdmin.reject_articles):
+        assert getattr(handler, "_action", False) is True
+        assert handler._add_in_list is True
+    assert ArticleBlock.media_attachment_id in ArticleBlockAdmin.column_list

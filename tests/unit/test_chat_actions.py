@@ -39,6 +39,12 @@ def test_city_ask_field_no_longer_duplicates_the_dropdown_as_chips() -> None:
     assert not {"city_yalta", "city_sevastopol", "city_sudak"} & ids
     # The escape hatch stays: the user can still ask for a route right away.
     assert ids == {"want_generate"}
+    # ...but it must not pose as a second city picker. With layout="sheet" and
+    # sheet_title="Выбрать город" the client drew a dropdown button next to the
+    # real select, and opening it showed only this one chip (screenshot
+    # 2026-09-03).
+    assert all(block.layout != "sheet" for block in blocks)
+    assert all(block.sheet_title is None for block in blocks)
 
 
 def test_interests_ask_field_includes_history_and_nature() -> None:

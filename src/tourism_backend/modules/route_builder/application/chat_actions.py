@@ -424,11 +424,26 @@ def build_actions_block(
         field = ask_field or first_missing_ask_field(confirmed_fields or [])
         if field not in _ASK_FIELD_DEFAULTS:
             field = first_missing_ask_field(confirmed_fields or [])
-        resolved_field = field
-        # Город спрашивается выпадающим списком (interactive_control_blocks),
-        # поэтому дублирующие чипы-города здесь не строим — иначе на один
-        # вопрос два разных ответа в интерфейсе.
-        ids = [] if field == "city" else list(_ASK_FIELD_DEFAULTS.get(field, ()))
+        if ask_field == "city":
+            # Город спрашивается выпадающим списком (interactive_control_blocks),
+            # поэтому чипы-города здесь не строим — иначе на один вопрос два
+            # разных ответа в интерфейсе.
+            #
+            # И resolved_field намеренно оставляем None: если записать сюда
+            # "city", ниже включится layout="sheet" с заголовком «Выбрать
+            # город» — а внутри останется только запасной «Подбери маршрут».
+            # На экране это выглядело как второй пикер города рядом с самим
+            # списком, открывающий пустую шторку (баг с живого скрина 2026-09-03).
+            #
+            # Условие именно `ask_field == "city"`, а не `field == "city"`:
+            # `field` — фолбэк на первое незаполненное поле, и на приветствии
+            # он тоже "city", хотя селект там не рисуется (interactive_control_blocks
+            # смотрит на ask_field). По `field` мы бы забрали чипы, не дав взамен
+            # списка.
+            ids = []
+        else:
+            resolved_field = field
+            ids = list(_ASK_FIELD_DEFAULTS.get(field, ()))
     cap = _MAX_SHEET_ACTIONS if resolved_field in _SHEET_TITLES else _MAX_ACTIONS
     if (
         include_generate
@@ -560,7 +575,10 @@ def interactive_control_blocks(
                 SelectBlockOut(
                     id="city",
                     label="Стартовый город",
-                    placeholder="Выберите город",
+                    # Видимый текст свёрнутого поля — как в макете: «Город».
+                    # (label уходит только в Semantics, для скринридера он
+                    # должен оставаться развёрнутым.)
+                    placeholder="Город",
                     value=preselected,
                     options=[SelectOptionOut(value=value, label=label) for value, label in options],
                 )

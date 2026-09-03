@@ -22,7 +22,7 @@ class TestCitySelectBlock:
         assert len(selects) == 1
         select = selects[0]
         assert select.id == "city"
-        assert select.placeholder == "Выберите город"
+        assert select.placeholder == "Город"
         assert [option.label for option in select.options] == [
             label for _, label in city_options()
         ]
@@ -50,7 +50,7 @@ class TestCitySelectBlock:
 
         select = next(block for block in blocks if isinstance(block, SelectBlockOut))
         assert select.value is None
-        assert select.placeholder == "Выберите город"
+        assert select.placeholder == "Город"
 
     def test_other_ask_fields_get_no_select(self) -> None:
         for field in ("pace", "budget", "interests", "ready"):
