@@ -46,6 +46,35 @@ def test_chunk_place_markdown_produces_candidates() -> None:
     assert all(c.locality == "Ялта" for c in chunks)
 
 
+def test_chunk_place_markdown_prefers_the_full_description() -> None:
+    """The full description is the actual knowledge; short_description is a
+    card-length teaser for the UI and must not crowd it out or replace it.
+    """
+    chunks = chunk_place_markdown(
+        place_id="p2",
+        name="Демир-Капу",
+        short_description="Скала на плато.",
+        description="Скала на плато Ай-Петри, popular among climbers " * 10,
+        locality="Ялта",
+    )
+    bodies = " ".join(c.body for c in chunks)
+    assert "popular among climbers" in bodies
+    assert "Скала на плато." in bodies
+    # The full text is what a retriever should see first, not the teaser.
+    assert bodies.index("popular among climbers") < bodies.index("Скала на плато.")
+
+
+def test_chunk_place_markdown_skips_duplicate_short_description() -> None:
+    chunks = chunk_place_markdown(
+        place_id="p3",
+        name="Ласточкино гнездо",
+        short_description="Замок на скале.",
+        description="Замок на скале.",
+        locality="Ялта",
+    )
+    assert sum(c.body.count("Замок на скале.") for c in chunks) == 1
+
+
 def test_content_hash_stable() -> None:
     assert content_hash("x") == content_hash("x")
     assert content_hash("x") != content_hash("y")

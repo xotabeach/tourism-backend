@@ -110,12 +110,15 @@ def chunk_place_markdown(
     source: str = "internal",
     license_note: str | None = None,
 ) -> list[ChunkCandidate]:
-    desc = short_description or description
+    # The full description is the actual knowledge — short_description is a
+    # card-length teaser (66-240 chars) written for the UI, not for retrieval.
+    # Putting it first meant most places' only real content sat in a second
+    # "Подробнее" section, or was skipped entirely when descriptions matched.
     parts = [f"# {name}"]
-    if desc:
-        parts.extend(["\n\n## Описание\n", desc])
-    if description and description != short_description:
-        parts.extend(["\n\n## Подробнее\n", description])
+    if description:
+        parts.extend(["\n\n## Описание\n", description])
+    if short_description and short_description != description:
+        parts.extend(["\n\n## Коротко\n", short_description])
     markdown = "".join(parts)
     return _chunk_markdown(
         markdown,
