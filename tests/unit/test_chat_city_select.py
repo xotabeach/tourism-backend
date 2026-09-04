@@ -23,9 +23,7 @@ class TestCitySelectBlock:
         select = selects[0]
         assert select.id == "city"
         assert select.placeholder == "Город"
-        assert [option.label for option in select.options] == [
-            label for _, label in city_options()
-        ]
+        assert [option.label for option in select.options] == [label for _, label in city_options()]
         assert "Симферополь" in {option.value for option in select.options}
 
     def test_options_come_from_the_action_catalog(self) -> None:
@@ -34,9 +32,7 @@ class TestCitySelectBlock:
         assert len(city_options()) == 10
 
     def test_an_already_chosen_city_preselects_the_dropdown(self) -> None:
-        blocks = interactive_control_blocks(
-            ask_field="city", constraints={"city": "Судак"}
-        )
+        blocks = interactive_control_blocks(ask_field="city", constraints={"city": "Судак"})
 
         select = next(block for block in blocks if isinstance(block, SelectBlockOut))
         assert select.value == "Судак"
@@ -44,9 +40,7 @@ class TestCitySelectBlock:
     def test_a_region_is_not_mistaken_for_a_chosen_city(self) -> None:
         # The model puts "Крым" in constraints — a region, not a city. Shown
         # as the dropdown's value it looked like a choice already made.
-        blocks = interactive_control_blocks(
-            ask_field="city", constraints={"city": "Крым"}
-        )
+        blocks = interactive_control_blocks(ask_field="city", constraints={"city": "Крым"})
 
         select = next(block for block in blocks if isinstance(block, SelectBlockOut))
         assert select.value is None

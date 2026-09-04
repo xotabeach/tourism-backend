@@ -392,9 +392,7 @@ def test_quote_list_and_divider_block_shapes_are_validated() -> None:
         ArticleBlockIn(block_type="text", text_content="Текст", caption="Не сюда")
 
     # A list needs both text and a style; list_style elsewhere is rejected.
-    bullets = ArticleBlockIn(
-        block_type="list", text_content="Раз\nДва\nТри", list_style="bullet"
-    )
+    bullets = ArticleBlockIn(block_type="list", text_content="Раз\nДва\nТри", list_style="bullet")
     assert bullets.list_style == "bullet"
     with pytest.raises(ValueError, match="list blocks require text_content and list_style"):
         ArticleBlockIn(block_type="list", text_content="Раз", list_style=None)
@@ -620,9 +618,7 @@ async def test_reading_time_sums_prose_blocks_and_has_a_floor(
             title="Длинная",
             blocks=[
                 ArticleBlockIn(block_type="text", text_content=long_text),
-                ArticleBlockIn(
-                    block_type="list", text_content="А\nБ", list_style="bullet"
-                ),
+                ArticleBlockIn(block_type="list", text_content="А\nБ", list_style="bullet"),
             ],
         ),
     )
@@ -714,9 +710,7 @@ async def test_view_count_is_one_per_reader(
 
     # The same reader opening it three times is still one view.
     for _ in range(3):
-        await article_service.get_article(
-            session, article_id=article_id, viewer_user_id=liker.id
-        )
+        await article_service.get_article(session, article_id=article_id, viewer_user_id=liker.id)
     row = await session.get(Article, article_id)
     assert row is not None
     assert row.view_count == 1
@@ -977,9 +971,7 @@ async def test_dropping_an_image_block_still_archives_its_attachment(
         session,
         author_user_id=author.id,
         article_id=UUID(created.id),
-        payload=_payload(
-            blocks=[ArticleBlockIn(block_type="text", text_content="Только текст")]
-        ),
+        payload=_payload(blocks=[ArticleBlockIn(block_type="text", text_content="Только текст")]),
     )
     await session.refresh(attachment)
     assert attachment.status == "archived"
@@ -1020,7 +1012,5 @@ async def test_articles_are_searchable_by_title_and_tag(
     assert [item.id for item in by_tag.items] == [other.id]
 
     # An empty query is not a filter — it lists everything, as before.
-    unfiltered = await article_service.list_published_articles(
-        session, viewer_user_id=None
-    )
+    unfiltered = await article_service.list_published_articles(session, viewer_user_id=None)
     assert {matching.id, other.id} <= {item.id for item in unfiltered.items}

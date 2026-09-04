@@ -202,9 +202,7 @@ def test_geosearch_returns_file_titles_within_radius() -> None:
             },
         )
 
-    titles = _client(httpx.MockTransport(handler)).geosearch(
-        lat=44.4531, lng=34.0453, radius_m=200
-    )
+    titles = _client(httpx.MockTransport(handler)).geosearch(lat=44.4531, lng=34.0453, radius_m=200)
     assert titles == ["File:Ai-Petri view.jpg", "File:Ai-Petri cable car.jpg"]
 
 

@@ -66,9 +66,7 @@ async def commenter(session: AsyncSession) -> AsyncIterator[User]:
     user_id = user.id
     yield user
     await session.rollback()
-    await session.execute(
-        delete(ArticleComment).where(ArticleComment.author_user_id == user_id)
-    )
+    await session.execute(delete(ArticleComment).where(ArticleComment.author_user_id == user_id))
     await session.execute(delete(Notification).where(Notification.user_id == user_id))
     await session.execute(delete(User).where(User.id == user_id))
     await session.commit()

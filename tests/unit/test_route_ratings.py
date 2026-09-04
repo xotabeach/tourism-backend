@@ -102,9 +102,7 @@ async def test_rating_counts_only_published_root_reviews(session: AsyncSession) 
         # The rows were committed, so a rollback would not undo them — and a
         # published editorial route with no stops leaks into the catalogue
         # tests that assert every card has at least two.
-        await session.execute(
-            delete(RouteReview).where(RouteReview.route_id == rated_id)
-        )
+        await session.execute(delete(RouteReview).where(RouteReview.route_id == rated_id))
         await session.execute(delete(Route).where(Route.id.in_([rated_id, unrated_id])))
         await session.execute(delete(User).where(User.id == author_id))
         await session.commit()

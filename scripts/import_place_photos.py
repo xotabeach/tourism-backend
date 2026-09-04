@@ -140,12 +140,7 @@ def _run(
         # tags to read, but every place carries coordinates — geosearch
         # covers them too, so this query no longer filters by source_name.
         geom = cast(Place.location, Geometry)
-        stmt = (
-            select(Place, ST_X(geom), ST_Y(geom))
-            .order_by(Place.id)
-            .offset(offset)
-            .limit(limit)
-        )
+        stmt = select(Place, ST_X(geom), ST_Y(geom)).order_by(Place.id).offset(offset).limit(limit)
         if only_missing:
             stmt = stmt.where(~_has_active_cover_subquery())
         rows = session.execute(stmt).all()

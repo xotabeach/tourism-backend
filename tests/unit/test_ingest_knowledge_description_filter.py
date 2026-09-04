@@ -16,9 +16,7 @@ ingest_knowledge = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ingest_knowledge)
 
 
-def _place(
-    *, content_enrichment: dict[str, object] | None, description: str = ""
-) -> Place:
+def _place(*, content_enrichment: dict[str, object] | None, description: str = "") -> Place:
     place = Place()
     place.content_enrichment = content_enrichment
     place.description = description

@@ -142,9 +142,7 @@ async def test_a_report_lands_in_the_queue_and_repeats_do_not_pile_up(
 
 
 @pytest.mark.asyncio
-async def test_you_cannot_report_your_own_comment(
-    session: AsyncSession, author: User
-) -> None:
+async def test_you_cannot_report_your_own_comment(session: AsyncSession, author: User) -> None:
     article = await _published_article(session, author)
     comment = await article_comment_service.create_article_comment(
         session,
