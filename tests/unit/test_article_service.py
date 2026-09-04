@@ -166,9 +166,10 @@ async def test_update_replaces_the_whole_block_list(session: AsyncSession, autho
 
 
 @pytest.mark.asyncio
-async def test_article_under_moderation_cannot_be_edited(
+async def test_an_article_awaiting_review_is_edited_in_place(
     session: AsyncSession, author: User
 ) -> None:
+    """Nothing has been approved yet, so there is nothing to re-check."""
     created = await article_service.create_article_draft(
         session, author_user_id=author.id, payload=_payload()
     )
@@ -177,12 +178,66 @@ async def test_article_under_moderation_cannot_be_edited(
         session, author_user_id=author.id, article_id=article_id
     )
 
+    updated = await article_service.update_article_draft(
+        session,
+        author_user_id=author.id,
+        article_id=article_id,
+        payload=_payload(title="Поправил, пока ждёт проверки"),
+    )
+    assert updated.title == "Поправил, пока ждёт проверки"
+    assert updated.status == "pending_review"
+
+
+@pytest.mark.asyncio
+async def test_editing_a_published_article_sends_it_back_to_moderation(
+    session: AsyncSession, author: User
+) -> None:
+    """Otherwise moderation is trivially bypassed: publish something
+    innocuous, then replace the text once it is live.
+    """
+    created = await article_service.create_article_draft(
+        session, author_user_id=author.id, payload=_payload()
+    )
+    article_id = UUID(created.id)
+    await _publish(session, article_id)
+    published_row = await session.get(Article, article_id)
+    assert published_row is not None
+    first_published_at = published_row.published_at
+    assert first_published_at is not None
+
+    updated = await article_service.update_article_draft(
+        session,
+        author_user_id=author.id,
+        article_id=article_id,
+        payload=_payload(title="Подмена после одобрения"),
+    )
+    assert updated.status == "pending_review"
+
+    row = await session.get(Article, article_id)
+    assert row is not None
+    assert row.moderated_at is None
+    # The first-publication stamp survives: it is what the feed sorts by and
+    # what readers already saw.
+    assert row.published_at == first_published_at
+
+    # ...and while it waits, it is out of the public feed.
+    feed = await article_service.list_published_articles(session, viewer_user_id=None)
+    assert all(item.id != created.id for item in feed.items)
+
+
+@pytest.mark.asyncio
+async def test_a_published_article_cannot_be_resubmitted_for_review(
+    session: AsyncSession, author: User
+) -> None:
+    created = await article_service.create_article_draft(
+        session, author_user_id=author.id, payload=_payload()
+    )
+    article_id = UUID(created.id)
+    await _publish(session, article_id)
+
     with pytest.raises(AppError) as exc:
-        await article_service.update_article_draft(
-            session,
-            author_user_id=author.id,
-            article_id=article_id,
-            payload=_payload(title="Подмена после одобрения"),
+        await article_service.submit_article_for_review(
+            session, author_user_id=author.id, article_id=article_id
         )
     assert exc.value.status_code == 409
     assert exc.value.code == "article_not_editable"

@@ -51,7 +51,16 @@ from tourism_backend.modules.routes.infrastructure.models import Route
 
 # An article is edited as a whole, so "editable" is a status question, not
 # a time window like a review's photo edits.
-_EDITABLE_STATUSES = frozenset({"draft", "rejected"})
+#
+# A published article is editable too, but the edit sends it back through
+# moderation (see update_article_draft): otherwise the review could be
+# walked around by publishing something innocuous and then replacing its
+# text. An article awaiting review is edited in place — it has not been
+# approved yet, so there is nothing to re-check.
+_EDITABLE_STATUSES = frozenset({"draft", "rejected", "pending_review", "published"})
+
+# Editing one of these puts the article back in the moderation queue.
+_REMODERATE_ON_EDIT = frozenset({"published"})
 _SUBMIT_WINDOW = timedelta(hours=24)
 _MAX_SUBMISSIONS_PER_WINDOW = 3
 _ANONYMOUS_AUTHOR = "Путешественник"
@@ -652,16 +661,17 @@ async def _own_editable_article(
     *,
     article_id: UUID,
     author_user_id: UUID,
+    allowed: frozenset[str] = _EDITABLE_STATUSES,
 ) -> Article:
     article = await session.get(Article, article_id)
     if article is None or article.status == "deleted":
         raise _not_found()
     if article.author_user_id != author_user_id:
         raise _not_found()
-    if article.status not in _EDITABLE_STATUSES:
+    if article.status not in allowed:
         raise AppError(
             code="article_not_editable",
-            message="Статью на модерации или уже опубликованную нельзя редактировать",
+            message="Эту статью нельзя редактировать",
             status_code=409,
         )
     return article
@@ -683,6 +693,13 @@ async def update_article_draft(
     article.related_place_id = payload.related_place_id
     article.tags = payload.tags
     article.updated_at = datetime.now(UTC)
+    if article.status in _REMODERATE_ON_EDIT:
+        # Back to the queue, and out of the feed until it is approved again.
+        # `published_at` stays: it records when the article first went live,
+        # which is what the feed sorts by and what readers saw.
+        article.status = "pending_review"
+        article.moderator_note = None
+        article.moderated_at = None
     await _replace_blocks(session, article=article, payload=payload)
     await session.commit()
     await session.refresh(article)
@@ -695,8 +712,14 @@ async def submit_article_for_review(
     author_user_id: UUID,
     article_id: UUID,
 ) -> ArticleOut:
+    # Narrower than editing: an article already in the queue, or already
+    # live, has nothing to submit. Editing a published one re-queues it on
+    # its own (see update_article_draft).
     article = await _own_editable_article(
-        session, article_id=article_id, author_user_id=author_user_id
+        session,
+        article_id=article_id,
+        author_user_id=author_user_id,
+        allowed=frozenset({"draft", "rejected"}),
     )
     blocks = int(
         await session.scalar(
