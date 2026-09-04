@@ -21,6 +21,7 @@ from tourism_backend.modules.routes.application.schemas import (
     RouteSource,
     UserRouteDraftIn,
     UserRouteDraftOut,
+    UserRouteEditableOut,
     UserRouteMediaOut,
 )
 
@@ -98,6 +99,20 @@ async def upload_route_draft_media(
         owner_user_id=user_id,
         position=position,
         saved=saved,
+    )
+
+
+@router.get("/routes/{route_id}/editable", response_model=UserRouteEditableOut)
+async def get_route_for_edit(
+    route_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> UserRouteEditableOut:
+    """Own route in editor shape, so it can be resumed from any device."""
+    return await routes_service.get_user_route_for_edit(
+        session,
+        route_id=route_id,
+        owner_user_id=user_id,
     )
 
 

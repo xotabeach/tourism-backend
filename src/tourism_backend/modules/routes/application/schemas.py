@@ -78,6 +78,38 @@ class UserRouteDraftOut(BaseModel):
     updated_at: datetime
 
 
+class UserRouteEditablePlaceOut(BaseModel):
+    """A stop as the editor draws it — enough to rebuild the card without a
+    second request per place."""
+
+    id: UUID
+    name: str
+    subtitle: str = ""
+    lat: float | None = None
+    lng: float | None = None
+
+
+class UserRouteEditableOut(BaseModel):
+    """A route's own content, as its author needs it to resume editing.
+
+    `pace`, `filters` and `difficulty` live in `Route.accessibility` and are
+    not part of the public route payload, so without this the editor could
+    only be resumed from the device that still held the local draft
+    (reported 2026-09-04).
+    """
+
+    id: UUID
+    publication_status: RoutePublicationStatus
+    name: str
+    description: str
+    places: list[UserRouteEditablePlaceOut]
+    filters: list[str]
+    pace: Literal["calm", "moderate", "active"]
+    difficulty: int
+    media: list["UserRouteMediaOut"]
+    updated_at: datetime
+
+
 class UserRouteMediaOut(BaseModel):
     id: UUID
     public_path: str

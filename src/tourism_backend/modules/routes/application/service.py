@@ -35,6 +35,8 @@ from tourism_backend.modules.routes.application.schemas import (
     RouteStopOut,
     UserRouteDraftIn,
     UserRouteDraftOut,
+    UserRouteEditableOut,
+    UserRouteEditablePlaceOut,
     UserRouteMediaOut,
 )
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
@@ -667,6 +669,13 @@ async def get_owned_route(
     return await _route_detail_from_model(session, route, public_stops_only=False)
 
 
+# A published route is editable, but saving sends it back through review —
+# same rule as articles: otherwise moderation is bypassed by publishing
+# something plain and swapping the stops afterwards. `pending_review` is
+# editable in place; nothing has been approved yet.
+_EDITABLE_ROUTE_STATUSES = frozenset({"draft", "rejected", "pending_review", "published"})
+
+
 def _difficulty_name(value: int) -> str:
     if value <= 2:
         return "easy"
@@ -680,6 +689,7 @@ async def _owned_editable_route(
     *,
     route_id: UUID,
     owner_user_id: UUID,
+    allowed: frozenset[str] = _EDITABLE_ROUTE_STATUSES,
 ) -> Route:
     route = await session.get(Route, route_id)
     if (
@@ -688,13 +698,94 @@ async def _owned_editable_route(
         or route.source not in {"user_created", "generated"}
     ):
         raise AppError(code="route_not_found", message="Route not found", status_code=404)
-    if route.publication_status not in {"draft", "rejected"}:
+    if route.publication_status not in allowed:
         raise AppError(
             code="route_not_editable",
             message="Route cannot be edited in its current status",
             status_code=409,
         )
     return route
+
+
+async def get_user_route_for_edit(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    owner_user_id: UUID,
+) -> UserRouteEditableOut:
+    """The author's own route, in the shape the editor needs to resume.
+
+    Pace, filters and difficulty are stored inside `accessibility` and are
+    not part of the public payload, so the editor could previously only be
+    resumed from the device that still held the local draft.
+    """
+    route = await _owned_editable_route(
+        session,
+        route_id=route_id,
+        owner_user_id=owner_user_id,
+    )
+    # Places come back with their card data, so the editor can redraw the
+    # stop list without a request per place.
+    geom = cast(Place.location, Geometry)
+    stop_rows = (
+        await session.execute(
+            select(Place, ST_X(geom), ST_Y(geom))
+            .join(RouteStop, RouteStop.place_id == Place.id)
+            .where(RouteStop.route_id == route.id)
+            .order_by(RouteStop.position)
+        )
+    ).all()
+    accessibility = route.accessibility if isinstance(route.accessibility, dict) else {}
+    raw_filters = accessibility.get("filters")
+    filters = (
+        [item for item in raw_filters if isinstance(item, str)]
+        if isinstance(raw_filters, list)
+        else []
+    )
+    pace = accessibility.get("travel_pace")
+    difficulty = accessibility.get("difficulty_level")
+    media = list(
+        (
+            await session.scalars(
+                select(MediaAttachment)
+                .where(
+                    MediaAttachment.entity_type == "route",
+                    MediaAttachment.entity_id == route.id,
+                    MediaAttachment.status == "active",
+                )
+                .order_by(MediaAttachment.sort_order)
+            )
+        ).all()
+    )
+    return UserRouteEditableOut(
+        id=route.id,
+        publication_status=route.publication_status,  # type: ignore[arg-type]
+        name=route.name,
+        description=route.description or "",
+        places=[
+            UserRouteEditablePlaceOut(
+                id=place.id,
+                name=place.name,
+                subtitle=place.short_description or "",
+                lat=lat,
+                lng=lng,
+            )
+            for place, lng, lat in stop_rows
+        ],
+        filters=filters,
+        pace=pace if pace in {"calm", "moderate", "active"} else "calm",
+        difficulty=difficulty if isinstance(difficulty, int) and 1 <= difficulty <= 5 else 3,
+        media=[
+            UserRouteMediaOut(
+                id=item.id,
+                public_path=item.public_path,
+                kind="video" if str(item.content_type or "").startswith("video/") else "image",
+                position=item.sort_order,
+            )
+            for item in media
+        ],
+        updated_at=route.updated_at,
+    )
 
 
 async def save_user_route_draft(
@@ -747,12 +838,14 @@ async def save_user_route_draft(
         )
         session.add(route)
         await session.flush()
+        previous_status = "draft"
     else:
         route = await _owned_editable_route(
             session,
             route_id=payload.route_id,
             owner_user_id=owner_user_id,
         )
+        previous_status = route.publication_status
         await session.execute(delete(RouteStop).where(RouteStop.route_id == route.id))
 
     route.region_id = next(iter(region_ids))
@@ -761,7 +854,12 @@ async def save_user_route_draft(
     route.description = payload.description or None
     route.visibility = "private"
     route.lifecycle_status = "draft"
-    route.publication_status = "draft"
+    # A route that had already been through review goes back into the queue
+    # rather than silently to "draft": the author edited something live, and
+    # it must not reappear in the catalogue until it is checked again.
+    route.publication_status = (
+        "pending_review" if previous_status in {"pending_review", "published"} else "draft"
+    )
     route.difficulty = _difficulty_name(payload.difficulty)
     route.transport_mode = "walking"
     route.suitable_for_children = "С детьми" in payload.filters
@@ -799,10 +897,13 @@ async def submit_user_route(
     route_id: UUID,
     owner_user_id: UUID,
 ) -> UserRouteDraftOut:
+    # Narrower than editing: a route already queued or already live has
+    # nothing to submit — editing a published one re-queues it by itself.
     route = await _owned_editable_route(
         session,
         route_id=route_id,
         owner_user_id=owner_user_id,
+        allowed=frozenset({"draft", "rejected"}),
     )
     media_count = int(
         await session.scalar(

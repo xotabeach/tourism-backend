@@ -163,9 +163,17 @@ async def test_another_user_cannot_edit_or_delete_your_article(
 
 
 @pytest.mark.asyncio
-async def test_submitting_moves_the_article_out_of_the_authors_hands(
+async def test_an_edit_cannot_slip_past_an_approval(
     live_client: AsyncClient,
 ) -> None:
+    """Editing is allowed at every stage; sneaking past review is not.
+
+    An article awaiting review is edited in place — nothing has been approved
+    yet, and the moderator reads the current version when they get to it.
+    What must not happen is a published article changing under readers: that
+    edit puts it back in the queue and pulls it out of the feed until it is
+    approved again (2026-09-04).
+    """
     author = await _login(live_client)
     draft = await _create_draft(live_client, author)
 
@@ -175,15 +183,24 @@ async def test_submitting_moves_the_article_out_of_the_authors_hands(
     assert submitted.status_code == 200
     assert submitted.json()["status"] == "pending_review"
 
-    # An article under moderation must not be editable, or the author
-    # could swap the text after a moderator approved it.
-    edit = await live_client.patch(
+    queued_edit = await live_client.patch(
         f"/api/v1/articles/{draft['id']}",
-        json={"title": "Подмена", "blocks": []},
+        json={
+            "title": "Поправил, пока ждёт",
+            "blocks": [{"block_type": "text", "text_content": "Текст"}],
+        },
         headers=_auth(author),
     )
-    assert edit.status_code == 409
-    assert edit.json()["error"]["code"] == "article_not_editable"
+    assert queued_edit.status_code == 200, queued_edit.text
+    # Still queued: an edit does not move it forward, only sideways.
+    assert queued_edit.json()["status"] == "pending_review"
+
+    # Submitting again is refused — it is already in the queue.
+    resubmit = await live_client.post(
+        f"/api/v1/articles/{draft['id']}/submit", headers=_auth(author)
+    )
+    assert resubmit.status_code == 409
+    assert resubmit.json()["error"]["code"] == "article_not_editable"
 
 
 @pytest.mark.asyncio

@@ -139,6 +139,11 @@ async def test_public_profile_hides_phone_and_is_readable(
         "followers_count",
         "following_count",
         "completed_routes_count",
+        # Public activity counters, deliberately added 2026-09-04: they say
+        # what a traveller has done, never who they are.
+        "published_routes_count",
+        "published_articles_count",
+        "article_likes_count",
         "reviews_written_count",
         "total_distance_meters",
     }
@@ -185,6 +190,11 @@ async def test_public_user_search_returns_profile_media_without_pii(
         "followers_count",
         "following_count",
         "completed_routes_count",
+        # Public activity counters, deliberately added 2026-09-04: they say
+        # what a traveller has done, never who they are.
+        "published_routes_count",
+        "published_articles_count",
+        "article_likes_count",
         "reviews_written_count",
         "total_distance_meters",
     }
@@ -271,6 +281,11 @@ async def test_users_leaderboard_is_public_and_ordered_by_points(
         "followers_count",
         "following_count",
         "completed_routes_count",
+        # Public activity counters, deliberately added 2026-09-04: they say
+        # what a traveller has done, never who they are.
+        "published_routes_count",
+        "published_articles_count",
+        "article_likes_count",
         "reviews_written_count",
         "total_distance_meters",
     }
