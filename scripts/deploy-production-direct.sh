@@ -8,8 +8,12 @@ set -Eeuo pipefail
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
-: "${DEPLOY_SSH_TARGET:=crimeatrip-test}"
-: "${DEPLOY_HEALTH_URL:=https://86-106-20-132.sslip.io/health/ready}"
+# Прод — московский хост (переезд 2026-09-02). Старый 86.106.20.132 жив, но
+# только как релей Gemini: его 80/443 занял контейнер релея, и деплой туда
+# проходит «успешно», ничего при этом не публикуя. Раньше здесь по умолчанию
+# стоял именно он.
+: "${DEPLOY_SSH_TARGET:=crimeatrip-prod}"
+: "${DEPLOY_HEALTH_URL:=https://201-24-55-130.sslip.io/health/ready}"
 : "${CI_REGISTRY_IMAGE:=registry.gitlab.com/travel-platform2/tourism-backend}"
 
 if [[ "${#}" -ne 0 ]]; then
