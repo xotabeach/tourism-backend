@@ -21,6 +21,7 @@ from tourism_backend.modules.content.application.article_schemas import (
     ArticleCommentListOut,
     ArticleCommentOut,
 )
+from tourism_backend.modules.content.application.article_service import _rank_titles
 from tourism_backend.modules.content.infrastructure.models import Article, ArticleComment
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
@@ -58,6 +59,7 @@ def _comment_out(
     *,
     authors: dict[UUID, User],
     avatars: dict[UUID, str],
+    ranks: dict[UUID, str],
 ) -> ArticleCommentOut:
     author = authors.get(comment.author_user_id)
     return ArticleCommentOut(
@@ -66,6 +68,7 @@ def _comment_out(
         author_user_id=str(comment.author_user_id),
         author_display_name=author.display_name if author is not None else _ANONYMOUS_AUTHOR,
         author_avatar_url=avatars.get(comment.author_user_id),
+        author_rank_title=ranks.get(comment.author_user_id),
         body=comment.body,
         status=comment.status,  # type: ignore[arg-type]
         reply_to_comment_id=(
@@ -127,8 +130,9 @@ async def list_article_comments(
         entity_ids=author_ids,
         role="avatar",
     )
+    ranks = await _rank_titles(session, list(authors.values()))
     return ArticleCommentListOut(
-        items=[_comment_out(row, authors=authors, avatars=avatars) for row in rows],
+        items=[_comment_out(row, authors=authors, avatars=avatars, ranks=ranks) for row in rows],
         total=total,
     )
 
@@ -176,10 +180,12 @@ async def create_article_comment(
         entity_ids=[author_user_id],
         role="avatar",
     )
+    authors = {author.id: author} if author is not None else {}
     return _comment_out(
         comment,
-        authors={author.id: author} if author is not None else {},
+        authors=authors,
         avatars=avatars,
+        ranks=await _rank_titles(session, list(authors.values())),
     )
 
 
