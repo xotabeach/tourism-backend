@@ -18,6 +18,15 @@ _MAX_BYTES = 5 * 1024 * 1024
 _ALLOWED_FORMATS = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
 _MAX_PIXELS = 12_000_000
 
+# Animated covers are a Travel+ perk, and only for the cover — an animated
+# avatar would move in every list on every screen. A GIF is stored as-is:
+# re-encoding it through the still-image path would flatten it to one frame,
+# which is the opposite of the point.
+_ANIMATED_FORMATS = {"GIF": "gif"}
+_MAX_ANIMATED_BYTES = 8 * 1024 * 1024
+_MAX_ANIMATED_FRAMES = 300
+_MAX_ANIMATED_PIXELS = 2_000_000
+
 # UI caps: phone photos are often 12MP; UI never needs that much.
 # Downscale is visually lossless for avatar/cover display sizes.
 _MAX_EDGE = {
@@ -101,9 +110,76 @@ async def save_profile_image(
     *,
     user_id: UUID,
     kind: str,
+    allow_animated: bool = False,
 ) -> SavedProfileImage:
-    raw = await upload.read(_MAX_BYTES + 1)
-    return save_profile_image_bytes(raw, user_id=user_id, kind=kind)
+    limit = _MAX_ANIMATED_BYTES if allow_animated else _MAX_BYTES
+    raw = await upload.read(limit + 1)
+    return save_profile_image_bytes(
+        raw,
+        user_id=user_id,
+        kind=kind,
+        allow_animated=allow_animated,
+    )
+
+
+def _looks_animated(raw: bytes) -> bool:
+    """Whether Pillow sees more than one frame.
+
+    Checked before the still-image path, because that path would silently
+    keep only the first frame and hand back a motionless "animated" cover.
+    """
+    try:
+        with Image.open(io.BytesIO(raw)) as probe:
+            return (probe.format or "").upper() in _ANIMATED_FORMATS and getattr(
+                probe, "n_frames", 1
+            ) > 1
+    except (UnidentifiedImageError, OSError):
+        return False
+
+
+def _save_animated_cover(raw: bytes, *, user_id: UUID) -> SavedProfileImage:
+    """Store an animated GIF untouched, after checking it is sane.
+
+    Nothing is re-encoded: Pillow can rewrite a GIF, but the cost is
+    frame-by-frame quantisation for no gain here — the file is already small
+    enough to be accepted, and the checks below are what keep it that way.
+    """
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            frames = getattr(image, "n_frames", 1)
+            width, height = image.size
+    except (UnidentifiedImageError, OSError) as exc:
+        raise AppError(
+            code="invalid_image", message="Unrecognized image", status_code=400
+        ) from exc
+
+    if frames > _MAX_ANIMATED_FRAMES:
+        raise AppError(
+            code="invalid_image",
+            message="В гифке слишком много кадров",
+            status_code=400,
+        )
+    if width <= 0 or height <= 0 or width * height > _MAX_ANIMATED_PIXELS:
+        raise AppError(
+            code="invalid_image",
+            message="Гифка слишком большая по размеру кадра",
+            status_code=400,
+        )
+
+    rel_dir = Path("profiles") / str(user_id)
+    abs_dir = media_root() / rel_dir
+    abs_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"cover-{uuid4().hex}.gif"
+    (abs_dir / filename).write_bytes(raw)
+    storage_key = f"{rel_dir.as_posix()}/{filename}"
+    return SavedProfileImage(
+        storage_key=storage_key,
+        public_path=f"/media/{storage_key}",
+        content_type="image/gif",
+        width=width,
+        height=height,
+        byte_size=len(raw),
+    )
 
 
 def save_profile_image_bytes(
@@ -111,13 +187,19 @@ def save_profile_image_bytes(
     *,
     user_id: UUID,
     kind: str,
+    allow_animated: bool = False,
 ) -> SavedProfileImage:
     if kind not in {"avatar", "cover"}:
         raise AppError(code="validation_error", message="Unknown media kind", status_code=400)
     if not raw:
         raise AppError(code="invalid_image", message="Empty upload", status_code=400)
-    if len(raw) > _MAX_BYTES:
+    # Animated covers get their own, larger budget; everything else keeps the
+    # still-image one.
+    animated = allow_animated and kind == "cover" and _looks_animated(raw)
+    if len(raw) > (_MAX_ANIMATED_BYTES if animated else _MAX_BYTES):
         raise AppError(code="invalid_image", message="Image too large", status_code=400)
+    if animated:
+        return _save_animated_cover(raw, user_id=user_id)
 
     try:
         with Image.open(io.BytesIO(raw)) as image:

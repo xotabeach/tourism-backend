@@ -19,6 +19,7 @@ from tourism_backend.modules.identity.application.schemas import (
     RefreshIn,
     TokenPairOut,
 )
+from tourism_backend.modules.identity.infrastructure.models import User
 
 router = APIRouter(tags=["auth"])
 
@@ -186,7 +187,16 @@ async def upload_cover(
     user_id: CurrentUserId,
     file: Annotated[UploadFile, File()],
 ) -> MeOut:
-    saved = await identity_media.save_profile_image(file, user_id=user_id, kind="cover")
+    # Анимированная обложка — привилегия Тревел+, и проверяется на сервере:
+    # клиент может прислать что угодно, подписку подтверждает только флаг
+    # в базе.
+    user = await session.get(User, user_id)
+    saved = await identity_media.save_profile_image(
+        file,
+        user_id=user_id,
+        kind="cover",
+        allow_animated=bool(user is not None and user.travel_plus_active),
+    )
     return await identity_service.set_user_media_attachment(
         session,
         user_id,
