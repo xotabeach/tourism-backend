@@ -97,7 +97,7 @@ async def test_a_bad_key_is_not_retried_and_never_echoes_the_request() -> None:
         calls += 1
         return httpx.Response(401, json={"error": {"message": "Authentication Fails"}})
 
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(ValueError, match="401") as error:
         await _provider(httpx.MockTransport(handler)).probe()
 
     assert calls == 1

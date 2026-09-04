@@ -240,9 +240,7 @@ class DeepSeekProvider:
                 client,
                 messages=[
                     ChatMessage(role="system", content=system_prompt),
-                    ChatMessage(
-                        role="user", content=json.dumps(user_payload, ensure_ascii=False)
-                    ),
+                    ChatMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
                 ],
                 max_tokens=900 if source_text else 400,
                 json_mode=True,
