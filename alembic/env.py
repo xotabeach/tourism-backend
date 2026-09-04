@@ -12,6 +12,9 @@ from tourism_backend.modules.geography.infrastructure import models as geography
 from tourism_backend.modules.identity.infrastructure import models as identity_models
 from tourism_backend.modules.knowledge.infrastructure import models as knowledge_models
 from tourism_backend.modules.media.infrastructure import models as media_models
+from tourism_backend.modules.moderation.infrastructure import (
+    models as moderation_models,
+)
 from tourism_backend.modules.notifications.infrastructure import (
     models as notifications_models,
 )
@@ -58,6 +61,7 @@ _ = (
     subscriptions_models,
     route_builder_models,
     knowledge_models,
+    moderation_models,
     runtime_config_models,
     content_models,
 )

@@ -60,6 +60,30 @@ _ARTICLE_STATUS_LABELS = {
     "deleted": ("Удалена", "ct-badge-route-deleted"),
 }
 
+# Жалобы: статус разбора и причина, выбранная человеком в приложении.
+_REPORT_STATUS_LABELS = {
+    "new": ("Новая", "ct-badge-route-pending"),
+    "in_review": ("В работе", "ct-badge-awaiting"),
+    "resolved": ("Решена", "ct-badge-route-published"),
+    "rejected": ("Отклонена", "ct-badge-route-rejected"),
+}
+
+_REPORT_REASON_LABELS = {
+    "spam": ("Спам или реклама", "ct-badge-closed"),
+    "abuse": ("Оскорбления", "ct-badge-closed"),
+    "inappropriate": ("Неприемлемое содержимое", "ct-badge-closed"),
+    "misinformation": ("Недостоверные сведения", "ct-badge-closed"),
+    "copyright": ("Чужие материалы", "ct-badge-closed"),
+    "other": ("Другое", "ct-badge-closed"),
+}
+
+_REPORT_TARGET_LABELS = {
+    "article_comment": ("Комментарий", "ct-badge-chat"),
+    "article": ("Статья", "ct-badge-chat"),
+    "route": ("Маршрут", "ct-badge-chat"),
+    "place": ("Место", "ct-badge-chat"),
+}
+
 _ALLOWED_CSS = frozenset(
     {
         "ct-badge-open",
@@ -139,6 +163,18 @@ def format_place_publication_status(model: object, attribute: object) -> Markup:
 
 def format_review_status(model: object, attribute: object) -> Markup:
     return _badge(getattr(model, "status", None), _REVIEW_STATUS_LABELS)
+
+
+def format_report_status(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "status", None), _REPORT_STATUS_LABELS)
+
+
+def format_report_reason(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "reason", None), _REPORT_REASON_LABELS)
+
+
+def format_report_target_type(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "target_type", None), _REPORT_TARGET_LABELS)
 
 
 def format_article_status(model: object, attribute: object) -> Markup:

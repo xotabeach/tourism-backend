@@ -445,3 +445,40 @@ async def test_reply_must_point_at_a_visible_comment(live_client: AsyncClient) -
     )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "article_comment_parent_not_found"
+
+
+@pytest.mark.asyncio
+async def test_reporting_requires_an_account_and_a_real_target(
+    live_client: AsyncClient,
+) -> None:
+    """Жалоба — действие от лица человека: аноним её оставить не может, и
+    сослаться на несуществующий объект тоже нельзя."""
+    anonymous = await live_client.post(
+        "/api/v1/reports",
+        json={"target_type": "article", "target_id": str(uuid4()), "reason": "spam"},
+    )
+    assert anonymous.status_code == 401
+
+    reader = await _login(live_client, name="Читатель")
+    missing = await live_client.post(
+        "/api/v1/reports",
+        json={"target_type": "article", "target_id": str(uuid4()), "reason": "spam"},
+        headers=_auth(reader),
+    )
+    assert missing.status_code == 404, missing.text
+
+
+@pytest.mark.asyncio
+async def test_a_draft_cannot_be_reported_by_a_stranger(live_client: AsyncClient) -> None:
+    """Чужой черновик не виден — значит и пожаловаться на него нельзя:
+    иначе по коду ответа можно было бы проверить, существует ли статья."""
+    author = await _login(live_client)
+    stranger = await _login(live_client, name="Прохожий")
+    draft = await _create_draft(live_client, author)
+
+    response = await live_client.post(
+        "/api/v1/reports",
+        json={"target_type": "article", "target_id": draft["id"], "reason": "abuse"},
+        headers=_auth(stranger),
+    )
+    assert response.status_code == 404, response.text

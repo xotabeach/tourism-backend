@@ -6,6 +6,7 @@ from tourism_backend.modules.geography.presentation.router import router as geog
 from tourism_backend.modules.identity.presentation.router import router as identity_router
 from tourism_backend.modules.identity.presentation.users_router import router as users_router
 from tourism_backend.modules.maps.presentation.router import router as maps_router
+from tourism_backend.modules.moderation.presentation.router import router as moderation_router
 from tourism_backend.modules.notifications.presentation.router import (
     router as notifications_router,
 )
@@ -40,6 +41,7 @@ router.include_router(notifications_router)
 router.include_router(subscriptions_router)
 router.include_router(maps_router)
 router.include_router(content_router)
+router.include_router(moderation_router)
 
 
 @router.get("")

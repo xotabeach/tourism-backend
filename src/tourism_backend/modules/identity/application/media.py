@@ -149,9 +149,7 @@ def _save_animated_cover(raw: bytes, *, user_id: UUID) -> SavedProfileImage:
             frames = getattr(image, "n_frames", 1)
             width, height = image.size
     except (UnidentifiedImageError, OSError) as exc:
-        raise AppError(
-            code="invalid_image", message="Unrecognized image", status_code=400
-        ) from exc
+        raise AppError(code="invalid_image", message="Unrecognized image", status_code=400) from exc
 
     if frames > _MAX_ANIMATED_FRAMES:
         raise AppError(

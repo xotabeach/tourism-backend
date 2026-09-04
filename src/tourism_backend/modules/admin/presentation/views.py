@@ -49,6 +49,9 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_message_author,
     format_place_fk,
     format_place_publication_status,
+    format_report_reason,
+    format_report_status,
+    format_report_target_type,
     format_review_body_preview,
     format_review_media_gallery,
     format_review_status,
@@ -93,6 +96,8 @@ from tourism_backend.modules.identity.infrastructure.models import (
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.application.service import resolve_urls
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
+from tourism_backend.modules.moderation.application import service as moderation_service
+from tourism_backend.modules.moderation.infrastructure.models import ContentReport
 from tourism_backend.modules.notifications.application import service as notifications_service
 from tourism_backend.modules.notifications.infrastructure.models import (
     DeviceToken,
@@ -2894,8 +2899,7 @@ class ArticleCommentAdmin(ModelView, model=ArticleComment):
         name="publish_article_comments",
         label="Одобрить",
         confirmation_message=(
-            "Опубликовать выбранные комментарии? Будут пропущены те, что не "
-            "находятся на модерации."
+            "Опубликовать выбранные комментарии? Будут пропущены те, что не находятся на модерации."
         ),
         add_in_detail=True,
         add_in_list=True,
@@ -2911,6 +2915,144 @@ class ArticleCommentAdmin(ModelView, model=ArticleComment):
         add_in_list=True,
     )
     async def reject_article_comments(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="rejected")
+
+
+class ContentReportAdmin(ModelView, model=ContentReport):
+    """Очередь жалоб.
+
+    Один список на все типы объектов: модератору нужен поток «что разбирать»,
+    а не пять отдельных экранов. Жалоба ничего не скрывает сама — решение
+    принимает человек, поэтому здесь есть статусы разбора и заметка.
+    """
+
+    category = "Контент"
+    category_icon = "fa-solid fa-newspaper"
+    name = "Жалоба"
+    name_plural = "Жалобы на контент"
+    icon = "fa-solid fa-flag"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        ContentReport.status,
+        ContentReport.target_type,
+        ContentReport.reason,
+        ContentReport.target_id,
+        ContentReport.reporter_user_id,
+        ContentReport.created_at,
+    ]
+    column_labels = {
+        ContentReport.status: "Статус",
+        ContentReport.target_type: "На что",
+        ContentReport.target_id: "ID объекта",
+        ContentReport.reason: "Причина",
+        ContentReport.comment: "Комментарий",
+        ContentReport.reporter_user_id: "Пожаловался",
+        ContentReport.resolution_note: "Решение",
+        ContentReport.resolved_by_user_id: "Разобрал",
+        ContentReport.created_at: "Создана",
+        ContentReport.updated_at: "Обновлена",
+    }
+    column_formatters = {
+        ContentReport.status: format_report_status,
+        ContentReport.reason: format_report_reason,
+        ContentReport.target_type: format_report_target_type,
+        ContentReport.reporter_user_id: format_user_fk,
+    }
+    column_formatters_detail = {
+        ContentReport.status: format_report_status,
+        ContentReport.reason: format_report_reason,
+        ContentReport.target_type: format_report_target_type,
+        ContentReport.reporter_user_id: format_user_fk,
+    }
+    column_searchable_list = [ContentReport.comment]
+    column_sortable_list = [ContentReport.status, ContentReport.created_at]
+    column_default_sort = (ContentReport.created_at, True)
+    column_filters: ClassVar[list[Any]] = [
+        AllUniqueStringValuesFilter(ContentReport.status),
+        AllUniqueStringValuesFilter(ContentReport.target_type),
+        AllUniqueStringValuesFilter(ContentReport.reason),
+        OperationColumnFilter(ContentReport.target_id, title="ID объекта"),
+    ]
+    form_columns = [
+        ContentReport.resolution_note,
+    ]
+    form_args = {
+        "resolution_note": {"label": "Решение"},
+    }
+    can_create = False
+    can_edit = True
+    can_delete = False
+    can_export = True
+    page_size = 50
+
+    async def list(self, request: Request) -> Any:
+        pagination = await super().list(request)
+        request.state.user_names = await _preload_user_names(
+            self.session_maker,
+            [row.reporter_user_id for row in pagination.rows],
+        )
+        return pagination
+
+    async def _set_status(self, request: Request, *, status_value: str) -> Response:
+        actor_id = session_principal_id(request)
+        if actor_id is None:
+            return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
+        raw_pks = request.query_params.get("pks", "")
+        report_ids: list[UUID] = []
+        for raw in raw_pks.split(","):
+            with contextlib.suppress(ValueError):
+                report_ids.append(UUID(raw.strip()))
+        if report_ids:
+            async with self.session_maker(expire_on_commit=False) as session:
+                await moderation_service.set_report_status(
+                    session,
+                    report_ids=report_ids,
+                    status=status_value,
+                    resolved_by_user_id=actor_id,
+                )
+                for report_id in report_ids:
+                    await record_audit(
+                        session,
+                        actor_id=actor_id,
+                        action=f"admin.content_report_{status_value}",
+                        entity_type="content_report",
+                        entity_id=str(report_id),
+                        ip=request.client.host if request.client else None,
+                    )
+                await session.commit()
+        return RedirectResponse(
+            str(request.url_for("admin:list", identity=self.identity)),
+            status_code=303,
+        )
+
+    @action(
+        name="content_report_in_review",
+        label="Взять в работу",
+        confirmation_message="Пометить выбранные жалобы как «в работе»?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def take_reports(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="in_review")
+
+    @action(
+        name="content_report_resolved",
+        label="Решена",
+        confirmation_message="Пометить выбранные жалобы решёнными?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def resolve_reports(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="resolved")
+
+    @action(
+        name="content_report_rejected",
+        label="Отклонить",
+        confirmation_message="Отклонить выбранные жалобы? Материал останется как есть.",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_reports(self, request: Request) -> Response:
         return await self._set_status(request, status_value="rejected")
 
 
@@ -3010,6 +3152,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(ArticleAdmin)
     admin.add_view(ArticleBlockAdmin)
     admin.add_view(ArticleCommentAdmin)
+    admin.add_view(ContentReportAdmin)
     admin.add_view(PlaceReviewAdmin)
     admin.add_view(AdminPrincipalAdmin)
     admin.add_view(AdminRoleBindingAdmin)
