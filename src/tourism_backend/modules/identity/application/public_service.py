@@ -1,11 +1,13 @@
 """Public user profile reads — no PII beyond display name and media."""
 
+from typing import NamedTuple
 from uuid import UUID
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.content.infrastructure.models import Article
 from tourism_backend.modules.identity.application.public_schemas import (
     PublicUserListOut,
     PublicUserOut,
@@ -25,7 +27,7 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
 )
 from tourism_backend.modules.routes.application import service as routes_service
 from tourism_backend.modules.routes.application.schemas import RouteListOut
-from tourism_backend.modules.routes.infrastructure.models import RouteReview
+from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 
 
 async def _rank_for_points(session: AsyncSession, points: int) -> TravelRank | None:
@@ -78,8 +80,11 @@ async def _public_user(
     followers_count: int = 0,
     following_count: int = 0,
     completed_routes_count: int = 0,
+    published_routes_count: int = 0,
     reviews_written_count: int = 0,
     total_distance_meters: int = 0,
+    published_articles_count: int = 0,
+    article_likes_count: int = 0,
 ) -> PublicUserOut:
     rank = await _resolve_rank(session, user)
     return PublicUserOut(
@@ -99,15 +104,32 @@ async def _public_user(
         followers_count=followers_count,
         following_count=following_count,
         completed_routes_count=completed_routes_count,
+        published_routes_count=published_routes_count,
+        published_articles_count=published_articles_count,
+        article_likes_count=article_likes_count,
         reviews_written_count=reviews_written_count,
         total_distance_meters=total_distance_meters,
     )
 
 
-async def _profile_activity_stats(session: AsyncSession, user_id: UUID) -> tuple[int, int, int]:
-    """(completed_routes_count, reviews_written_count, total_distance_meters).
+class ProfileActivityStats(NamedTuple):
+    """What a traveller has actually done, as shown on their profile.
 
-    Distance sums the immutable routing-snapshot distance recorded at
+    Routes are split in two on purpose: "Маршрутов" alone read as a single
+    number that answered neither "how many did they walk" nor "how many did
+    they write" (asked 2026-09-04).
+    """
+
+    completed_routes: int
+    published_routes: int
+    reviews_written: int
+    distance_meters: int
+    published_articles: int
+    article_likes: int
+
+
+async def _profile_activity_stats(session: AsyncSession, user_id: UUID) -> ProfileActivityStats:
+    """Distance sums the immutable routing-snapshot distance recorded at
     execution start (the same source the travel-points algorithm uses,
     see route_execution.application.rewards) — never a live route field
     that could have changed since the user actually walked it.
@@ -137,10 +159,34 @@ async def _profile_activity_stats(session: AsyncSession, user_id: UUID) -> tuple
         .select_from(PlaceReview)
         .where(PlaceReview.author_user_id == user_id, PlaceReview.status == "published")
     )
-    return (
-        int(completed_count or 0),
-        int(route_reviews or 0) + int(place_reviews or 0),
-        int(distance_sum or 0),
+    published_routes = await session.scalar(
+        select(func.count())
+        .select_from(Route)
+        .where(
+            Route.owner_user_id == user_id,
+            Route.publication_status == "published",
+            Route.visibility == "public",
+        )
+    )
+
+    # Articles and the appreciation they earned, in one pass over the rows
+    # that are already filtered to this author.
+    published_articles, article_likes = (
+        await session.execute(
+            select(func.count(Article.id), func.coalesce(func.sum(Article.like_count), 0)).where(
+                Article.author_user_id == user_id,
+                Article.status == "published",
+            )
+        )
+    ).one()
+
+    return ProfileActivityStats(
+        completed_routes=int(completed_count or 0),
+        published_routes=int(published_routes or 0),
+        reviews_written=int(route_reviews or 0) + int(place_reviews or 0),
+        distance_meters=int(distance_sum or 0),
+        published_articles=int(published_articles or 0),
+        article_likes=int(article_likes or 0),
     )
 
 
@@ -345,9 +391,7 @@ async def get_public_user(
         liked_by_me = (await session.get(ProfileLike, (viewer_id, user_id))) is not None
     counts = await _follow_counts(session, [user.id])
     followers, following = counts.get(user.id, (0, 0))
-    completed_routes, reviews_written, distance_meters = await _profile_activity_stats(
-        session, user.id
-    )
+    stats = await _profile_activity_stats(session, user.id)
     result = await _public_user(
         session,
         user,
@@ -356,9 +400,12 @@ async def get_public_user(
         liked_by_me=liked_by_me,
         followers_count=followers,
         following_count=following,
-        completed_routes_count=completed_routes,
-        reviews_written_count=reviews_written,
-        total_distance_meters=distance_meters,
+        completed_routes_count=stats.completed_routes,
+        published_routes_count=stats.published_routes,
+        reviews_written_count=stats.reviews_written,
+        total_distance_meters=stats.distance_meters,
+        published_articles_count=stats.published_articles,
+        article_likes_count=stats.article_likes,
     )
     await session.commit()
     return result

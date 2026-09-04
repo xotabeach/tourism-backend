@@ -24,8 +24,11 @@ class PublicUserOut(BaseModel):
     # leaderboard/subscriptions list rows reuse this same schema but stay at
     # the default 0 rather than pay for a per-row aggregation query.
     completed_routes_count: int = Field(default=0, ge=0)
+    published_routes_count: int = Field(default=0, ge=0)
     reviews_written_count: int = Field(default=0, ge=0)
     total_distance_meters: int = Field(default=0, ge=0)
+    published_articles_count: int = Field(default=0, ge=0)
+    article_likes_count: int = Field(default=0, ge=0)
 
 
 class PublicUserListOut(BaseModel):

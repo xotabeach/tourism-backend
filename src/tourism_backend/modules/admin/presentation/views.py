@@ -62,7 +62,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_user_fk,
     format_user_id_peek,
 )
-from tourism_backend.modules.content.application import article_service
+from tourism_backend.modules.content.application import article_comment_service, article_service
 from tourism_backend.modules.content.infrastructure.models import (
     Article,
     ArticleBlock,
@@ -2855,6 +2855,63 @@ class ArticleCommentAdmin(ModelView, model=ArticleComment):
             [row.author_user_id for row in pagination.rows],
         )
         return pagination
+
+    async def _set_status(self, request: Request, *, status_value: str) -> Response:
+        actor_id = session_principal_id(request)
+        if actor_id is None:
+            return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
+        raw_pks = request.query_params.get("pks", "")
+        comment_ids: list[UUID] = []
+        for raw in raw_pks.split(","):
+            with contextlib.suppress(ValueError):
+                comment_ids.append(UUID(raw.strip()))
+        if comment_ids:
+            async with self.session_maker(expire_on_commit=False) as session:
+                # Через сервис, а не присваиванием status: он ставит
+                # moderated_at и уведомляет автора статьи — но только когда
+                # комментарий действительно стал видимым.
+                await article_comment_service.set_comment_status(
+                    session,
+                    comment_ids=comment_ids,
+                    status=status_value,
+                )
+                for comment_id in comment_ids:
+                    await record_audit(
+                        session,
+                        actor_id=actor_id,
+                        action=f"admin.article_comment_{status_value}",
+                        entity_type="article_comment",
+                        entity_id=str(comment_id),
+                        ip=request.client.host if request.client else None,
+                    )
+                await session.commit()
+        return RedirectResponse(
+            str(request.url_for("admin:list", identity=self.identity)),
+            status_code=303,
+        )
+
+    @action(
+        name="publish_article_comments",
+        label="Одобрить",
+        confirmation_message=(
+            "Опубликовать выбранные комментарии? Будут пропущены те, что не "
+            "находятся на модерации."
+        ),
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def publish_article_comments(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="published")
+
+    @action(
+        name="reject_article_comments",
+        label="Отклонить",
+        confirmation_message="Отклонить выбранные комментарии?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_article_comments(self, request: Request) -> Response:
+        return await self._set_status(request, status_value="rejected")
 
 
 def register_views(admin: Any, settings: Settings) -> None:

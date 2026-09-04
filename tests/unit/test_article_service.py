@@ -66,8 +66,8 @@ async def author(session: AsyncSession) -> AsyncIterator[User]:
 
 @pytest.fixture
 async def liker(session: AsyncSession) -> AsyncIterator[User]:
-    """A second real user — liking writes a row with a genuine FK, unlike
-    reads (get_article, list_related_articles), which tolerate a bare uuid4."""
+    """A second real user — liking and *viewing* both write rows with a
+    genuine FK, so those cannot be exercised with a bare uuid4."""
     user = User(
         id=uuid4(),
         phone_e164=f"+7998{uuid4().int % 10_000_000:07d}",
@@ -635,9 +635,15 @@ async def test_cannot_like_an_unpublished_or_missing_article(
 
 
 @pytest.mark.asyncio
-async def test_view_count_increments_only_for_published_articles(
-    session: AsyncSession, author: User
+async def test_view_count_is_one_per_reader(
+    session: AsyncSession, author: User, liker: User
 ) -> None:
+    """A view is a reader, not an open.
+
+    The counter used to be bumped on every `get_article`, so a reload — or an
+    author checking their own page — inflated it without limit (reported
+    2026-09-04).
+    """
     created = await article_service.create_article_draft(
         session, author_user_id=author.id, payload=_payload()
     )
@@ -650,13 +656,28 @@ async def test_view_count_increments_only_for_published_articles(
     assert row.view_count == 0
 
     await _publish(session, article_id)
+
+    # The same reader opening it three times is still one view.
     for _ in range(3):
         await article_service.get_article(
-            session, article_id=article_id, viewer_user_id=uuid4()
+            session, article_id=article_id, viewer_user_id=liker.id
         )
     row = await session.get(Article, article_id)
     assert row is not None
-    assert row.view_count == 3
+    assert row.view_count == 1
+
+    # The author re-reading their own published article never counts.
+    await article_service.get_article(session, article_id=article_id, viewer_user_id=author.id)
+    row = await session.get(Article, article_id)
+    assert row is not None
+    assert row.view_count == 1
+
+    # Anonymous readers have no identity to deduplicate by, so they are not
+    # counted — counting them would restore the every-open behaviour.
+    await article_service.get_article(session, article_id=article_id, viewer_user_id=None)
+    row = await session.get(Article, article_id)
+    assert row is not None
+    assert row.view_count == 1
 
 
 @pytest.mark.asyncio

@@ -170,6 +170,29 @@ class ArticleLike(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ArticleView(Base):
+    """One row per reader who has opened the article.
+
+    The row is the dedup key: `view_count` is incremented only when the
+    insert actually creates one, so re-opening an article never moves the
+    counter. Same shape as `ArticleLike`.
+    """
+
+    __tablename__ = "article_views"
+    __table_args__ = (PrimaryKeyConstraint("article_id", "user_id", name="pk_article_views"),)
+
+    article_id: Mapped[UUID] = mapped_column(
+        ForeignKey("articles.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ArticleBookmark(Base):
     """Saved-for-later article — same shape as `ArticleLike`, different
     meaning: a like is public appreciation, a bookmark is a private reading

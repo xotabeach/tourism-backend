@@ -12,6 +12,7 @@ from math import ceil
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -35,6 +36,7 @@ from tourism_backend.modules.content.infrastructure.models import (
     ArticleBlock,
     ArticleBookmark,
     ArticleLike,
+    ArticleView,
 )
 from tourism_backend.modules.identity.infrastructure.models import (
     EXPERT_RANK_ID,
@@ -570,14 +572,37 @@ async def get_article(
         # Same shape as a missing article on purpose: a draft's existence
         # is not something a stranger should be able to probe for.
         raise _not_found()
-    if article.status == "published":
-        # Atomic increment — avoids a read-then-write race under concurrent
-        # views, and no dedup by viewer: an approximate counter is the point.
-        await session.execute(
-            update(Article)
-            .where(Article.id == article.id)
-            .values(view_count=Article.view_count + 1)
+    if (
+        article.status == "published"
+        and viewer_user_id is not None
+        and viewer_user_id != article.author_user_id
+    ):
+        # One view per reader. The ArticleView row is the dedup key, and the
+        # counter moves only when the insert actually creates one — so a
+        # reload, or an author refreshing their own page, cannot inflate it.
+        # ON CONFLICT DO NOTHING keeps that check and the insert in a single
+        # statement, which is also what makes it safe under concurrent opens.
+        # Anonymous readers are not counted at all: with no identity there is
+        # nothing to deduplicate by, and counting them would bring back the
+        # every-open behaviour this replaces.
+        # RETURNING rather than rowcount: it says the same thing (the insert
+        # created a row, or the conflict swallowed it) through the typed API.
+        inserted = await session.scalar(
+            pg_insert(ArticleView)
+            .values(
+                article_id=article.id,
+                user_id=viewer_user_id,
+                created_at=datetime.now(UTC),
+            )
+            .on_conflict_do_nothing(index_elements=["article_id", "user_id"])
+            .returning(ArticleView.article_id)
         )
+        if inserted is not None:
+            await session.execute(
+                update(Article)
+                .where(Article.id == article.id)
+                .values(view_count=Article.view_count + 1)
+            )
         await session.commit()
         await session.refresh(article)
     return await _article_out(session, article, viewer_user_id=viewer_user_id)
