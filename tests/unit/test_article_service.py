@@ -983,3 +983,44 @@ async def test_dropping_an_image_block_still_archives_its_attachment(
     )
     await session.refresh(attachment)
     assert attachment.status == "archived"
+
+
+@pytest.mark.asyncio
+async def test_articles_are_searchable_by_title_and_tag(
+    session: AsyncSession, author: User
+) -> None:
+    """The universal search covers routes, places and people; articles were
+    the one kind of content it could not find (asked 2026-09-04).
+    """
+    # Заголовки и теги с уникальной меткой: база общая для всех тестов, а
+    # дефолтный заголовок фикстуры сам содержит «Ай-Петри».
+    marker = uuid4().hex[:8]
+    matching = await article_service.create_article_draft(
+        session,
+        author_user_id=author.id,
+        payload=_payload(title=f"Прогулка {marker}", tags=[f"Горы{marker}"]),
+    )
+    other = await article_service.create_article_draft(
+        session,
+        author_user_id=author.id,
+        payload=_payload(title=f"Ужин {marker}", tags=[f"Еда{marker}"]),
+    )
+    await _publish(session, UUID(matching.id))
+    await _publish(session, UUID(other.id))
+
+    by_title = await article_service.list_published_articles(
+        session, viewer_user_id=None, q=f"прогулка {marker}"
+    )
+    assert [item.id for item in by_title.items] == [matching.id]
+
+    # Case-insensitive, and tags count too.
+    by_tag = await article_service.list_published_articles(
+        session, viewer_user_id=None, q=f"ЕДА{marker}"
+    )
+    assert [item.id for item in by_tag.items] == [other.id]
+
+    # An empty query is not a filter — it lists everything, as before.
+    unfiltered = await article_service.list_published_articles(
+        session, viewer_user_id=None
+    )
+    assert {matching.id, other.id} <= {item.id for item in unfiltered.items}

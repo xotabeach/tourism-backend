@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from math import ceil
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -457,10 +457,23 @@ async def list_published_articles(
     related_place_id: UUID | None = None,
     author_user_id: UUID | None = None,
     viewer_user_id: UUID | None = None,
+    q: str | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> ArticleListOut:
     filters = [Article.status == "published"]
+    if q:
+        # Title and tags — the two things a reader can actually recall about
+        # an article. Same ILIKE shape routes and places use for their search.
+        pattern = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                Article.title.ilike(pattern),
+                # Теги — массив; склеиваем в строку и ищем по ней, вместо
+                # ARRAY-специфичного any(), который типы Mapped не выражают.
+                func.array_to_string(Article.tags, " ").ilike(pattern),
+            )
+        )
     if related_route_id is not None:
         filters.append(Article.related_route_id == related_route_id)
     if related_place_id is not None:

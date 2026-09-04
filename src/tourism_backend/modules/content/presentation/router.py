@@ -38,6 +38,7 @@ async def list_articles(
     related_route_id: Annotated[UUID | None, Query()] = None,
     related_place_id: Annotated[UUID | None, Query()] = None,
     author_user_id: Annotated[UUID | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=120)] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ArticleListOut:
@@ -48,6 +49,7 @@ async def list_articles(
         related_place_id=related_place_id,
         author_user_id=author_user_id,
         viewer_user_id=viewer_user_id,
+        q=q,
         limit=limit,
         offset=offset,
     )
