@@ -89,6 +89,13 @@ _ACTION_CATALOG: dict[str, dict[str, Any]] = {
         "patch": {"interests_add": ["романтика"], "trip_type": "romance"},
         "field": "interests",
     },
+    "interest_photo": {
+        # «Инстаграм-маршрут»: человек чаще формулирует его как «хочу
+        # красивые кадры», а не как список категорий.
+        "label": "Для фото",
+        "patch": {"interests_add": ["фото"], "trip_type": "photo"},
+        "field": "interests",
+    },
     "interest_history": {
         "label": "История",
         "patch": {"interests_add": ["история"]},

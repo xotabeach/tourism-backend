@@ -9,7 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from tourism_backend.modules.routes.application.schemas import RouteListItemOut
 
-TripType = Literal["romance", "rest", "adventure", "active"]
+# "photo" — «инстаграм-маршрут»: точки ради видов и кадров, а не ради
+# самого пути. Отдельный тип, а не интерес «Фото»: он меняет и подбор
+# точек, и порядок обхода (закат — в конце).
+TripType = Literal["romance", "rest", "adventure", "active", "photo"]
 DurationOption = Literal["d1_2", "d3_5", "d6_7", "d7plus"]
 PaceOption = Literal["calm", "moderate", "active"]
 TransportMode = Literal["walk", "car", "public", "mixed"]

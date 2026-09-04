@@ -228,3 +228,16 @@ def test_multi_region_catalogue_still_balances_regions() -> None:
 
     crowded = sum(1 for item in deck if item.candidate.region_id == _id(1))
     assert crowded <= 8
+
+
+def test_photo_trip_type_prefers_viewpoints_over_caves() -> None:
+    """«Инстаграм-маршрут» — про виды, а не про любую активность на природе."""
+    from tourism_backend.modules.route_builder.application.scoring import (
+        TRIP_TYPE_CATEGORIES,
+    )
+
+    photo = TRIP_TYPE_CATEGORIES["photo"]
+    assert "viewpoint" in photo
+    assert "waterfall" in photo
+    # Пещера — это темнота: снимка оттуда телефоном не выйдет.
+    assert "cave" not in photo

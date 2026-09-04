@@ -35,6 +35,7 @@ _TRIP_KEYWORDS: dict[TripType, tuple[str, ...]] = {
     "rest": ("спокой", "пляж", "отдых", "релакс", "набереж"),
     "adventure": ("приключ", "экстрим", "тропа", "пещер", "скал"),
     "active": ("актив", "спорт", "велосипед", "треккинг", "поход"),
+    "photo": ("вид", "смотров", "панорам", "закат", "фото", "скал", "обрыв"),
 }
 
 _INTEREST_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -82,6 +83,8 @@ TRIP_TYPE_CATEGORIES: dict[TripType, frozenset[str]] = {
     "rest": frozenset({"beach", "park", "nature"}),
     "adventure": frozenset({"cave", "mountain", "trail", "waterfall"}),
     "active": frozenset({"trail", "mountain", "cave"}),
+    # Кадр делают виды, вода и архитектура — пещеры и тропы сами по себе нет.
+    "photo": frozenset({"viewpoint", "waterfall", "beach", "mountain", "palace"}),
 }
 
 
