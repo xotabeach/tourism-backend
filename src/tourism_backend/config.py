@@ -33,6 +33,7 @@ class AIProvider(StrEnum):
     GEMINI = "gemini"
     OLLAMA = "ollama"
     LMSTUDIO = "lmstudio"
+    DEEPSEEK = "deepseek"
 
 
 class Settings(BaseSettings):
@@ -108,6 +109,18 @@ class Settings(BaseSettings):
     # the one model here that does no thinking at all (~26 tokens/turn).
     gemini_fallback_models: str = "gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-flash-lite"
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+
+    # DeepSeek — второй облачный провайдер (документация проверена
+    # 2026-09-04). API совместим с OpenAI: POST {base}/chat/completions,
+    # ключ в заголовке Authorization: Bearer.
+    deepseek_api_key: SecretStr | None = None
+    # flash — дешёвая модель на каждый ход диалога; pro дороже втрое и для
+    # подбора маршрута ничего не добавляет. Обе с контекстом 1M.
+    deepseek_model: str = "deepseek-v4-flash"
+    # Резервная цепочка работает как у Gemini: при 429/5xx/таймауте ход
+    # повторяется следующей моделью, а не падает пользователю в лицо.
+    deepseek_fallback_models: str = "deepseek-v4-pro"
+    deepseek_base_url: str = "https://api.deepseek.com"
     rag_enabled: bool = False
     rag_top_k: int = Field(default=4, ge=1, le=8)
     rag_embedding_model: str = "hash-v1"
@@ -181,6 +194,14 @@ def validate_settings(settings: Settings) -> None:
         if key is None or not key.get_secret_value().strip():
             raise RuntimeError(
                 "GEMINI_API_KEY is required when AI_PROVIDER=gemini and AI_PLANNING_ENABLED=true"
+            )
+
+    if settings.ai_planning_enabled and settings.ai_provider is AIProvider.DEEPSEEK:
+        key = settings.deepseek_api_key
+        if key is None or not key.get_secret_value().strip():
+            raise RuntimeError(
+                "DEEPSEEK_API_KEY is required when AI_PROVIDER=deepseek and "
+                "AI_PLANNING_ENABLED=true"
             )
 
     if settings.app_env in {AppEnvironment.STAGING, AppEnvironment.PRODUCTION}:

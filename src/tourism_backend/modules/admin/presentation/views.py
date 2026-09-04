@@ -2476,6 +2476,7 @@ _SELECTABLE_AI_PROVIDERS: tuple[tuple[str, str], ...] = (
     ("mock", "Mock — заглушка без реального ИИ (dev/test)"),
     ("lmstudio", "LM Studio — локальная модель (домашний хаб)"),
     ("gemini", "Gemini API — облако (Google)"),
+    ("deepseek", "DeepSeek API — облако (дешевле Gemini)"),
 )
 
 
@@ -2570,6 +2571,9 @@ class RuntimeConfigAdmin(BaseView):
                 settings.gemini_api_key and settings.gemini_api_key.get_secret_value().strip()
             ),
             "lmstudio_configured": bool(settings.lm_studio_base_url and settings.lm_studio_model),
+            "deepseek_key_configured": bool(
+                settings.deepseek_api_key and settings.deepseek_api_key.get_secret_value().strip()
+            ),
         }
 
 
