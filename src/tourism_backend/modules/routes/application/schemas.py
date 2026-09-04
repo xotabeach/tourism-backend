@@ -198,6 +198,10 @@ class RouteListItemOut(BaseModel):
     #: Travel rank of the owning user, resolved from ``travel_points``.
     #: ``None`` for editorial routes, which have no owning user.
     author_rank_title: str | None = None
+    #: Mean of published, non-reply review ratings. ``None`` until the route
+    #: has at least one — a card must not imply a score nobody has given.
+    rating_average: float | None = None
+    rating_count: int = 0
 
 
 class RouteDetailOut(RouteListItemOut):

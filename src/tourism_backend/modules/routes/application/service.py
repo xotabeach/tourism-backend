@@ -39,7 +39,7 @@ from tourism_backend.modules.routes.application.schemas import (
     UserRouteEditablePlaceOut,
     UserRouteMediaOut,
 )
-from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
+from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
 
 _PUBLIC_CATALOG = (
     or_(Route.source == "editorial", Route.source == "user_created"),
@@ -226,7 +226,9 @@ def _to_list_item(
     author_avatar_url: str | None = None,
     author_is_expert: bool = False,
     author_rank_title: str | None = None,
+    rating: tuple[float | None, int] = (None, 0),
 ) -> RouteListItemOut:
+    rating_average, rating_count = rating
     return RouteListItemOut(
         id=route.id,
         region_id=route.region_id,
@@ -252,7 +254,45 @@ def _to_list_item(
         author_avatar_url=author_avatar_url,
         author_is_expert=author_is_expert,
         author_rank_title=author_rank_title,
+        rating_average=rating_average,
+        rating_count=rating_count,
     )
+
+
+async def route_ratings(
+    session: AsyncSession, route_ids: Sequence[UUID]
+) -> dict[UUID, tuple[float | None, int]]:
+    """Mean rating and count per route, in one pass over the page.
+
+    Same conditions the review list already uses: published reviews only, and
+    replies excluded — a reply carries a rating column it never meant.
+    A route with no ratings is absent from the result, which the caller reads
+    as "no score yet" rather than zero: an empty star says "bad", and that
+    would be a lie about a route nobody has rated.
+    """
+    ids = [route_id for route_id in route_ids if route_id is not None]
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                RouteReview.route_id,
+                func.avg(RouteReview.rating),
+                func.count(RouteReview.id),
+            )
+            .where(
+                RouteReview.route_id.in_(ids),
+                RouteReview.status == "published",
+                RouteReview.reply_to_review_id.is_(None),
+            )
+            .group_by(RouteReview.route_id)
+        )
+    ).all()
+    return {
+        route_id: (round(float(average), 1) if average is not None else None, int(count))
+        for route_id, average, count in rows
+        if count
+    }
 
 
 async def list_catalog_items_by_ids(
@@ -270,6 +310,7 @@ async def list_catalog_items_by_ids(
     counts = await _stops_count_map(session, unique_ids)
     covers = await _cover_urls_for_routes(session, unique_ids)
     authors = await _author_fields_for_routes(session, ordered)
+    ratings = await route_ratings(session, unique_ids)
     items: dict[UUID, RouteListItemOut] = {}
     for route in ordered:
         owner_id, label, avatar, is_expert, rank_title = authors[route.id]
@@ -282,6 +323,7 @@ async def list_catalog_items_by_ids(
             author_avatar_url=avatar,
             author_is_expert=is_expert,
             author_rank_title=rank_title,
+            rating=ratings.get(route.id, (None, 0)),
         )
     return items
 
@@ -320,6 +362,7 @@ async def _list_from_stmt(
     counts = await _stops_count_map(session, route_ids)
     covers = await _cover_urls_for_routes(session, route_ids)
     authors = await _author_fields_for_routes(session, routes)
+    ratings = await route_ratings(session, route_ids)
     items = []
     for route in routes:
         owner_id, label, avatar, is_expert, rank_title = authors[route.id]
@@ -333,6 +376,7 @@ async def _list_from_stmt(
                 author_avatar_url=avatar,
                 author_is_expert=is_expert,
                 author_rank_title=rank_title,
+                rating=ratings.get(route.id, (None, 0)),
             )
         )
     return RouteListOut(items=items, total=total, limit=limit, offset=offset)
@@ -471,6 +515,7 @@ async def _route_detail_from_model(
     geometry = await _geometry_for_route(session, route.id)
     routing = _routing_for_route(route.accessibility)
     authors = await _author_fields_for_routes(session, [route])
+    ratings = await route_ratings(session, [route.id])
     owner_id, label, avatar, is_expert, rank_title = authors[route.id]
     base = _to_list_item(
         route,
@@ -481,6 +526,7 @@ async def _route_detail_from_model(
         author_avatar_url=avatar,
         author_is_expert=is_expert,
         author_rank_title=rank_title,
+        rating=ratings.get(route.id, (None, 0)),
     )
     return RouteDetailOut(
         **base.model_dump(),

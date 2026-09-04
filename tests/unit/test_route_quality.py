@@ -392,3 +392,4 @@ def test_walk_route_on_known_trail_has_no_distance_warning() -> None:
     )
 
     assert "route_segment_far_from_known_trail" not in assessment.warnings
+
