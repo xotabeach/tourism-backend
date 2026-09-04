@@ -4,6 +4,8 @@
 # Required protected CI variables:
 #   DEPLOY_SSH_HOST, DEPLOY_SSH_PORT, DEPLOY_SSH_USER, DEPLOY_SSH_PRIVATE_KEY
 #   DEPLOY_SSH_KNOWN_HOSTS  — full known_hosts line(s) or GitLab File var path.
+#   DEPLOY_REMOTE_DIR       — compose directory on the server (no default in
+#                             the repo: server paths are not published).
 #     Pin it once with:  ssh-keyscan -p <port> -H <host>
 # Optional:
 #   DEPLOY_HEALTH_URL       — forwarded to the remote script
@@ -34,6 +36,7 @@ esac
 # Without a pinned host key, ssh-keyscan would trust whatever answers and
 # StrictHostKeyChecking below would verify nothing.
 : "${DEPLOY_SSH_KNOWN_HOSTS:?DEPLOY_SSH_KNOWN_HOSTS is required (pin the host key)}"
+: "${DEPLOY_REMOTE_DIR:?DEPLOY_REMOTE_DIR is required (compose directory on the server)}"
 : "${CI_REGISTRY:?CI_REGISTRY is required}"
 : "${CI_REGISTRY_USER:?CI_REGISTRY_USER is required}"
 : "${CI_REGISTRY_PASSWORD:?CI_REGISTRY_PASSWORD is required}"
@@ -119,6 +122,7 @@ ssh "${ssh_opts[@]}" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
    CI_REGISTRY_PASSWORD=$(printf '%q' "${CI_REGISTRY_PASSWORD}") \
    IMAGE=$(printf '%q' "${IMAGE}") \
    IMPORT_OSM_CRIMEA=$(printf '%q' "${IMPORT_OSM_CRIMEA}") \
+   DEPLOY_REMOTE_DIR=$(printf '%q' "${DEPLOY_REMOTE_DIR}") \
    ${remote_env[*]} \
    bash -s" <<'EOS'
 set -Eeuo pipefail
@@ -128,11 +132,11 @@ printf '%s\n' "${CI_REGISTRY_PASSWORD}" | docker login \
   "${CI_REGISTRY}"
 # The helper starts Compose commands that may read stdin. Keep it away from
 # this bash heredoc, otherwise it can consume the import commands below.
-/opt/crimeatrip-test/deploy-remote.sh "${IMAGE}" </dev/null
+"${DEPLOY_REMOTE_DIR}/deploy-remote.sh" "${IMAGE}" </dev/null
 
 if [[ "${IMPORT_OSM_CRIMEA}" == "true" ]]; then
   printf 'Starting server-side OSM Crimea import.\n'
-  cd /opt/crimeatrip-test
+  cd "${DEPLOY_REMOTE_DIR}"
   docker compose --env-file .env --file compose.yaml run --rm -T --no-deps backend \
     python scripts/seed_crimea.py --categories-only
   docker compose --env-file .env --file compose.yaml run --rm -T --no-deps backend \

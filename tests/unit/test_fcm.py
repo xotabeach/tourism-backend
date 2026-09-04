@@ -43,7 +43,7 @@ def test_load_service_account_missing_project_id() -> None:
 
 
 def test_load_service_account_from_json_and_file(tmp_path: Path) -> None:
-    payload = {"project_id": "crimeatrip-test", "type": "service_account"}
+    payload = {"project_id": "test-project", "type": "service_account"}
     settings = Settings(
         app_env="test",
         jwt_signing_key="test-jwt-signing-key-at-least-32-chars!!",
