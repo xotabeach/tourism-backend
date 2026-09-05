@@ -48,6 +48,12 @@ variables:
     - sh
     - -c
     - apt-get update -qq && apt-get install -y --no-install-recommends postgresql-16-pgvector >/dev/null && exec docker-entrypoint.sh "$0" "$@"
+  # GitLab does not inherit the image's own CMD when only `entrypoint` is
+  # set for a service (unlike plain `docker run --entrypoint`) — without an
+  # explicit command, "$0"/"$@" above are empty and docker-entrypoint.sh
+  # never starts postgres at all.
+  command:
+    - postgres
 
 backend-code-style:
   stage: code-style
@@ -148,11 +154,13 @@ backend-semgrep:
   script:
     # ERROR severity only — triage lower severities in review; waivers via
     # tourism-platform/docs/security/exceptions/
-    # Registry fetch can flake on SaaS runners — retry a few times.
+    # Registry fetch can flake (confirmed empirically: 3 straight failures,
+    # then 6/6 successes minutes later on the same host) — retry more than a
+    # few times, since 3 attempts is not always enough to ride out a blip.
     - |
       set -e
       attempt=1
-      while [ "$attempt" -le 3 ]; do
+      while [ "$attempt" -le 6 ]; do
         if semgrep scan \
           --config p/python \
           --config p/owasp-top-ten \
@@ -164,7 +172,7 @@ backend-semgrep:
           --exclude=.venv; then
           exit 0
         fi
-        echo "semgrep attempt ${attempt}/3 failed; retrying..."
+        echo "semgrep attempt ${attempt}/6 failed; retrying..."
         attempt=$((attempt + 1))
         sleep $((attempt * 5))
       done
