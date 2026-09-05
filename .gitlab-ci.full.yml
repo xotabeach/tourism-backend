@@ -156,29 +156,22 @@ backend-semgrep:
   script:
     # ERROR severity only — triage lower severities in review; waivers via
     # tourism-platform/docs/security/exceptions/
-    # Registry fetch can flake (confirmed empirically: 3 straight failures,
-    # then 6/6 successes minutes later on the same host) — retry more than a
-    # few times, since 3 attempts is not always enough to ride out a blip.
-    - |
-      set -e
-      attempt=1
-      while [ "$attempt" -le 6 ]; do
-        if semgrep scan \
-          --config p/python \
-          --config p/owasp-top-ten \
-          --severity ERROR \
-          --error \
-          --metrics=off \
-          --disable-version-check \
-          --exclude=tests \
-          --exclude=.venv; then
-          exit 0
-        fi
-        echo "semgrep attempt ${attempt}/6 failed; retrying..."
-        attempt=$((attempt + 1))
-        sleep $((attempt * 5))
-      done
-      exit 1
+    # Configs are vendored (tools/semgrep-rules/) instead of the registry
+    # shorthand (p/python, p/owasp-top-ten): the registry fetch failed 3/3
+    # and later 6/6 retries in a row on this host while a plain curl to the
+    # same URL kept succeeding — a client/registry-side issue retries don't
+    # fix. See tools/semgrep-rules/README.md to refresh them periodically.
+    - >
+      semgrep scan
+      --config tools/semgrep-rules/p-python.yaml
+      --config tools/semgrep-rules/p-owasp-top-ten.yaml
+      --severity ERROR
+      --error
+      --metrics=off
+      --disable-version-check
+      --exclude=tests
+      --exclude=.venv
+      --exclude=tools/semgrep-rules
   allow_failure: false
 
 backend-publish:
