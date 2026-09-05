@@ -7,6 +7,7 @@ real aggregate, and in particular the two cases that make it honest: a
 route nobody rated has no score at all, and replies are not ratings.
 """
 
+import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -20,7 +21,10 @@ from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.routes.application.service import route_ratings
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 
-DATABASE_URL = "postgresql+asyncpg://tourism:local-tourism-password@localhost:5433/tourism"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+asyncpg://tourism:local-tourism-password@localhost:5433/tourism",
+)
 
 
 @pytest.fixture

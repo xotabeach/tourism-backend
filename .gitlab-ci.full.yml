@@ -41,6 +41,16 @@ variables:
 # — that Dockerfile lives in a sibling repo). Installing the same
 # postgresql-16-pgvector package via an entrypoint override gets the same
 # result without a separate image or registry push.
+.wait-for-postgres: &wait-for-postgres |
+  for i in $(seq 1 60); do
+    uv run python -c "import psycopg; psycopg.connect('postgresql://tourism:local-tourism-password@postgres:5432/tourism').close()" && break
+    if [ "$i" -eq 60 ]; then
+      echo "Error: postgres did not become reachable after 180s" >&2
+      exit 1
+    fi
+    sleep 3
+  done
+
 .postgres-service: &postgres-service
   name: postgis/postgis:16-3.4
   alias: postgres
@@ -82,11 +92,7 @@ backend-run-tests:
     - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
     - curl -LsSf https://astral.sh/uv/install.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
-    - |
-      for i in $(seq 1 30); do
-        uv run python -c "import psycopg; psycopg.connect('postgresql://tourism:local-tourism-password@postgres:5432/tourism').close()" && break
-        sleep 2
-      done
+    - *wait-for-postgres
   script:
     - uv sync --all-extras --dev
     - uv run alembic upgrade head
@@ -107,11 +113,7 @@ backend-security-tests:
     - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
     - curl -LsSf https://astral.sh/uv/install.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
-    - |
-      for i in $(seq 1 30); do
-        uv run python -c "import psycopg; psycopg.connect('postgresql://tourism:local-tourism-password@postgres:5432/tourism').close()" && break
-        sleep 2
-      done
+    - *wait-for-postgres
   script:
     - uv sync --all-extras --dev
     - uv run alembic upgrade head

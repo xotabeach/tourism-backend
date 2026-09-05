@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -14,7 +15,10 @@ from tourism_backend.config import AppEnvironment
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.subscriptions.application import service as travel_plus
 
-DATABASE_URL = "postgresql+asyncpg://tourism:local-tourism-password@localhost:5433/tourism"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+asyncpg://tourism:local-tourism-password@localhost:5433/tourism",
+)
 
 
 @pytest.fixture

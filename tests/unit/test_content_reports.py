@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -28,7 +29,10 @@ from tourism_backend.modules.moderation.application.schemas import ContentReport
 from tourism_backend.modules.moderation.infrastructure.models import ContentReport
 from tourism_backend.modules.notifications.infrastructure.models import Notification
 
-DATABASE_URL = "postgresql+asyncpg://tourism:local-tourism-password@localhost:5433/tourism"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+asyncpg://tourism:local-tourism-password@localhost:5433/tourism",
+)
 
 
 @pytest.fixture

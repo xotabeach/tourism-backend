@@ -8,6 +8,7 @@ a mocked session would happily accept rows the real schema rejects.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -29,7 +30,10 @@ from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.notifications.infrastructure.models import Notification
 
-DATABASE_URL = "postgresql+asyncpg://tourism:local-tourism-password@localhost:5433/tourism"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+asyncpg://tourism:local-tourism-password@localhost:5433/tourism",
+)
 
 
 @pytest.fixture
