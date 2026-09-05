@@ -161,7 +161,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(sa.text(f"DELETE FROM notifications WHERE kind IN ({_ARTICLE_KINDS})"))
+    # _ARTICLE_KINDS is a module-level string literal (line 45), not user input.
+    op.execute(
+        sa.text(  # nosemgrep: avoid-sqlalchemy-text
+            f"DELETE FROM notifications WHERE kind IN ({_ARTICLE_KINDS})"
+        )
+    )
     op.drop_constraint("kind", "notifications", type_="check")
     op.create_check_constraint("kind", "notifications", _OLD_KINDS)
     op.drop_constraint("target_type", "notifications", type_="check")
