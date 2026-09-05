@@ -11,6 +11,12 @@
 #   DEPLOY_HEALTH_URL       — forwarded to the remote script
 #   --import-osm-crimea     — import 1000 OSM candidates as drafts after deploy
 #
+# Optional secrets synced into the server .env (set as masked+protected
+# GitLab CI/CD variables — Settings → CI/CD → Variables — instead of editing
+# the server .env by hand). Any of these left unset here are simply not
+# touched; the server keeps whatever value is already in its .env:
+#   DEEPSEEK_API_KEY, GEMINI_API_KEY, LM_STUDIO_API_KEY, AI_PROVIDER
+#
 # Registry pull on the host uses CI_REGISTRY_* from the job (not a long-lived
 # server-side docker login).
 #
@@ -110,6 +116,16 @@ remote_env=()
 if [[ -n "${DEPLOY_HEALTH_URL:-}" ]]; then
   remote_env+=("DEPLOY_HEALTH_URL=$(printf '%q' "${DEPLOY_HEALTH_URL}")")
 fi
+# Secrets: only forwarded (and thus only synced into the server .env by
+# deploy-remote.sh) when the CI/CD variable is actually defined for this
+# pipeline run — an unset variable here leaves the server's existing value
+# alone, it never blanks it out.
+SYNCED_SECRET_ENV_VARS=(DEEPSEEK_API_KEY GEMINI_API_KEY LM_STUDIO_API_KEY AI_PROVIDER)
+for _var in "${SYNCED_SECRET_ENV_VARS[@]}"; do
+  if [[ -n "${!_var:-}" ]]; then
+    remote_env+=("${_var}=$(printf '%q' "${!_var}")")
+  fi
+done
 
 printf 'Production deploy %s to %s@%s:%s\n' \
   "${IMAGE}" "${DEPLOY_SSH_USER}" "${DEPLOY_SSH_HOST}" "${DEPLOY_SSH_PORT}"
