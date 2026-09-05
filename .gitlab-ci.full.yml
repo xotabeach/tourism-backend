@@ -2,6 +2,12 @@
 # Not used by default during active development — see `.gitlab-ci.yml` (lean).
 # Enable: set GitLab CI/CD variable CI_PIPELINE_MODE=full (project or group).
 # Docs: tourism-platform/docs/ci-and-runners.md
+#
+# This file is always `include`d, so GitLab uses .gitlab-ci.yml's top-level
+# `stages:` for the merged pipeline and ignores the list below entirely — kept
+# here only as documentation of which stages this file's jobs need. Adding a
+# job with a new stage name? Add it to .gitlab-ci.yml's `stages:` too, or you
+# will hit "chosen stage X does not exist".
 
 stages:
   - code-style

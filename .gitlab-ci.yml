@@ -22,7 +22,12 @@ workflow:
 
 stages:
   - lean
+  - code-style
+  - run-tests
   - publish
+  - security-scan
+  - deploy
+  - mirror
 
 ci-lean-notice:
   stage: lean
