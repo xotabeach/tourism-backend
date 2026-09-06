@@ -207,6 +207,34 @@ async def test_route_execution_pause_resume(live_client: AsyncClient) -> None:
     assert paused.status_code == 200, paused.text
     assert paused.json()["status"] == "paused"
 
+    # A paused run must not vanish from /active — otherwise reopening the
+    # app after a pause would look like there's nothing in progress, and
+    # starting anything would silently orphan this run instead of erroring.
+    still_active = await live_client.get(
+        "/api/v1/route-executions/active",
+        headers=headers,
+    )
+    assert still_active.status_code == 200
+    assert still_active.json() is not None
+    assert still_active.json()["id"] == execution_id
+    assert still_active.json()["status"] == "paused"
+
+    # A paused run still blocks starting a different route — it's the run
+    # you're on either way.
+    routes = await live_client.get("/api/v1/routes", params={"limit": 2})
+    other_route_id = next(
+        (item["id"] for item in routes.json()["items"] if item["id"] != route_id),
+        None,
+    )
+    if other_route_id is not None:
+        blocked_start = await live_client.post(
+            "/api/v1/route-executions",
+            json={"route_id": other_route_id},
+            headers=headers,
+        )
+        assert blocked_start.status_code == 409
+        assert blocked_start.json()["error"]["code"] == "active_route_execution_exists"
+
     # Idempotent: pausing an already-paused run just returns current state.
     paused_again = await live_client.post(
         f"/api/v1/route-executions/{execution_id}/pause",

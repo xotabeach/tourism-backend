@@ -71,8 +71,31 @@ def upgrade() -> None:
         "action IN ('complete_stop', 'complete', 'cancel', 'pause', 'resume')",
     )
 
+    # A paused run is still "the one you're on" — it must keep blocking a
+    # second start the same way an active run does, or pausing then
+    # reopening the app loses track of it entirely (get_active_execution
+    # would see nothing and start_execution would happily create a second,
+    # orphaning the paused one).
+    op.drop_index("uq_route_executions_one_active_per_user", table_name="route_executions")
+    op.create_index(
+        "uq_route_executions_one_active_per_user",
+        "route_executions",
+        ["user_id"],
+        unique=True,
+        postgresql_where=sa.text("status IN ('active', 'paused')"),
+    )
+
 
 def downgrade() -> None:
+    op.drop_index("uq_route_executions_one_active_per_user", table_name="route_executions")
+    op.create_index(
+        "uq_route_executions_one_active_per_user",
+        "route_executions",
+        ["user_id"],
+        unique=True,
+        postgresql_where=sa.text("status = 'active'"),
+    )
+
     _drop_check_if_exists("route_execution_events", _ACTION_NAMES)
     op.execute("DELETE FROM route_execution_events WHERE action IN ('pause', 'resume')")
     op.create_check_constraint(

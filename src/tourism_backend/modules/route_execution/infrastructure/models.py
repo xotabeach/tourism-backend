@@ -129,7 +129,9 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "uq_route_executions_one_active_per_user",
             "user_id",
             unique=True,
-            postgresql_where=text("status = 'active'"),
+            # A paused run is still "the one you're on" — it must keep
+            # blocking a second start the same way an active run does.
+            postgresql_where=text("status IN ('active', 'paused')"),
         ),
     )
 

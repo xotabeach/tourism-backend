@@ -262,7 +262,9 @@ async def start_execution(
     active = await session.scalar(
         select(RouteExecution).where(
             RouteExecution.user_id == user_id,
-            RouteExecution.status == "active",
+            # A paused run is still "the one you're on" — it must keep
+            # blocking a second start the same way an active run does.
+            RouteExecution.status.in_(("active", "paused")),
         )
     )
     if active is not None:
@@ -415,10 +417,15 @@ async def get_active_execution(
     *,
     user_id: UUID,
 ) -> RouteExecutionOut | None:
+    # "Active" here means "the run currently in progress" — a paused run is
+    # still that run, just not making progress right now. Scoping this to
+    # status == 'active' only would make a paused run invisible to a client
+    # that reopens the app: it would see nothing here and start_execution
+    # would happily create a second one, orphaning the paused run.
     execution = await session.scalar(
         select(RouteExecution).where(
             RouteExecution.user_id == user_id,
-            RouteExecution.status == "active",
+            RouteExecution.status.in_(("active", "paused")),
         )
     )
     return None if execution is None else await _execution_out(session, execution)
