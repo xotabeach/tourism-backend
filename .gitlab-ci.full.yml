@@ -256,6 +256,12 @@ backend-deploy-production:
 github-mirror:
   stage: mirror
   image: alpine:3.21
+  # The runner's default shallow clone breaks a force-push to GitHub
+  # ("did not receive expected object" / index-pack failed) — GitHub's
+  # side has full history and can't unpack a delta built from a grafted
+  # shallow boundary. Full clone only for this one job.
+  variables:
+    GIT_DEPTH: "0"
   before_script:
     - apk add --no-cache bash git
   script:
