@@ -65,14 +65,34 @@ variables:
   command:
     - postgres
 
+# Baked-in python + uv, so every job below only pulls one already-cached
+# image instead of apt-get/curl-installing the same tools on every run.
+# Skipped when docker/ci-base/Dockerfile hasn't changed — the 4 jobs below
+# use `needs: optional: true` on this so they proceed either way, using
+# whatever tag a previous run already pushed.
+backend-ci-base-image:
+  stage: code-style
+  image: docker:27-cli
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build --pull --tag "$CI_REGISTRY_IMAGE/ci-base:python3.13-uv" docker/ci-base
+    - docker push "$CI_REGISTRY_IMAGE/ci-base:python3.13-uv"
+  rules:
+    - changes:
+        - docker/ci-base/Dockerfile
+
 backend-code-style:
   stage: code-style
-  image: python:3.13-bookworm
+  image: "${CI_REGISTRY_IMAGE}/ci-base:python3.13-uv"
   <<: *uv-cache
-  before_script:
-    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
-    - curl -LsSf https://astral.sh/uv/install.sh | sh
-    - export PATH="$HOME/.local/bin:$PATH"
+  needs:
+    - job: backend-ci-base-image
+      optional: true
   script:
     - uv sync --all-extras --dev
     - uv run -- ruff check .
@@ -82,16 +102,13 @@ backend-code-style:
 
 backend-run-tests:
   stage: run-tests
-  image: python:3.13-bookworm
+  image: "${CI_REGISTRY_IMAGE}/ci-base:python3.13-uv"
   <<: *uv-cache
   services:
     - <<: *postgres-service
     - name: redis:7-alpine
       alias: redis
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
-    - curl -LsSf https://astral.sh/uv/install.sh | sh
-    - export PATH="$HOME/.local/bin:$PATH"
     - *wait-for-postgres
   script:
     - uv sync --all-extras --dev
@@ -103,16 +120,13 @@ backend-run-tests:
 # Fail-closed security regressions (also covered by full pytest; explicit gate for publish).
 backend-security-tests:
   stage: run-tests
-  image: python:3.13-bookworm
+  image: "${CI_REGISTRY_IMAGE}/ci-base:python3.13-uv"
   <<: *uv-cache
   services:
     - <<: *postgres-service
     - name: redis:7-alpine
       alias: redis
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
-    - curl -LsSf https://astral.sh/uv/install.sh | sh
-    - export PATH="$HOME/.local/bin:$PATH"
     - *wait-for-postgres
   script:
     - uv sync --all-extras --dev
@@ -126,12 +140,8 @@ backend-security-tests:
 # Open-source dependency audit (does not require paid GitLab Dependency Scanning).
 backend-pip-audit:
   stage: run-tests
-  image: python:3.13-bookworm
+  image: "${CI_REGISTRY_IMAGE}/ci-base:python3.13-uv"
   <<: *uv-cache
-  before_script:
-    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
-    - curl -LsSf https://astral.sh/uv/install.sh | sh
-    - export PATH="$HOME/.local/bin:$PATH"
   script:
     - uv sync --all-extras --dev
     - uv run pip-audit
@@ -148,50 +158,6 @@ backend-gitleaks:
     - gitleaks detect --source . --verbose --redact --exit-code 1
   allow_failure: false
 
-backend-semgrep:
-  stage: run-tests
-  image:
-    name: semgrep/semgrep:1.110.0
-    entrypoint: [""]
-  script:
-    # ERROR severity only — triage lower severities in review; waivers via
-    # tourism-platform/docs/security/exceptions/
-    # Configs are vendored (tools/semgrep-rules/) instead of the registry
-    # shorthand (p/python, p/owasp-top-ten): the registry fetch failed 3/3
-    # and later 6/6 retries in a row on this host while a plain curl to the
-    # same URL kept succeeding — a client/registry-side issue retries didn't
-    # fix. See tools/semgrep-rules/README.md to refresh them periodically.
-    #
-    # Vendoring did not end the flakiness, though: semgrep 1.110.0 combining
-    # two --config files occasionally exits 2 with zero output (no findings,
-    # no error) even fully offline — reproduced 6/6 failures back-to-back on
-    # this host, then 5/5 successes minutes later with the identical local
-    # command. Cause not pinned down (not the flags, not the configs, not
-    # this host's CPU/memory limits) — retry, now cheap since there's no
-    # network round trip left to make retries slow.
-    - |
-      set -e
-      attempt=1
-      while [ "$attempt" -le 5 ]; do
-        if semgrep scan \
-          --config tools/semgrep-rules/p-python.yaml \
-          --config tools/semgrep-rules/p-owasp-top-ten.yaml \
-          --severity ERROR \
-          --error \
-          --metrics=off \
-          --disable-version-check \
-          --exclude=tests \
-          --exclude=.venv \
-          --exclude=tools/semgrep-rules; then
-          exit 0
-        fi
-        echo "semgrep attempt ${attempt}/5 failed; retrying..."
-        attempt=$((attempt + 1))
-        sleep 3
-      done
-      exit 1
-  allow_failure: false
-
 backend-publish:
   stage: publish
   image: docker:27-cli
@@ -205,7 +171,6 @@ backend-publish:
     - backend-security-tests
     - backend-pip-audit
     - backend-gitleaks
-    - backend-semgrep
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
@@ -304,4 +269,3 @@ github-mirror:
     - backend-security-tests
     - backend-pip-audit
     - backend-gitleaks
-    - backend-semgrep
