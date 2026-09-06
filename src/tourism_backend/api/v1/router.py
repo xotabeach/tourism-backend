@@ -21,6 +21,9 @@ from tourism_backend.modules.route_execution.presentation.router import (
     router as route_execution_router,
 )
 from tourism_backend.modules.routes.presentation.router import router as routes_router
+from tourism_backend.modules.runtime_config.presentation.router import (
+    router as runtime_config_router,
+)
 from tourism_backend.modules.subscriptions.presentation.router import (
     router as subscriptions_router,
 )
@@ -42,6 +45,7 @@ router.include_router(subscriptions_router)
 router.include_router(maps_router)
 router.include_router(content_router)
 router.include_router(moderation_router)
+router.include_router(runtime_config_router)
 
 
 @router.get("")

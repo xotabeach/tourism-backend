@@ -19,7 +19,13 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.config import AIProvider, Settings
-from tourism_backend.modules.runtime_config.infrastructure.models import RuntimeSetting
+from tourism_backend.modules.runtime_config.application.company_details_schemas import (
+    CompanyDetailsOut,
+)
+from tourism_backend.modules.runtime_config.infrastructure.models import (
+    CompanyDetails,
+    RuntimeSetting,
+)
 
 AI_PROVIDER_KEY = "ai_provider"
 _ALLOWED_AI_PROVIDER_OVERRIDES = frozenset(provider.value for provider in AIProvider)
@@ -77,3 +83,36 @@ async def effective_ai_provider_settings(session: AsyncSession, settings: Settin
     if raw not in _ALLOWED_AI_PROVIDER_OVERRIDES:
         return settings
     return settings.model_copy(update={"ai_provider": AIProvider(raw)})
+
+
+COMPANY_DETAILS_ROW_ID = 1
+
+
+async def get_company_details(session: AsyncSession) -> CompanyDetailsOut:
+    """The singleton row, seeded by migration — always present."""
+    row = await session.get(CompanyDetails, COMPANY_DETAILS_ROW_ID)
+    if row is None:
+        # Defensive only: the migration seeds row id=1, so this should never
+        # trigger outside a hand-rolled test DB that skipped seeding.
+        return CompanyDetailsOut(
+            legal_name="",
+            brand_name="КрымТрип",
+            inn="",
+            ogrn="",
+            address="",
+            email="",
+            phone="",
+            telegram="",
+            working_hours="",
+        )
+    return CompanyDetailsOut(
+        legal_name=row.legal_name,
+        brand_name=row.brand_name,
+        inn=row.inn,
+        ogrn=row.ogrn,
+        address=row.address,
+        email=row.email,
+        phone=row.phone,
+        telegram=row.telegram,
+        working_hours=row.working_hours,
+    )

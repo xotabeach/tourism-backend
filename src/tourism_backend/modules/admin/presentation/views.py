@@ -131,6 +131,7 @@ from tourism_backend.modules.runtime_config.application.service import (
     get_runtime_setting,
     set_runtime_setting,
 )
+from tourism_backend.modules.runtime_config.infrastructure.models import CompanyDetails
 from tourism_backend.modules.subscriptions.application import service as travel_plus_service
 from tourism_backend.modules.subscriptions.infrastructure.models import TravelPlusSubscription
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
@@ -2480,6 +2481,58 @@ _SELECTABLE_AI_PROVIDERS: tuple[tuple[str, str], ...] = (
 )
 
 
+class CompanyDetailsAdmin(ModelView, model=CompanyDetails):
+    """Singleton row shown on the mobile "О приложении" screen.
+
+    ``can_create``/``can_delete`` off — there is exactly one row (id=1,
+    seeded by migration); the mobile side reads it via the public
+    ``GET /api/v1/company-details`` endpoint and caches it on-device.
+    """
+
+    category = "Контент"
+    name = "Реквизиты компании"
+    name_plural = "Реквизиты компании"
+    icon = "fa-solid fa-building"
+    column_list = [
+        CompanyDetails.brand_name,
+        CompanyDetails.legal_name,
+        CompanyDetails.phone,
+        CompanyDetails.email,
+        CompanyDetails.updated_at,
+    ]
+    column_labels = {
+        CompanyDetails.legal_name: "Юр. название",
+        CompanyDetails.brand_name: "Бренд",
+        CompanyDetails.inn: "ИНН",
+        CompanyDetails.ogrn: "ОГРН",
+        CompanyDetails.address: "Адрес",
+        CompanyDetails.email: "Email",
+        CompanyDetails.phone: "Телефон",
+        CompanyDetails.telegram: "Telegram",
+        CompanyDetails.working_hours: "Часы работы",
+        CompanyDetails.updated_at: "Обновлено",
+    }
+    form_columns = [
+        CompanyDetails.legal_name,
+        CompanyDetails.brand_name,
+        CompanyDetails.inn,
+        CompanyDetails.ogrn,
+        CompanyDetails.address,
+        CompanyDetails.email,
+        CompanyDetails.phone,
+        CompanyDetails.telegram,
+        CompanyDetails.working_hours,
+    ]
+    can_create = False
+    can_delete = False
+    can_export = False
+
+    async def on_model_change(
+        self, data: dict[str, Any], model: Any, is_created: bool, request: Any
+    ) -> None:
+        data["updated_at"] = datetime.now(UTC)
+
+
 class RuntimeConfigAdmin(BaseView):
     """Runtime-configurable switches that override static env config on read.
 
@@ -3176,6 +3229,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(DeviceTokenAdmin)
     admin.add_view(PlaceImageAdmin)
     admin.add_view(MediaAttachmentAdmin)
+    admin.add_view(CompanyDetailsAdmin)
     admin.add_view(RuntimeConfigAdmin)
     # add_base_view (unlike add_model_view) does not wire session_maker —
     # BaseView has no bound model for SQLAdmin to infer a session from. A
