@@ -20,6 +20,14 @@ RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.13-slim-bookworm AS runtime
 
+# The base image's own pip is never invoked at runtime (the app runs from
+# the pre-built .venv below) but its vendored copies of msgpack/setuptools
+# (pip/_vendor/) carry known CVEs that trivy flags regardless — removing an
+# unused pip is a real fix, not a suppression of a finding we can't act on.
+RUN rm -rf /usr/local/lib/python3.13/site-packages/pip* \
+           /usr/local/lib/python3.13/ensurepip \
+           /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13
+
 RUN useradd --create-home --uid 10001 appuser
 
 WORKDIR /app
