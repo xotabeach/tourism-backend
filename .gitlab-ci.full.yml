@@ -159,19 +159,37 @@ backend-semgrep:
     # Configs are vendored (tools/semgrep-rules/) instead of the registry
     # shorthand (p/python, p/owasp-top-ten): the registry fetch failed 3/3
     # and later 6/6 retries in a row on this host while a plain curl to the
-    # same URL kept succeeding — a client/registry-side issue retries don't
+    # same URL kept succeeding — a client/registry-side issue retries didn't
     # fix. See tools/semgrep-rules/README.md to refresh them periodically.
-    - >
-      semgrep scan
-      --config tools/semgrep-rules/p-python.yaml
-      --config tools/semgrep-rules/p-owasp-top-ten.yaml
-      --severity ERROR
-      --error
-      --metrics=off
-      --disable-version-check
-      --exclude=tests
-      --exclude=.venv
-      --exclude=tools/semgrep-rules
+    #
+    # Vendoring did not end the flakiness, though: semgrep 1.110.0 combining
+    # two --config files occasionally exits 2 with zero output (no findings,
+    # no error) even fully offline — reproduced 6/6 failures back-to-back on
+    # this host, then 5/5 successes minutes later with the identical local
+    # command. Cause not pinned down (not the flags, not the configs, not
+    # this host's CPU/memory limits) — retry, now cheap since there's no
+    # network round trip left to make retries slow.
+    - |
+      set -e
+      attempt=1
+      while [ "$attempt" -le 5 ]; do
+        if semgrep scan \
+          --config tools/semgrep-rules/p-python.yaml \
+          --config tools/semgrep-rules/p-owasp-top-ten.yaml \
+          --severity ERROR \
+          --error \
+          --metrics=off \
+          --disable-version-check \
+          --exclude=tests \
+          --exclude=.venv \
+          --exclude=tools/semgrep-rules; then
+          exit 0
+        fi
+        echo "semgrep attempt ${attempt}/5 failed; retrying..."
+        attempt=$((attempt + 1))
+        sleep 3
+      done
+      exit 1
   allow_failure: false
 
 backend-publish:
