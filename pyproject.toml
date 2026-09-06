@@ -28,6 +28,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Real local RAG embedder (articles-mobile-rating-context-rag-backlog-2026-09-01.md
+# §4.1) — ~2-3GB with torch, so it stays opt-in: not installed by CI lint/test
+# jobs or the default production image. Add explicitly (uv sync --extra rag)
+# only on a host that will actually set RAG_EMBEDDING_MODEL to a real model.
+rag = [
+    "sentence-transformers>=3.0",
+    "torch>=2.2",
+]
 dev = [
     "httpx>=0.28",
     "mypy>=1.14",
@@ -47,6 +55,18 @@ build-backend = "uv_build"
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+# The 8GB production host is CPU-only — PyPI's default torch wheel drags in
+# the full NVIDIA CUDA stack (cublas/cudnn/nccl/...), multiple extra GB of
+# nothing it can use. The CPU-only build is a fraction of the size. No mac
+# wheels on this index, so only redirect the platform that actually needs it.
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.ruff]
 line-length = 100

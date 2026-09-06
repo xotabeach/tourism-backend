@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import close_all_sessions
 
+from tourism_backend.modules.knowledge.application.embedder import HashEmbeddingProvider
 from tourism_backend.modules.knowledge.infrastructure.retriever import (
     RetrievalRequest,
     TourismKnowledgeRetriever,
@@ -82,15 +83,15 @@ async def test_retriever_fts_and_vector_paths(live_db: object) -> None:
         await conn.commit()
 
         # EVP: give one chunk a stored embedding to exercise the vector path.
-        vec = retriever._vec_for("евпатория пляж лето")
+        vec = await retriever._vec_for("евпатория пляж лето")
         vec_lit = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
         async with engine.begin() as tx:  # type: ignore[attr-defined]
             await tx.execute(
                 text(
-                    "UPDATE knowledge_chunks SET embedding = CAST(:vec AS vector) "
-                    "WHERE doc_id = :doc"
+                    "UPDATE knowledge_chunks SET embedding = CAST(:vec AS vector), "
+                    "embedding_model = :model WHERE doc_id = :doc"
                 ),
-                {"vec": vec_lit, "doc": "place:evpatoria"},
+                {"vec": vec_lit, "model": "hash-v1", "doc": "place:evpatoria"},
             )
 
         # FTS path (no embeddings on this query's candidate) still returns rows.
@@ -117,3 +118,57 @@ async def test_retriever_fts_and_vector_paths(live_db: object) -> None:
             )
             assert vecres.chunks
             assert any("Евпатория" in c.title for c in vecres.chunks if c.title)
+            assert any(c.doc_id == "place:evpatoria" for c in vecres.chunks)
+
+
+@pytest.mark.asyncio
+async def test_retriever_ignores_chunks_embedded_by_a_different_model(
+    live_db: object,
+) -> None:
+    """A stale embedding from a since-replaced model must not be compared
+    against — cosine distance across unrelated vector spaces looks like a
+    confident match and returns garbage, not "no match".
+
+    The stored vector is a perfect hash-embedding of the query text itself
+    (cosine == 1.0 if the model matched), and the body shares no tokens with
+    the query, so FTS can't find it either — isolating the vector-path guard:
+    a result here can only come from the (wrongly) compared cross-model
+    vector, and its absence proves the guard skipped it.
+    """
+    engine = live_db  # type: ignore[assignment]
+    query = "фотографировать закат на набережной"
+    tagged_embedder = HashEmbeddingProvider()
+    tagged_embedder.model_id = "other-model"
+
+    async with engine.connect() as conn:  # type: ignore[attr-defined]
+        await conn.execute(
+            text(_INSERT_SQL),
+            {
+                "doc": "place:cross-model-stub",
+                "title": "Тестовое место",
+                "locality": "Судак",
+                "ctype": "tips",
+                "body": "Здесь нет ничего общего со словами запроса совершенно.",
+                "hash": "h3" * 32,
+            },
+        )
+        await conn.commit()
+
+        vec = await tagged_embedder.embed(query)
+        vec_lit = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+        async with engine.begin() as tx:  # type: ignore[attr-defined]
+            await tx.execute(
+                text(
+                    "UPDATE knowledge_chunks SET embedding = CAST(:vec AS vector), "
+                    "embedding_model = :model WHERE doc_id = :doc"
+                ),
+                {"vec": vec_lit, "model": "other-model", "doc": "place:cross-model-stub"},
+            )
+
+        default_retriever = TourismKnowledgeRetriever()  # model_id == "hash-v1"
+        async with engine.connect() as session:  # type: ignore[attr-defined]
+            result = await default_retriever.retrieve(
+                session,
+                request=RetrievalRequest(query=query, top_k=4, locality="Судак"),
+            )
+            assert not any(c.doc_id == "place:cross-model-stub" for c in result.chunks)

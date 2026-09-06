@@ -94,7 +94,7 @@ backend-code-style:
     - job: backend-ci-base-image
       optional: true
   script:
-    - uv sync --all-extras --dev
+    - uv sync --extra dev
     - uv run -- ruff check .
     - uv run -- ruff format --check .
     - uv run mypy src/tourism_backend
@@ -111,7 +111,7 @@ backend-run-tests:
   before_script:
     - *wait-for-postgres
   script:
-    - uv sync --all-extras --dev
+    - uv sync --extra dev
     - uv run alembic upgrade head
     - uv run python scripts/seed_crimea.py
     - uv run pytest
@@ -129,7 +129,7 @@ backend-security-tests:
   before_script:
     - *wait-for-postgres
   script:
-    - uv sync --all-extras --dev
+    - uv sync --extra dev
     - uv run alembic upgrade head
     # Seed catalog: several security tests assert against published routes/places.
     - uv run python scripts/seed_crimea.py
@@ -143,7 +143,7 @@ backend-pip-audit:
   image: "${CI_REGISTRY_IMAGE}/ci-base:python3.13-uv"
   <<: *uv-cache
   script:
-    - uv sync --all-extras --dev
+    - uv sync --extra dev
     - uv run pip-audit
   # Fail the pipeline on known vulnerable deps; document exceptions in
   # tourism-platform/docs/security/exceptions/ if a temporary waiver is needed.

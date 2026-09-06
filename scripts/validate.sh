@@ -19,7 +19,7 @@ require_command uv
 cd "${PROJECT_ROOT}"
 
 printf 'Syncing dependencies...\n'
-uv sync --all-extras --dev
+uv sync --extra dev
 
 printf 'Running Ruff...\n'
 uv run -- ruff check .

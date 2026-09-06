@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query
 
-from tourism_backend.api.deps import CurrentUserId, DbSession, SettingsDep
+from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
 from tourism_backend.modules.route_builder.application import (
     generate_service,
     match_service,
@@ -175,6 +175,7 @@ async def post_planning_message(
     session: DbSession,
     user_id: CurrentUserId,
     settings: SettingsDep,
+    redis: RedisClient,
 ) -> RoutePlanningMessageOut:
     return await session_service.post_message(
         session,
@@ -182,4 +183,5 @@ async def post_planning_message(
         session_id=session_id,
         payload=payload,
         settings=settings,
+        redis=redis,
     )

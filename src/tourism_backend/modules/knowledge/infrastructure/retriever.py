@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.modules.knowledge.application.embedder import (
     EMBEDDING_DIM,
-    HashEmbeddingProvider,
+    EmbeddingProvider,
     default_embedder,
 )
 
@@ -25,6 +25,7 @@ from tourism_backend.modules.knowledge.application.embedder import (
 @dataclass(frozen=True, slots=True)
 class RetrievedChunk:
     chunk_id: str
+    doc_id: str
     title: str
     body: str
     source: str
@@ -61,7 +62,7 @@ class TourismKnowledgeRetriever:
         self,
         *,
         dimension: int = EMBEDDING_DIM,
-        embedder: HashEmbeddingProvider | None = None,
+        embedder: EmbeddingProvider | None = None,
     ) -> None:
         self._dimension = dimension
         self._embedder = embedder or default_embedder()
@@ -90,31 +91,36 @@ class TourismKnowledgeRetriever:
 
         # Where is built from fixed fragments only; every user-ish value goes
         # through bind params, so there is no injection surface.
-        vec = "[" + ",".join(f"{v:.5f}" for v in self._embedder.embed(q)) + "]"
-        vec_sql = "".join(
-            (
-                "SELECT id, title, body, source, content_type, locality, place_id,"
-                " 1 - (embedding <=> CAST(:vec AS vector)) AS score"
-                " FROM knowledge_chunks WHERE ",
-                where,
-                " AND embedding IS NOT NULL"
-                " ORDER BY embedding <=> CAST(:vec AS vector) LIMIT :topk",
-            )
-        )
         rows: Sequence[Any] = []
         try:
+            embedding = await self._embedder.embed(q)
+            vec = "[" + ",".join(f"{v:.5f}" for v in embedding) + "]"
+            vec_sql = "".join(
+                (
+                    "SELECT id, doc_id, title, body, source, content_type, locality, place_id,"
+                    " 1 - (embedding <=> CAST(:vec AS vector)) AS score"
+                    " FROM knowledge_chunks WHERE ",
+                    where,
+                    # A chunk embedded with a different model lives in an unrelated
+                    # vector space — comparing across models returns confident-looking
+                    # garbage, not "no match". Restrict to the querying model's own
+                    # chunks and let a genuine miss fall through to FTS instead.
+                    " AND embedding IS NOT NULL AND embedding_model = :embedding_model"
+                    " ORDER BY embedding <=> CAST(:vec AS vector) LIMIT :topk",
+                )
+            )
             result = await session.execute(
                 text(vec_sql),
-                {**params, "vec": vec},
+                {**params, "vec": vec, "embedding_model": self._embedder.model_id},
             )
             rows = result.all()
-        except Exception:  # noqa: BLE001 — fall back to FTS
+        except Exception:  # noqa: BLE001 — a down/slow embedder falls back to FTS
             rows = []
 
         if not rows:
             fts_sql = "".join(
                 (
-                    "SELECT id, title, body, source, content_type, locality, place_id,"
+                    "SELECT id, doc_id, title, body, source, content_type, locality, place_id,"
                     " ts_rank_cd("
                     "  to_tsvector('russian', coalesce(title,'') || ' ' ||"
                     "              coalesce(body,'')), plainto_tsquery('russian', :q)"
@@ -132,9 +138,9 @@ class TourismKnowledgeRetriever:
         chunks, candidates = self._to_chunks(rows, min_score=request.min_score)
         return RetrievalResult(chunks=chunks, total_candidates=candidates)
 
-    def _vec_for(self, q: str) -> list[float]:
+    async def _vec_for(self, q: str) -> list[float]:
         """Compatibility shim used by integration tests / ingest."""
-        return self._embedder.embed(q)
+        return await self._embedder.embed(q)
 
     def _to_chunks(
         self,
@@ -144,9 +150,9 @@ class TourismKnowledgeRetriever:
     ) -> tuple[list[RetrievedChunk], int]:
         chunks: list[RetrievedChunk] = []
         for row in rows:
-            # (id, title, body, source, content_type, locality, place_id, score)
+            # (id, doc_id, title, body, source, content_type, locality, place_id, score)
             try:
-                chunk_id, title, body, source, ctype, locality, place_id, score = row[:8]
+                chunk_id, doc_id, title, body, source, ctype, locality, place_id, score = row[:9]
             except ValueError:
                 continue
             if min_score > 0 and float(score) < min_score:
@@ -154,6 +160,7 @@ class TourismKnowledgeRetriever:
             chunks.append(
                 RetrievedChunk(
                     chunk_id=str(chunk_id),
+                    doc_id=str(doc_id),
                     title=str(title)[:255],
                     body=str(body)[:1600],
                     source=str(source)[:32],

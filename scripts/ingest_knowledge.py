@@ -4,19 +4,26 @@
 Dry-run by default: prints counts that would be inserted/updated, then a
 summary. With --apply, chunks are upserted by (doc_id, chunk_seq).
 
-With --embed, also writes pgvector embeddings via the shared HashEmbeddingProvider
-(same vectors the retriever uses). Replace with a real model later without
-changing the 384-d column.
+With --embed, also writes pgvector embeddings via whatever embedder
+RAG_EMBEDDING_MODEL selects (build_embedder — hash-v1 bootstrap embedder by
+default, or an LM Studio model when configured; same vectors the retriever
+uses).
+
+With --reembed-all, re-embeds every existing knowledge_chunks row with the
+currently configured embedder instead of touching chunk content — the move
+after switching RAG_EMBEDDING_MODEL from hash-v1 to a real model.
 
 Examples:
   uv run python scripts/ingest_knowledge.py --limit 300
   uv run python scripts/ingest_knowledge.py --apply --embed
   uv run python scripts/ingest_knowledge.py --apply --limit 1000 --source internal
+  uv run python scripts/ingest_knowledge.py --apply --reembed-all
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -30,10 +37,17 @@ from tourism_backend.modules.knowledge.application.chunker import (
     chunk_route_markdown,
     content_hash,
 )
-from tourism_backend.modules.knowledge.application.embedder import default_embedder
+from tourism_backend.modules.knowledge.application.embedder import (
+    EmbeddingProvider,
+    build_embedder,
+)
 from tourism_backend.modules.knowledge.infrastructure.models import KnowledgeChunk
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.routes.infrastructure.models import Route
+
+#: Cap concurrent embedding requests against a single home-lab LM Studio
+#: instance — cheap to compute but the box only has one GPU.
+_EMBED_CONCURRENCY = 4
 
 _ = _geo
 
@@ -156,12 +170,9 @@ def _write_embedding(
     session: Session,
     *,
     chunk_id: UUID,
-    title: str,
-    body: str,
+    vector: list[float],
     model: str,
 ) -> None:
-    embedder = default_embedder()
-    vector = embedder.embed(f"{title} {body}")
     vec = "[" + ",".join(f"{v:.5f}" for v in vector) + "]"
     session.execute(
         text(
@@ -172,6 +183,49 @@ def _write_embedding(
     )
 
 
+async def _embed_batch(
+    embedder: EmbeddingProvider,
+    pending: list[tuple[UUID, str, str]],
+) -> list[tuple[UUID, list[float]]]:
+    """Embed (chunk_id, title, body) triples concurrently, capped.
+
+    A chunk whose embed call fails (network hiccup, provider down) is
+    skipped rather than aborting the whole batch — it keeps whatever
+    embedding it had before (or none), and a later run picks it up again.
+    """
+    semaphore = asyncio.Semaphore(_EMBED_CONCURRENCY)
+
+    async def _one(chunk_id: UUID, title: str, body: str) -> tuple[UUID, list[float]] | None:
+        async with semaphore:
+            try:
+                vector = await embedder.embed(f"{title} {body}")
+            except Exception as exc:  # noqa: BLE001 — one bad chunk must not sink the batch
+                print(f"  ! embed failed for {chunk_id}: {exc}")
+                return None
+            return chunk_id, vector
+
+    results = await asyncio.gather(*(_one(cid, title, body) for cid, title, body in pending))
+    return [r for r in results if r is not None]
+
+
+def _reembed_all(
+    session: Session,
+    *,
+    embedder: EmbeddingProvider,
+    model: str,
+    limit: int,
+) -> int:
+    rows = session.execute(
+        select(KnowledgeChunk.id, KnowledgeChunk.title, KnowledgeChunk.body).limit(limit)
+    ).all()
+    pending = [(row.id, row.title, row.body) for row in rows]
+    embedded = asyncio.run(_embed_batch(embedder, pending))
+    for chunk_id, vector in embedded:
+        _write_embedding(session, chunk_id=chunk_id, vector=vector, model=model)
+    session.commit()
+    return len(embedded)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
@@ -180,6 +234,14 @@ def main() -> None:
         action="store_true",
         help="Write pgvector embeddings (requires --apply and migration 0032)",
     )
+    parser.add_argument(
+        "--reembed-all",
+        action="store_true",
+        help=(
+            "Re-embed every existing knowledge_chunks row with the currently "
+            "configured embedder (requires --apply); does not touch chunk content"
+        ),
+    )
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--source", default="internal", help="internal|osm|wikivoyage")
     args = parser.parse_args()
@@ -187,12 +249,22 @@ def main() -> None:
         raise SystemExit("limit must be between 1 and 20000")
     if args.embed and not args.apply:
         raise SystemExit("--embed requires --apply")
+    if args.reembed_all and not args.apply:
+        raise SystemExit("--reembed-all requires --apply")
 
     settings = get_settings()
+    embedder = build_embedder(settings)
+    embed_model = settings.rag_embedding_model
     engine = create_engine(settings.database_url_sync)
+
+    if args.reembed_all:
+        with Session(engine) as session:
+            n = _reembed_all(session, embedder=embedder, model=embed_model, limit=args.limit)
+        print(f"[APPLY] re-embedded {n} existing chunk(s) with model={embed_model}")
+        return
+
     counters = {"inserted": 0, "updated": 0, "unchanged": 0, "embedded": 0}
     total = 0
-    embed_model = settings.rag_embedding_model or default_embedder().model_id
     with Session(engine) as session:
         places = _iter_places(session, limit=args.limit)
         routes = _iter_routes(session, limit=args.limit)
@@ -262,14 +334,9 @@ def main() -> None:
                     pending_embed.append((chunk_id, cand.title, cand.body))
         if args.apply:
             session.flush()
-            for chunk_id, title, body in pending_embed:
-                _write_embedding(
-                    session,
-                    chunk_id=chunk_id,
-                    title=title,
-                    body=body,
-                    model=embed_model,
-                )
+            embedded = asyncio.run(_embed_batch(embedder, pending_embed))
+            for chunk_id, vector in embedded:
+                _write_embedding(session, chunk_id=chunk_id, vector=vector, model=embed_model)
                 counters["embedded"] += 1
             session.commit()
     mode = "APPLY" if args.apply else "DRY-RUN"

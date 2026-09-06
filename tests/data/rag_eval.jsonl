@@ -1,0 +1,23 @@
+{"query": "гора с канатной дорогой и видом на побережье", "expected_doc_ids": ["place:ai-petri"]}
+{"query": "вулканический заповедник возле Коктебеля", "expected_doc_ids": ["place:kara-dag"]}
+{"query": "подземная пещера с кальцитовыми натёками на плато Чатыр-Даг", "expected_doc_ids": ["place:marble-cave"]}
+{"query": "древний пещерный город рядом с Бахчисараем", "expected_doc_ids": ["place:chufut-kale"]}
+{"query": "летняя резиденция российских императоров в Ялте", "expected_doc_ids": ["place:livadia-palace"]}
+{"query": "дворец где жили крымские ханы", "expected_doc_ids": ["place:khan-palace"]}
+{"query": "средневековая генуэзская крепость на горе над Судаком", "expected_doc_ids": ["place:sudak-fortress"]}
+{"query": "скалистая тропа вдоль моря у бухт Нового Света", "expected_doc_ids": ["place:novy-svet"]}
+{"query": "картинная галерея с работами художника-мариниста в Феодосии", "expected_doc_ids": ["place:feodosia-gallery"]}
+{"query": "скалы и прозрачная вода на западном побережье Крыма", "expected_doc_ids": ["place:tarkhankut"]}
+{"query": "пляжный променад в Евпатории", "expected_doc_ids": ["place:evpatoria-embankment"]}
+{"query": "античные руины греческого полиса в Севастополе", "expected_doc_ids": ["place:khersones"]}
+{"query": "мемориал в память о защитниках Севастополя", "expected_doc_ids": ["place:sapun-mountain"]}
+{"query": "узкая живописная бухта с набережной в Балаклаве", "expected_doc_ids": ["place:balaklava-bay"]}
+{"query": "скифское городище с музеем под открытым небом в Симферополе", "expected_doc_ids": ["place:simferopol-scythian-naples"]}
+{"query": "причудливые каменные фигуры выветривания на склоне горы Демерджи", "expected_doc_ids": ["place:demerdzhi"]}
+{"query": "пляжная набережная в Алуште", "expected_doc_ids": ["place:alushta-promenade"]}
+{"query": "архитектурный ансамбль девятнадцатого века с парком у моря в Алупке", "expected_doc_ids": ["place:vorontsov-palace"]}
+{"query": "летний дворец Александра Третьего в Массандре", "expected_doc_ids": ["place:massandra-palace"]}
+{"query": "декоративный замок начала прошлого века на скале у Гаспры", "expected_doc_ids": ["place:swallow-nest"]}
+{"query": "однодневный маршрут по дворцам и главному символу южного берега у Ялты", "expected_doc_ids": ["route:south-coast-classics"]}
+{"query": "поездка в Бахчисарай к ханской резиденции и пещерному городу", "expected_doc_ids": ["route:bakhchisaray-heritage"]}
+{"query": "маршрут по крепостям восточного побережья с вулканом", "expected_doc_ids": ["route:east-coast-fortresses"]}

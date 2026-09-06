@@ -123,7 +123,14 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     rag_enabled: bool = False
     rag_top_k: int = Field(default=4, ge=1, le=8)
+    # "hash-v1" (default) keeps the deterministic bootstrap embedder; any
+    # other value is treated as a sentence-transformers model name/path and
+    # loaded locally in-process (requires the optional 'rag' extra).
     rag_embedding_model: str = "hash-v1"
+    # Repeated questions ("что взять на пляж", "открыт ли Ай-Петри зимой") hit
+    # the same knowledge_chunks rows — cache the retrieval, not the LLM
+    # answer, since the answer is still personalized per session.
+    rag_faq_cache_ttl_seconds: int = Field(default=86400, ge=60)
 
     # ADR-004/010 RoutingProvider. ``stub`` is synthetic local DX; ``2gis``
     # uses the server-side HTTP Routing API.  Keep the default conservative so

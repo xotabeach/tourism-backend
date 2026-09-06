@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
+from redis.asyncio import Redis
 from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +18,8 @@ from tourism_backend.modules.identity.application.chat_preferences import (
     apply_chat_preferences,
 )
 from tourism_backend.modules.identity.infrastructure.models import User
+from tourism_backend.modules.knowledge.application.embedder import build_embedder
+from tourism_backend.modules.knowledge.infrastructure.faq_cache import RagRetrievalCache
 from tourism_backend.modules.knowledge.infrastructure.retriever import (
     RetrievalRequest,
     TourismKnowledgeRetriever,
@@ -304,6 +307,7 @@ async def post_message(
     session_id: UUID,
     payload: RoutePlanningMessageIn,
     settings: Settings | None = None,
+    redis: Redis | None = None,
 ) -> RoutePlanningMessageOut:
     cfg = settings or get_settings()
     user = await session.get(User, user_id)
@@ -536,6 +540,7 @@ async def post_message(
             confirmed_fields=confirmed,
             settings=cfg,
             user=user,
+            redis=redis,
         )
         assistant_text = turn.assistant_text
         ask_field = turn.ask_field or prefer_ready_ask_field(confirmed)
@@ -619,6 +624,7 @@ async def _assistant_from_ai(
     confirmed_fields: list[str],
     settings: Settings,
     user: User,
+    redis: Redis | None = None,
 ) -> tuple[ChatTurnResult, str | None, bool, dict[str, Any], list[dict[str, str]]]:
     history_rows = list((await session.scalars(llm_history_stmt(planning.id))).all())
     history_rows.reverse()
@@ -651,21 +657,28 @@ async def _assistant_from_ai(
     # untrusted DATA when enabled. Hard facts still come from PostGIS tools.
     if settings.rag_enabled:
         try:
-            retriever = TourismKnowledgeRetriever()
+            retriever = TourismKnowledgeRetriever(embedder=build_embedder(settings))
             interests = constraints.get("interests")
             if isinstance(interests, list) and interests:
                 query = " ".join(str(item) for item in interests[:6])[:400]
             else:
                 query = str(constraints.get("city") or "Крым")[:400]
-            rag = await retriever.retrieve(
-                session,
-                request=RetrievalRequest(
-                    query=query,
-                    top_k=settings.rag_top_k,
-                    region=str(constraints.get("region_slug") or "crimea")[:64],
-                    locality=(str(constraints["city"])[:120] if constraints.get("city") else None),
-                ),
+            request = RetrievalRequest(
+                query=query,
+                top_k=settings.rag_top_k,
+                region=str(constraints.get("region_slug") or "crimea")[:64],
+                locality=(str(constraints["city"])[:120] if constraints.get("city") else None),
             )
+            cache = (
+                RagRetrievalCache(redis, ttl_seconds=settings.rag_faq_cache_ttl_seconds)
+                if redis is not None
+                else None
+            )
+            rag = await cache.get(request) if cache is not None else None
+            if rag is None:
+                rag = await retriever.retrieve(session, request=request)
+                if cache is not None:
+                    await cache.set(request, rag)
             if rag.chunks:
                 tool_context = {
                     **tool_context,
