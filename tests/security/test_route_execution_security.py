@@ -187,6 +187,126 @@ async def test_route_execution_lifecycle_is_idempotent(live_client: AsyncClient)
 
 
 @pytest.mark.asyncio
+async def test_route_execution_pause_resume(live_client: AsyncClient) -> None:
+    tokens = await _login(live_client, f"+7903{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+
+    started = await live_client.post(
+        "/api/v1/route-executions",
+        json={"route_id": route_id},
+        headers=headers,
+    )
+    assert started.status_code == 201, started.text
+    execution_id = started.json()["id"]
+
+    paused = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/pause",
+        headers=headers,
+    )
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["status"] == "paused"
+
+    # Idempotent: pausing an already-paused run just returns current state.
+    paused_again = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/pause",
+        headers=headers,
+    )
+    assert paused_again.status_code == 200
+    assert paused_again.json()["status"] == "paused"
+
+    # No progress is possible while paused — resume first.
+    blocked_stop = await live_client.put(
+        f"/api/v1/route-executions/{execution_id}"
+        f"/stops/{started.json()['stops'][0]['id']}/complete",
+        headers=headers,
+    )
+    assert blocked_stop.status_code == 409
+    assert blocked_stop.json()["error"]["code"] == "route_execution_not_active"
+
+    blocked_finish = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/complete",
+        headers=headers,
+    )
+    assert blocked_finish.status_code == 409
+
+    resumed = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/resume",
+        headers=headers,
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == "active"
+    assert resumed.json()["paused_duration_seconds"] >= 0
+
+    # Idempotent: resuming an already-active run just returns current state.
+    resumed_again = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/resume",
+        headers=headers,
+    )
+    assert resumed_again.status_code == 200
+    assert resumed_again.json()["status"] == "active"
+
+    for stop in started.json()["stops"]:
+        completed = await live_client.put(
+            f"/api/v1/route-executions/{execution_id}/stops/{stop['id']}/complete",
+            headers=headers,
+        )
+        assert completed.status_code == 200, completed.text
+
+    finished = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/complete",
+        headers=headers,
+    )
+    assert finished.status_code == 200, finished.text
+    assert finished.json()["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_route_execution_pause_is_owner_scoped_and_cancel_works_while_paused(
+    live_client: AsyncClient,
+) -> None:
+    owner_tokens = await _login(live_client, f"+7904{uuid4().int % 10_000_000:07d}")
+    stranger_tokens = await _login(live_client, f"+7905{uuid4().int % 10_000_000:07d}")
+    owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
+    stranger_headers = {"Authorization": f"Bearer {stranger_tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+
+    started = await live_client.post(
+        "/api/v1/route-executions",
+        json={"route_id": route_id},
+        headers=owner_headers,
+    )
+    assert started.status_code == 201, started.text
+    execution_id = started.json()["id"]
+
+    forbidden_pause = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/pause",
+        headers=stranger_headers,
+    )
+    assert forbidden_pause.status_code == 404
+
+    paused = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/pause",
+        headers=owner_headers,
+    )
+    assert paused.status_code == 200, paused.text
+
+    forbidden_resume = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/resume",
+        headers=stranger_headers,
+    )
+    assert forbidden_resume.status_code == 404
+
+    # Abandoning a paused run must not require resuming first.
+    cancelled = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/cancel",
+        headers=owner_headers,
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
 async def test_route_execution_is_owner_scoped_and_cancel_is_idempotent(
     live_client: AsyncClient,
 ) -> None:

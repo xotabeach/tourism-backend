@@ -138,6 +138,7 @@ async def _execution_out(
             for stop in stops
         ],
         awarded_points=int(execution.awarded_points or 0),
+        paused_duration_seconds=int(execution.paused_duration_seconds or 0),
         sync=sync,
         created_at=execution.created_at,
         updated_at=execution.updated_at,
@@ -699,7 +700,9 @@ async def cancel_execution(
     )
     if execution.status == "cancelled":
         return await _execution_out(session, execution)
-    if execution.status != "active":
+    # A paused run can still be abandoned outright — forcing a resume first
+    # just to cancel is friction with no benefit.
+    if execution.status not in ("active", "paused"):
         raise AppError(
             code="route_execution_not_active",
             message="Route execution is not active",
@@ -711,6 +714,11 @@ async def cancel_execution(
         now=now,
         not_before=execution.started_at,
     )
+    if execution.status == "paused" and execution.paused_at is not None:
+        execution.paused_duration_seconds += int(
+            (resolved.effective - execution.paused_at).total_seconds()
+        )
+        execution.paused_at = None
     execution.status = "cancelled"
     execution.cancelled_at = resolved.effective
     execution.updated_at = now
@@ -718,6 +726,118 @@ async def cancel_execution(
         session,
         execution=execution,
         action="cancel",
+        resolved=resolved,
+        now=now,
+        applied=True,
+        client_event_id=client_event_id,
+    )
+
+
+async def pause_execution(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    execution_id: UUID,
+    event: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    now = datetime.now(UTC)
+    client_event_id = event.client_event_id if event is not None else None
+    if client_event_id is not None:
+        replayed = await _replayed_out(
+            session,
+            user_id=user_id,
+            execution_id=execution_id,
+            client_event_id=client_event_id,
+        )
+        if replayed is not None:
+            return replayed
+
+    execution = await _owned_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        for_update=True,
+    )
+    if execution.status == "paused":
+        return await _execution_out(session, execution)
+    if execution.status != "active":
+        raise AppError(
+            code="route_execution_not_active",
+            message="Route execution is not active",
+            status_code=409,
+            details=terminal_conflict_details(execution.status),
+        )
+    last_stop_at = await _latest_stop_completion(session, execution_id=execution.id)
+    resolved = resolve_event_time(
+        event.occurred_at if event is not None else None,
+        now=now,
+        not_before=max(execution.started_at, last_stop_at or execution.started_at),
+    )
+    execution.status = "paused"
+    execution.paused_at = resolved.effective
+    execution.updated_at = now
+    return await _commit_event(
+        session,
+        execution=execution,
+        action="pause",
+        resolved=resolved,
+        now=now,
+        applied=True,
+        client_event_id=client_event_id,
+    )
+
+
+async def resume_execution(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    execution_id: UUID,
+    event: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    now = datetime.now(UTC)
+    client_event_id = event.client_event_id if event is not None else None
+    if client_event_id is not None:
+        replayed = await _replayed_out(
+            session,
+            user_id=user_id,
+            execution_id=execution_id,
+            client_event_id=client_event_id,
+        )
+        if replayed is not None:
+            return replayed
+
+    execution = await _owned_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        for_update=True,
+    )
+    if execution.status == "active":
+        return await _execution_out(session, execution)
+    if execution.status != "paused":
+        raise AppError(
+            code="route_execution_not_active",
+            message="Route execution is not active",
+            status_code=409,
+            details=terminal_conflict_details(execution.status),
+        )
+    resolved = resolve_event_time(
+        event.occurred_at if event is not None else None,
+        now=now,
+        # A resume can never precede the pause it closes out.
+        not_before=execution.paused_at or execution.started_at,
+    )
+    if execution.paused_at is not None:
+        execution.paused_duration_seconds += int(
+            (resolved.effective - execution.paused_at).total_seconds()
+        )
+    execution.paused_at = None
+    execution.status = "active"
+    execution.updated_at = now
+    return await _commit_event(
+        session,
+        execution=execution,
+        action="resume",
         resolved=resolved,
         now=now,
         applied=True,

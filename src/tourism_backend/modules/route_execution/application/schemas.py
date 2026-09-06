@@ -11,8 +11,8 @@ from tourism_backend.modules.routes.application.schemas import (
     RouteQualityStatus,
 )
 
-RouteExecutionStatus = Literal["active", "completed", "cancelled"]
-RouteExecutionEventAction = Literal["complete_stop", "complete", "cancel"]
+RouteExecutionStatus = Literal["active", "paused", "completed", "cancelled"]
+RouteExecutionEventAction = Literal["complete_stop", "complete", "cancel", "pause", "resume"]
 
 
 class RouteExecutionStartIn(BaseModel):
@@ -104,6 +104,9 @@ class RouteExecutionOut(BaseModel):
     stops: list[RouteExecutionStopOut]
     # Travel points granted for finishing this route (0 while it is active).
     awarded_points: int = Field(default=0, ge=0)
+    # Total time spent paused so far — lets a client report elapsed time net
+    # of pauses without re-deriving it from the event ledger.
+    paused_duration_seconds: int = Field(default=0, ge=0)
     sync: RouteExecutionSyncOut | None = None
     created_at: datetime
     updated_at: datetime

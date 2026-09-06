@@ -110,3 +110,33 @@ async def cancel_route_execution(
         execution_id=execution_id,
         event=payload,
     )
+
+
+@router.post("/{execution_id}/pause", response_model=RouteExecutionOut)
+async def pause_route_execution(
+    execution_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    return await service.pause_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        event=payload,
+    )
+
+
+@router.post("/{execution_id}/resume", response_model=RouteExecutionOut)
+async def resume_route_execution(
+    execution_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    return await service.resume_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        event=payload,
+    )

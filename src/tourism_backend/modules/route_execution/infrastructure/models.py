@@ -121,7 +121,7 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "route_executions"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('active', 'completed', 'cancelled')",
+            "status IN ('active', 'paused', 'completed', 'cancelled')",
             name="status",
         ),
         Index("ix_route_executions_user_started", "user_id", "started_at"),
@@ -154,6 +154,17 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When the run entered its current 'paused' state; None otherwise. Used
+    # only to compute paused_duration_seconds on resume.
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Total time spent paused across the whole run, so a completion summary
+    # can report elapsed time net of pauses.
+    paused_duration_seconds: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     # Points actually granted on completion. Also the idempotency guard: a
     # replayed complete must not pay out twice.
     awarded_points: Mapped[int] = mapped_column(
@@ -212,8 +223,8 @@ class RouteExecutionEvent(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "route_execution_events"
     __table_args__ = (
         CheckConstraint(
-            "action IN ('complete_stop', 'complete', 'cancel')",
-            name="action_allowed",
+            "action IN ('complete_stop', 'complete', 'cancel', 'pause', 'resume')",
+            name="action",
         ),
         UniqueConstraint(
             "user_id",

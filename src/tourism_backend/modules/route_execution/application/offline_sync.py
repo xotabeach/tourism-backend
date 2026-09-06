@@ -16,7 +16,7 @@ from typing import Literal
 
 from tourism_backend.api.errors import AppError
 
-EventAction = Literal["complete_stop", "complete", "cancel"]
+EventAction = Literal["complete_stop", "complete", "cancel", "pause", "resume"]
 
 #: How far a device clock may run ahead of the server before we reject it.
 CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
