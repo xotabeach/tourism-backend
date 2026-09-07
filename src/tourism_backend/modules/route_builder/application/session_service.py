@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -197,7 +197,11 @@ async def create_session(
     session.add(row)
     await session.commit()
     await session.refresh(row)
-    return _session_out(row, ai_planning_enabled=cfg.ai_planning_enabled)
+    return _session_out(
+        row,
+        ai_planning_enabled=cfg.ai_planning_enabled,
+        message_limit=cfg.ai_chat_message_limit,
+    )
 
 
 async def list_sessions(
@@ -234,8 +238,27 @@ async def list_sessions(
             .limit(bounded_limit)
         )
     ).all()
+    counts: dict[UUID, int] = {}
+    if rows:
+        counted = await session.execute(
+            select(RoutePlanningMessage.session_id, func.count())
+            .where(RoutePlanningMessage.session_id.in_([row.id for row in rows]))
+            .group_by(RoutePlanningMessage.session_id)
+        )
+        counts = {session_id: int(count) for session_id, count in counted.all()}
+    for row in rows:
+        _close_if_stale(row, cfg)
+    await session.commit()
     return RoutePlanningSessionListOut(
-        items=[_session_out(row, ai_planning_enabled=cfg.ai_planning_enabled) for row in rows],
+        items=[
+            _session_out(
+                row,
+                ai_planning_enabled=cfg.ai_planning_enabled,
+                message_count=counts.get(row.id, 0),
+                message_limit=cfg.ai_chat_message_limit,
+            )
+            for row in rows
+        ],
         total=total,
         limit=bounded_limit,
         offset=bounded_offset,
@@ -256,8 +279,20 @@ async def get_session(
     await refresh_user_travel_plus(session, user=user)
     require_ai_chat(user)
 
-    row = await _owned_session(session, user_id=user_id, session_id=session_id)
-    return _session_out(row, ai_planning_enabled=cfg.ai_planning_enabled)
+    row = await _owned_session(
+        session,
+        user_id=user_id,
+        session_id=session_id,
+        settings=cfg,
+    )
+    used = await _message_count(session, row.id)
+    await session.commit()
+    return _session_out(
+        row,
+        ai_planning_enabled=cfg.ai_planning_enabled,
+        message_count=used,
+        message_limit=cfg.ai_chat_message_limit,
+    )
 
 
 async def close_session(
@@ -274,13 +309,18 @@ async def close_session(
     await refresh_user_travel_plus(session, user=user)
     require_ai_chat(user)
 
-    row = await _owned_session(session, user_id=user_id, session_id=session_id)
+    row = await _owned_session(session, user_id=user_id, session_id=session_id, settings=cfg)
     if row.status != "closed":
         row.status = "closed"
         row.updated_at = datetime.now(UTC)
-        await session.commit()
-        await session.refresh(row)
-    return _session_out(row, ai_planning_enabled=cfg.ai_planning_enabled)
+    await session.commit()
+    await session.refresh(row)
+    return _session_out(
+        row,
+        ai_planning_enabled=cfg.ai_planning_enabled,
+        message_count=await _message_count(session, row.id),
+        message_limit=cfg.ai_chat_message_limit,
+    )
 
 
 async def list_messages(
@@ -344,11 +384,25 @@ async def post_message(
     await refresh_user_travel_plus(session, user=user)
     require_ai_chat(user)
 
-    planning = await _owned_session(session, user_id=user_id, session_id=session_id)
+    planning = await _owned_session(
+        session,
+        user_id=user_id,
+        session_id=session_id,
+        settings=cfg,
+    )
     if planning.status != "active":
+        await session.commit()
         raise AppError(
             code="session_closed",
             message="Planning session is closed",
+            status_code=409,
+        )
+    if await _message_count(session, planning.id) >= cfg.ai_chat_message_limit:
+        planning.status = "closed"
+        await session.commit()
+        raise AppError(
+            code="session_message_limit",
+            message="Planning session reached its message limit",
             status_code=409,
         )
 
@@ -625,10 +679,20 @@ async def post_message(
     )
     session.add(assistant_msg)
     planning.updated_at = datetime.now(UTC)
+    await session.flush()
+    # The turn that fills the chat is still answered — cutting it off would
+    # lose the reply the user just waited for — and the session closes right
+    # behind it, so the app can offer a fresh one.
+    used = await _message_count(session, planning.id)
+    if used >= cfg.ai_chat_message_limit:
+        planning.status = "closed"
     await session.commit()
     await session.refresh(assistant_msg)
 
     return RoutePlanningMessageOut(
+        session_status=planning.status,  # type: ignore[arg-type]
+        session_message_count=used,
+        session_message_limit=cfg.ai_chat_message_limit,
         message_id=str(assistant_msg.id),
         session_id=str(planning.id),
         role="assistant",
@@ -1126,6 +1190,7 @@ async def _owned_session(
     *,
     user_id: UUID,
     session_id: UUID,
+    settings: Settings | None = None,
 ) -> RoutePlanningSession:
     row = await session.get(RoutePlanningSession, session_id)
     if row is None or row.user_id != user_id:
@@ -1134,13 +1199,45 @@ async def _owned_session(
             message="Planning session not found",
             status_code=404,
         )
+    _close_if_stale(row, settings or get_settings())
     return row
+
+
+def _close_if_stale(row: RoutePlanningSession, settings: Settings) -> None:
+    """Retire a chat nobody has touched for `ai_chat_session_ttl_hours`.
+
+    Done on access rather than on a schedule: the only reader of a session is
+    the person who owns it, so the next visit is the first moment the state
+    matters. The caller's own commit persists it.
+    """
+    if row.status != "active":
+        return
+    touched = row.updated_at or row.created_at
+    if touched is None:
+        return
+    if touched.tzinfo is None:
+        touched = touched.replace(tzinfo=UTC)
+    if datetime.now(UTC) - touched >= timedelta(hours=settings.ai_chat_session_ttl_hours):
+        row.status = "closed"
+
+
+async def _message_count(session: AsyncSession, session_id: UUID) -> int:
+    return int(
+        await session.scalar(
+            select(func.count())
+            .select_from(RoutePlanningMessage)
+            .where(RoutePlanningMessage.session_id == session_id)
+        )
+        or 0
+    )
 
 
 def _session_out(
     row: RoutePlanningSession,
     *,
     ai_planning_enabled: bool,
+    message_count: int = 0,
+    message_limit: int = 0,
 ) -> RoutePlanningSessionOut:
     confirmed = sanitize_confirmed_fields(
         list(row.confirmed_fields) if isinstance(row.confirmed_fields, list) else []
@@ -1153,6 +1250,8 @@ def _session_out(
         ai_planning_enabled=ai_planning_enabled,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        message_count=message_count,
+        message_limit=message_limit,
     )
 
 

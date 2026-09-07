@@ -326,6 +326,10 @@ class RoutePlanningSessionOut(BaseModel):
     ai_planning_enabled: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # How full this chat is. The app warns near the end and stops the
+    # composer once `message_count` reaches `message_limit`.
+    message_count: int = 0
+    message_limit: int = 0
 
 
 class RoutePlanningSessionListOut(BaseModel):
@@ -379,6 +383,12 @@ class RoutePlanningMessageIn(BaseModel):
 
 
 class RoutePlanningMessageOut(BaseModel):
+    # Carried on every reply so the app learns a chat filled up from the
+    # answer itself, without polling the session.
+    session_status: SessionStatus = "active"
+    session_message_count: int = 0
+    session_message_limit: int = 0
+
     message_id: str
     session_id: str
     role: ChatMessageRole

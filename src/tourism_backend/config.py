@@ -91,6 +91,15 @@ class Settings(BaseSettings):
     # long since given up. When the budget runs out mid-turn the reply from
     # the first call is sent as-is instead of failing the turn.
     ai_turn_budget_seconds: float = Field(default=40, ge=5, le=300)
+    # A chat is a planning session, not a correspondence: past ~20 exchanges
+    # it stops converging on a route and only grows the transcript (the model
+    # itself never sees more than the last 12 turns anyway). On the limit the
+    # session is closed and the app offers a fresh one.
+    ai_chat_message_limit: int = Field(default=40, ge=6, le=400)
+    # An untouched session is stale rather than ongoing; closing it lazily on
+    # the next visit keeps "continue where I left off" honest for a few days
+    # without a scheduled job.
+    ai_chat_session_ttl_hours: int = Field(default=72, ge=1, le=24 * 30)
     ai_max_repair_attempts: int = Field(default=1, ge=0, le=2)
     ai_prompt_version: str = "v1"
     lm_studio_base_url: str | None = None

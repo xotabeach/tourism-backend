@@ -331,3 +331,66 @@ async def test_opening_a_chat_warms_the_embedder_without_failing_the_request() -
 
     with mock.patch.object(service_module, "build_embedder", return_value=_Broken()):
         await warm_rag_embedder(settings)  # must not raise
+
+
+def test_a_chat_nobody_touched_for_days_is_retired_on_the_next_visit() -> None:
+    """Sessions have no scheduled cleanup: they close when next looked at."""
+    from datetime import timedelta
+
+    from tourism_backend.config import Settings
+    from tourism_backend.modules.route_builder.application.session_service import (
+        _close_if_stale,
+    )
+
+    settings = Settings(ai_chat_session_ttl_hours=72)
+    now = datetime.now(UTC)
+
+    fresh = RoutePlanningSession(
+        id=uuid4(),
+        user_id=uuid4(),
+        status="active",
+        constraints={},
+        confirmed_fields=[],
+        created_at=now - timedelta(days=9),
+        updated_at=now - timedelta(hours=71),
+    )
+    _close_if_stale(fresh, settings)
+    assert fresh.status == "active", "still inside the window"
+
+    stale = RoutePlanningSession(
+        id=uuid4(),
+        user_id=uuid4(),
+        status="active",
+        constraints={},
+        confirmed_fields=[],
+        created_at=now - timedelta(days=9),
+        updated_at=now - timedelta(hours=73),
+    )
+    _close_if_stale(stale, settings)
+    assert stale.status == "closed"
+
+    # A naive timestamp (SQLite in tests, and older rows) must not blow up.
+    naive = RoutePlanningSession(
+        id=uuid4(),
+        user_id=uuid4(),
+        status="active",
+        constraints={},
+        confirmed_fields=[],
+        created_at=None,
+        updated_at=(now - timedelta(hours=73)).replace(tzinfo=None),
+    )
+    _close_if_stale(naive, settings)
+    assert naive.status == "closed"
+
+
+def test_message_limit_is_a_conversation_not_a_correspondence() -> None:
+    """The cap has to leave room for a real planning session, and the model's
+    own window (12 turns) must stay well inside it."""
+    from tourism_backend.config import Settings
+    from tourism_backend.modules.route_builder.application.session_service import (
+        _HISTORY_LIMIT,
+    )
+
+    limit = Settings().ai_chat_message_limit
+    assert limit >= _HISTORY_LIMIT * 2
+    assert limit % 2 == 0, "user+assistant come in pairs"
