@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, BackgroundTasks, Query
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
 from tourism_backend.modules.route_builder.application import (
@@ -104,13 +104,18 @@ async def create_planning_session(
     session: DbSession,
     user_id: CurrentUserId,
     settings: SettingsDep,
+    background: BackgroundTasks,
 ) -> RoutePlanningSessionOut:
-    return await session_service.create_session(
+    out = await session_service.create_session(
         session,
         user_id=user_id,
         payload=payload,
         settings=settings,
     )
+    # Runs after this response is sent: the model loads while the user is
+    # still writing their first message. See warm_rag_embedder.
+    background.add_task(session_service.warm_rag_embedder, settings)
+    return out
 
 
 @router.get("/sessions/{session_id}", response_model=RoutePlanningSessionOut)
@@ -119,13 +124,18 @@ async def get_planning_session(
     session: DbSession,
     user_id: CurrentUserId,
     settings: SettingsDep,
+    background: BackgroundTasks,
 ) -> RoutePlanningSessionOut:
-    return await session_service.get_session(
+    out = await session_service.get_session(
         session,
         user_id=user_id,
         session_id=session_id,
         settings=settings,
     )
+    # Reopening an old chat from the history screen is the same signal as
+    # starting a new one: a turn is about to happen.
+    background.add_task(session_service.warm_rag_embedder, settings)
+    return out
 
 
 @router.post("/sessions/{session_id}/close", response_model=RoutePlanningSessionOut)

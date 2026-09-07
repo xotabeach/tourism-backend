@@ -37,6 +37,9 @@ class EmbeddingProvider(Protocol):
     async def embed(self, text: str) -> list[float]:
         """Return an L2-normalized vector of length EMBEDDING_DIM."""
 
+    async def warm(self) -> None:
+        """Do the expensive one-time setup now, off the request path."""
+
 
 class HashEmbeddingProvider:
     """Stable bag-of-tokens hash embedder (smoke / bootstrap only)."""
@@ -44,6 +47,9 @@ class HashEmbeddingProvider:
     def __init__(self, *, dimension: int = EMBEDDING_DIM) -> None:
         self._dimension = dimension
         self.model_id = HASH_EMBED_MODEL
+
+    async def warm(self) -> None:
+        """Nothing to load — kept so callers need not care which one they hold."""
 
     async def embed(self, text: str) -> list[float]:
         out = [0.0] * self._dimension
@@ -86,6 +92,18 @@ def _load_sentence_transformer(model_name: str) -> object:
     return SentenceTransformer(model_name)
 
 
+# Loading is ~9.5s of CPU-and-disk work (measured on the production host),
+# and it used to happen inline on the event loop inside the first `embed()`
+# — freezing every other request for that whole time. The lock makes two
+# chat sessions opening at once share one load instead of racing into two.
+_LOAD_LOCK = asyncio.Lock()
+
+
+async def _load_off_loop(model_name: str) -> object:
+    async with _LOAD_LOCK:
+        return await asyncio.to_thread(_load_sentence_transformer, model_name)
+
+
 class SentenceTransformerEmbeddingProvider:
     """Local, in-process embedder — no network round-trip, no API quota.
 
@@ -97,8 +115,11 @@ class SentenceTransformerEmbeddingProvider:
         self.model_id = model_name
         self._dimension = dimension
 
+    async def warm(self) -> None:
+        await _load_off_loop(self.model_id)
+
     async def embed(self, text: str) -> list[float]:
-        model = _load_sentence_transformer(self.model_id)
+        model = await _load_off_loop(self.model_id)
         vector = await asyncio.to_thread(
             model.encode,  # type: ignore[attr-defined]
             text,

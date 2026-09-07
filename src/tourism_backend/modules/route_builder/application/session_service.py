@@ -107,6 +107,28 @@ logger = logging.getLogger(__name__)
 # slice would only burn latency before dropping the round.
 _MIN_TOOL_ROUND_SECONDS = 4.0
 
+
+async def warm_rag_embedder(settings: Settings) -> None:
+    """Load the embedding model while the user is still typing.
+
+    Opening the chat is the earliest moment we know a turn is coming, and it
+    buys the ~9.5s first load (measured on production; 0.05s once warm) the
+    time it takes someone to write their first message. Doing it at process
+    start instead would pay that memory on every deploy even when nobody
+    opens the chat, and doing it inside the turn is what made the first
+    message after a restart time out on the client.
+
+    Best-effort: a failure here only means the turn loads the model itself,
+    exactly as it did before.
+    """
+    if not settings.rag_enabled:
+        return
+    try:
+        await build_embedder(settings).warm()
+    except Exception:  # noqa: BLE001 — warmup must never fail the request
+        logger.warning("rag_embedder_warmup_failed", exc_info=True)
+
+
 _HISTORY_LIMIT = 12
 _SESSION_LIST_MAX = 50
 _MESSAGE_LIST_MAX = 100

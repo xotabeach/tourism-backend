@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest import mock
 from uuid import uuid4
 
 from tourism_backend.modules.knowledge.infrastructure.models import KnowledgeChunk
@@ -286,3 +287,47 @@ def test_notification_schema_accepts_every_kind_the_database_allows() -> None:
         in_db = set(re.findall(r"'([a-z_]+)'", constraints[name]))
         missing = in_db - set(allowed)
         assert not missing, f"{name}: the DB allows values the API cannot return: {missing}"
+
+
+async def test_opening_a_chat_warms_the_embedder_without_failing_the_request() -> None:
+    """Entering the chat must start the ~9.5s model load, and survive it failing.
+
+    The load is what made the first message after a restart time out on the
+    client; doing it here buys it the time the user spends typing.
+    """
+    from tourism_backend.config import Settings
+    from tourism_backend.modules.route_builder.application import (
+        session_service as service_module,
+    )
+    from tourism_backend.modules.route_builder.application.session_service import (
+        warm_rag_embedder,
+    )
+
+    warmed: list[str] = []
+
+    class _Embedder:
+        model_id = "test-model"
+
+        async def warm(self) -> None:
+            warmed.append(self.model_id)
+
+        async def embed(self, text: str) -> list[float]:
+            raise AssertionError("warmup must not run an actual embedding")
+
+    settings = Settings(rag_enabled=True)
+    with mock.patch.object(service_module, "build_embedder", return_value=_Embedder()):
+        await warm_rag_embedder(settings)
+    assert warmed == ["test-model"]
+
+    # RAG off: nothing to load, and nothing should be attempted.
+    warmed.clear()
+    with mock.patch.object(service_module, "build_embedder", return_value=_Embedder()):
+        await warm_rag_embedder(Settings(rag_enabled=False))
+    assert warmed == []
+
+    class _Broken:
+        async def warm(self) -> None:
+            raise RuntimeError("no model on disk")
+
+    with mock.patch.object(service_module, "build_embedder", return_value=_Broken()):
+        await warm_rag_embedder(settings)  # must not raise
