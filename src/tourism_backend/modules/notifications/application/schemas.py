@@ -15,8 +15,21 @@ NotificationKind = Literal[
     "review_reply",
     "expert_granted",
     "expert_revoked",
+    # Kept in step with the CheckConstraint on Notification.kind: a kind the
+    # DB accepts but this Literal does not turned the whole inbox into a 500
+    # for anyone who had an article notification.
+    "article_published",
+    "article_rejected",
+    "article_comment",
+    "article_about_your_route",
 ]
-NotificationTargetType = Literal["route", "user", "achievement", "support_ticket"]
+NotificationTargetType = Literal[
+    "route",
+    "user",
+    "achievement",
+    "support_ticket",
+    "article",
+]
 
 
 class NotificationOut(BaseModel):

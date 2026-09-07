@@ -1,6 +1,8 @@
+import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -26,6 +28,25 @@ _MEDIA_DIR = Path(
 )
 
 
+async def _warm_embedder(settings: Settings) -> None:
+    """Load the sentence-transformer before any chat turn needs it.
+
+    Measured on production: the first `embed()` after a restart takes ~9.5s
+    (torch + weights from disk), the next ones 0.05s. Paid inside a chat turn
+    that already spends ~7-17s on the model, that alone pushed the first
+    request after every deploy past the mobile client's timeout. Runs as a
+    background task so readiness is not held up by it.
+    """
+    if not settings.rag_enabled:
+        return
+    from tourism_backend.modules.knowledge.application.embedder import build_embedder
+
+    try:
+        await build_embedder(settings).embed("прогрев")
+    except Exception:  # noqa: BLE001 — warmup is best-effort, never fatal
+        logging.getLogger(__name__).warning("embedder_warmup_failed", exc_info=True)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     from sqlalchemy.exc import SQLAlchemyError
@@ -37,9 +58,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Unit tests may construct the app without a live database.
         if settings.app_env not in {AppEnvironment.LOCAL, AppEnvironment.TEST}:
             raise
+    warmup = asyncio.create_task(_warm_embedder(settings))
     try:
         yield
     finally:
+        warmup.cancel()
+        with suppress(asyncio.CancelledError):
+            await warmup
         await app.state.redis.aclose()
         await app.state.engine.dispose()
 

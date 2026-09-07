@@ -224,6 +224,13 @@ async def _preload_article_block_media(
     return {row.id: row.public_path for row in rows}
 
 
+# Everything an operator fills in that the app then *reads as settings*
+# rather than as content: the company card behind «О приложении» /
+# «Контактная информация» and the runtime AI switches. Kept as one block so
+# these are not hunted for among articles and comments.
+ADMIN_APP_SETTINGS_CATEGORY = "Настройки приложения"
+ADMIN_APP_SETTINGS_ICON = "fa-solid fa-sliders"
+
 _AUTHOR_RU = {
     "user": "Пользователь",
     "operator": "Оператор",
@@ -2064,8 +2071,8 @@ class UserAchievementAdmin(ModelView, model=UserAchievement):
 
 
 class RouteExecutionAdmin(ModelView, model=RouteExecution):
-    category = "Достижения"
-    category_icon = "fa-solid fa-trophy"
+    category = "Маршруты"
+    category_icon = "fa-solid fa-route"
     name = "Прохождение"
     name_plural = "Прохождения"
     icon = "fa-solid fa-person-hiking"
@@ -2107,8 +2114,8 @@ class RouteExecutionAdmin(ModelView, model=RouteExecution):
 
 
 class RouteExecutionStopAdmin(ModelView, model=RouteExecutionStop):
-    category = "Достижения"
-    category_icon = "fa-solid fa-trophy"
+    category = "Маршруты"
+    category_icon = "fa-solid fa-route"
     name = "Остановка прохождения"
     name_plural = "Остановки прохождений"
     icon = "fa-solid fa-flag-checkered"
@@ -2289,8 +2296,8 @@ class LocalityAdmin(ModelView, model=Locality):
 
 
 class CategoryAdmin(ModelView, model=Category):
-    category = "География"
-    category_icon = "fa-solid fa-earth-europe"
+    category = "Места"
+    category_icon = "fa-solid fa-location-dot"
     name = "Категория"
     name_plural = "Категории мест"
     icon = "fa-solid fa-tags"
@@ -2489,7 +2496,8 @@ class CompanyDetailsAdmin(ModelView, model=CompanyDetails):
     ``GET /api/v1/company-details`` endpoint and caches it on-device.
     """
 
-    category = "Контент"
+    category = ADMIN_APP_SETTINGS_CATEGORY
+    category_icon = ADMIN_APP_SETTINGS_ICON
     name = "Реквизиты компании"
     name_plural = "Реквизиты компании"
     icon = "fa-solid fa-building"
@@ -2545,8 +2553,8 @@ class RuntimeConfigAdmin(BaseView):
     """
 
     name = "AI-провайдер"
-    category = "Конфигурация"
-    category_icon = "fa-solid fa-sliders"
+    category = ADMIN_APP_SETTINGS_CATEGORY
+    category_icon = ADMIN_APP_SETTINGS_ICON
     icon = "fa-solid fa-robot"
 
     # add_base_view() (unlike add_model_view()) never wires this — BaseView

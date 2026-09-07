@@ -210,3 +210,79 @@ def test_populated_profile_yields_only_the_set_fields() -> None:
         "with_pets": True,
     }
     assert "with_children" not in prior
+
+
+async def test_tool_round_dropped_when_the_turn_is_out_of_budget() -> None:
+    """A slow tool round must not push the turn past the client's patience.
+
+    Measured on production: the first model call takes 3.4-13.8s and the tool
+    round another 3.4-13.8s, so without a shared budget one turn could spend
+    twice the per-call timeout while the app had already given up.
+    """
+    import asyncio
+
+    from tourism_backend.modules.route_builder.application.ai import ChatTurnResult
+    from tourism_backend.modules.route_builder.application.session_service import (
+        _run_tool_rounds,
+    )
+
+    first = ChatTurnResult(
+        assistant_text="Первый ответ",
+        proposed_constraints=None,
+        ask_field=None,
+        action_ids=(),
+        tool_requests=({"name": "search_places", "arguments": {"query": "Симеиз"}},),
+        provider="gemini",
+        structured_parse="ok",
+    )
+
+    class _SlowProvider:
+        async def chat_turn(self, **_: object) -> ChatTurnResult:
+            await asyncio.sleep(5)
+            raise AssertionError("the follow-up must be abandoned, not awaited")
+
+    result, _, _ = await _run_tool_rounds(
+        SimpleNamespace(),  # type: ignore[arg-type]
+        provider=_SlowProvider(),
+        result=first,
+        constraints={"city": "Крым"},
+        confirmed_fields=[],
+        chat_messages=[],
+        place_hints=[],
+        tool_context={},
+        budget_seconds=0.05,
+    )
+
+    assert result.assistant_text == "Первый ответ"
+
+
+def test_notification_schema_accepts_every_kind_the_database_allows() -> None:
+    """A kind the DB writes but the schema rejects 500s the whole inbox.
+
+    Seen in production: `article_published` reached the list endpoint and
+    every notifications request for that user failed validation.
+    """
+    import re
+    from typing import get_args
+
+    from sqlalchemy import CheckConstraint
+
+    from tourism_backend.modules.notifications.application.schemas import (
+        NotificationKind,
+        NotificationTargetType,
+    )
+    from tourism_backend.modules.notifications.infrastructure.models import Notification
+
+    constraints = {
+        c.name: str(c.sqltext)
+        for c in Notification.__table__.constraints
+        if isinstance(c, CheckConstraint) and c.name
+    }
+    checks = (
+        ("ck_notifications_kind", get_args(NotificationKind)),
+        ("ck_notifications_target_type", get_args(NotificationTargetType)),
+    )
+    for name, allowed in checks:
+        in_db = set(re.findall(r"'([a-z_]+)'", constraints[name]))
+        missing = in_db - set(allowed)
+        assert not missing, f"{name}: the DB allows values the API cannot return: {missing}"

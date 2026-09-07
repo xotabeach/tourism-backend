@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     ai_provider: AIProvider = AIProvider.MOCK
     ai_model: str | None = None
     ai_request_timeout_seconds: float = Field(default=60, ge=1, le=300)
+    # Wall clock for *all* model calls in one chat turn, not per call. A turn
+    # whose model asks for a tool spends two calls, so the per-call timeout
+    # alone let a turn run for twice its budget while the mobile client had
+    # long since given up. When the budget runs out mid-turn the reply from
+    # the first call is sent as-is instead of failing the turn.
+    ai_turn_budget_seconds: float = Field(default=40, ge=5, le=300)
     ai_max_repair_attempts: int = Field(default=1, ge=0, le=2)
     ai_prompt_version: str = "v1"
     lm_studio_base_url: str | None = None

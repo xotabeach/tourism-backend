@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import UTC, datetime
@@ -100,6 +101,11 @@ from tourism_backend.modules.subscriptions.application.service import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Even a nearly-spent turn gets this much for the tool round: below it the
+# call cannot finish anyway (measured tool rounds: 3.4-13.8s), so a shorter
+# slice would only burn latency before dropping the round.
+_MIN_TOOL_ROUND_SECONDS = 4.0
 
 _HISTORY_LIMIT = 12
 _SESSION_LIST_MAX = 50
@@ -748,6 +754,10 @@ async def _assistant_from_ai(
             chat_messages=chat_messages,
             place_hints=place_hints,
             tool_context=tool_context,
+            budget_seconds=max(
+                _MIN_TOOL_ROUND_SECONDS,
+                settings.ai_turn_budget_seconds - (time.perf_counter() - started),
+            ),
         )
         _log_ai_chat_turn(
             provider=result.provider,
@@ -823,6 +833,7 @@ async def _run_tool_rounds(
     chat_messages: list[ChatMessage],
     place_hints: list[dict[str, str]],
     tool_context: dict[str, Any],
+    budget_seconds: float | None = None,
 ) -> tuple[ChatTurnResult, dict[str, Any], list[dict[str, str]]]:
     calls = parse_tool_calls(list(result.tool_requests))
     if not calls:
@@ -855,13 +866,24 @@ async def _run_tool_rounds(
             content="tool_results DATA: " + str(tool_payloads)[:1200],
         ),
     ]
-    follow = await provider.chat_turn(
+    follow_call = provider.chat_turn(
         messages=follow_messages,
         constraints=constraints,
         confirmed_fields=confirmed_fields,
         place_hints=place_hints,
         tool_context=tool_context,
     )
+    try:
+        if budget_seconds is None:
+            follow = await follow_call
+        else:
+            follow = await asyncio.wait_for(follow_call, timeout=budget_seconds)
+    except TimeoutError:
+        # The turn is out of budget. The first call already produced a usable
+        # reply, so send that rather than failing the whole turn — the tool
+        # results only would have enriched it.
+        logger.info("ai_chat_tool_round_dropped", extra={"budget_seconds": budget_seconds})
+        return result, tool_context, explicit_places
     # Do not recurse infinitely: ignore further tool_requests on follow-up.
     return (
         ChatTurnResult(
