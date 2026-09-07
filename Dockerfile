@@ -20,6 +20,15 @@ COPY alembic.ini ./
 # Inert until RAG_ENABLED=true, but the image needs the package either way.
 RUN uv sync --frozen --no-dev --no-editable --extra rag
 
+# Pre-download the embedding model at build time. The production container's
+# filesystem is read-only, so sentence-transformers can't fetch/cache weights
+# at request time — HF_HOME below pins the cache to a path independent of
+# which user's $HOME is active in either stage (builder: root, runtime:
+# appuser), and HF_HUB_OFFLINE in the runtime stage guarantees it never
+# tries the network at all, matching read-only + no-egress expectations.
+ENV HF_HOME=/app/.cache/huggingface
+RUN .venv/bin/python -c \
+    "from sentence_transformers import SentenceTransformer; SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')"
 
 FROM python:3.13-slim-bookworm AS runtime
 
@@ -36,9 +45,13 @@ RUN useradd --create-home --uid 10001 appuser
 WORKDIR /app
 
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/app/.cache/huggingface \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder --chown=appuser:appuser /app/.cache /app/.cache
 COPY --from=builder /app/src /app/src
 COPY --from=builder /app/alembic /app/alembic
 COPY --from=builder /app/alembic.ini /app/alembic.ini
