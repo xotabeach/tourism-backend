@@ -15,7 +15,10 @@ COPY src ./src
 COPY alembic ./alembic
 COPY alembic.ini ./
 
-RUN uv sync --frozen --no-dev --no-editable
+# --extra rag: real local RAG embedder (sentence-transformers/torch, pinned
+# to the CPU-only wheel index in pyproject.toml — see [tool.uv.sources]).
+# Inert until RAG_ENABLED=true, but the image needs the package either way.
+RUN uv sync --frozen --no-dev --no-editable --extra rag
 
 
 FROM python:3.13-slim-bookworm AS runtime
