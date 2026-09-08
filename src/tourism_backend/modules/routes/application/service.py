@@ -3,10 +3,11 @@ import logging
 import math
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any
 from typing import cast as type_cast
 from uuid import UUID, uuid4
 
-from geoalchemy2 import Geometry
+from geoalchemy2 import Geometry, WKTElement
 from geoalchemy2.functions import ST_X, ST_Y, ST_AsGeoJSON
 from redis.asyncio import Redis
 from sqlalchemy import Select, cast, delete, exists, func, or_, select, update
@@ -925,11 +926,22 @@ async def save_user_route_draft(
     route.difficulty = _difficulty_name(payload.difficulty)
     route.transport_mode = "walking"
     route.suitable_for_children = "С детьми" in payload.filters
-    route.accessibility = {
+    accessibility: dict[str, Any] = {
         "travel_pace": payload.pace,
         "filters": payload.filters,
         "difficulty_level": payload.difficulty,
     }
+    # Road geometry is computed once, here, and read from the database ever
+    # after: opening a route redraws it without spending a routing call, and
+    # the static map endpoint needs it to draw anything but straight lines.
+    # Recomputed on every save because that is exactly when the points can
+    # have changed.
+    routed = await _route_geometry_for_places(session, places=places, place_ids=payload.place_ids)
+    if routed is not None:
+        geometry_wkt, routing_meta = routed
+        route.geometry = WKTElement(geometry_wkt, srid=4326)
+        accessibility["routing"] = routing_meta
+    route.accessibility = accessibility
     route.updated_at = now
 
     for position, place_id in enumerate(payload.place_ids, start=1):
@@ -1210,6 +1222,75 @@ async def _draft_preview_places(
             status_code=400,
         )
     return [by_id[place_id] for place_id in place_ids]
+
+
+async def _route_geometry_for_places(
+    session: AsyncSession,
+    *,
+    places: list[Place],
+    place_ids: Sequence[UUID],
+) -> tuple[str, dict[str, Any]] | None:
+    """Road line and its provenance for an ordered list of places.
+
+    Returns None when the route cannot be drawn at all (no coordinates), so
+    the caller keeps whatever it had rather than storing an empty line.
+    A provider outage still returns straight segments, marked synthetic —
+    the map is then honest about what it is showing.
+    """
+    by_id = {place.id: place for place in places}
+    ordered = [by_id[place_id] for place_id in place_ids if place_id in by_id]
+    geom = cast(Place.location, Geometry)
+    rows = (
+        await session.execute(
+            select(Place.id, ST_X(geom), ST_Y(geom)).where(
+                Place.id.in_({place.id for place in ordered})
+            )
+        )
+    ).all()
+    point_by_id = {
+        place_id: (float(lng), float(lat))
+        for place_id, lng, lat in rows
+        if lng is not None and lat is not None
+    }
+    waypoints = [
+        RouteWaypoint(
+            lng=point_by_id[place.id][0],
+            lat=point_by_id[place.id][1],
+            place_id=place.id,
+            label=place.name,
+        )
+        for place in ordered
+        if place.id in point_by_id
+    ]
+    if len(waypoints) < 2:
+        return None
+
+    settings = get_settings()
+    try:
+        routing = await get_routing_provider(settings).route(
+            waypoints=waypoints,
+            transport_mode="walk",
+        )
+    except RoutingError:
+        _logger.warning("route_draft_routing_failed", exc_info=True)
+        routing = await StubRoutingProvider().route(
+            waypoints=waypoints,
+            transport_mode="walk",
+        )
+
+    geometry_wkt = routing.geometry_wkt
+    if not geometry_wkt:
+        points = ", ".join(f"{point.lng:.6f} {point.lat:.6f}" for point in waypoints)
+        geometry_wkt = f"LINESTRING({points})"
+    return geometry_wkt, {
+        "provider": routing.provider,
+        "synthetic": routing.synthetic,
+        "distance_meters": routing.total_distance_meters,
+        "movement_duration_seconds": routing.total_duration_seconds,
+        "warnings": list(routing.warnings),
+        "road_types": list(routing.road_types),
+        "quality_status": "unverified",
+    }
 
 
 async def preview_user_route_draft(
