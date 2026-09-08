@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import math
@@ -857,6 +858,7 @@ async def save_user_route_draft(
     *,
     owner_user_id: UUID,
     payload: UserRouteDraftIn,
+    redis: Redis | None = None,
 ) -> UserRouteDraftOut:
     places = list(
         (
@@ -932,16 +934,36 @@ async def save_user_route_draft(
         "filters": payload.filters,
         "difficulty_level": payload.difficulty,
     }
-    # Road geometry is computed once, here, and read from the database ever
-    # after: opening a route redraws it without spending a routing call, and
-    # the static map endpoint needs it to draw anything but straight lines.
-    # Recomputed on every save because that is exactly when the points can
-    # have changed.
-    routed = await _route_geometry_for_places(session, places=places, place_ids=payload.place_ids)
-    if routed is not None:
-        geometry_wkt, routing_meta = routed
-        route.geometry = WKTElement(geometry_wkt, srid=4326)
-        accessibility["routing"] = routing_meta
+    # Road geometry is computed once and read from the database ever after:
+    # opening a route redraws it without spending a routing call, and the
+    # static map endpoint needs it to draw anything but straight lines.
+    #
+    # Only when the points actually changed, though. Renaming a route or
+    # fixing a typo in its description used to wait on an external routing
+    # call for a line that was already correct, which is most of what made
+    # saving feel slow (reported 2026-09-08).
+    stops_key = [str(place_id) for place_id in payload.place_ids]
+    previous_routing = (
+        route.accessibility.get("routing") if isinstance(route.accessibility, dict) else None
+    )
+    unchanged = (
+        isinstance(previous_routing, dict)
+        and previous_routing.get("place_ids") == stops_key
+        and route.geometry is not None
+    )
+    if unchanged:
+        accessibility["routing"] = previous_routing
+    else:
+        routed = await _route_geometry_for_places(
+            session,
+            places=places,
+            place_ids=payload.place_ids,
+            redis=redis,
+        )
+        if routed is not None:
+            geometry_wkt, routing_meta = routed
+            route.geometry = WKTElement(geometry_wkt, srid=4326)
+            accessibility["routing"] = {**routing_meta, "place_ids": stops_key}
     route.accessibility = accessibility
     route.updated_at = now
 
@@ -1318,6 +1340,7 @@ async def _route_geometry_for_places(
     *,
     places: list[Place],
     place_ids: Sequence[UUID],
+    redis: Redis | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
     """Road line and its provenance for an ordered list of places.
 
@@ -1353,17 +1376,91 @@ async def _route_geometry_for_places(
     ]
     if len(waypoints) < 2:
         return None
-    return await routing_line_for_waypoints(waypoints)
+    return await routing_line_for_waypoints(waypoints, redis=redis)
+
+
+_ROUTING_CACHE_KEY = "route-routing:"
+_ROUTING_CACHE_TTL_SECONDS = 24 * 60 * 60
+
+
+def routing_fingerprint(
+    waypoints: Sequence[RouteWaypoint],
+    *,
+    transport_mode: str,
+) -> str:
+    """Stable id for "this road line, through these points, on foot".
+
+    Coordinates are rounded to ~10cm before hashing: the same place always
+    produces the same key, and a float that differs in its last bit does not
+    silently spend a routing call.
+    """
+    payload = "|".join(f"{point.lng:.6f},{point.lat:.6f}" for point in waypoints)
+    digest = hashlib.sha256(f"{transport_mode}:{payload}".encode()).hexdigest()
+    return digest[:32]
+
+
+async def cached_routing_line(
+    redis: Redis | None,
+    fingerprint: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """A previously computed line for [fingerprint], if it is still cached.
+
+    Saving a draft used to route again from scratch even though the form had
+    just previewed the very same points seconds earlier — the author waited
+    on a second external call for an answer already known (reported
+    2026-09-08 as "очень долгий запрос на сохранение черновика").
+    """
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(f"{_ROUTING_CACHE_KEY}{fingerprint}")
+    except Exception:  # noqa: BLE001 — a cache outage just means routing again
+        _logger.warning("route_routing_cache_read_failed", exc_info=True)
+        return None
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+        return str(data["wkt"]), dict(data["meta"])
+    except Exception:  # noqa: BLE001 — a corrupt entry behaves like a miss
+        _logger.warning("route_routing_cache_decode_failed", exc_info=True)
+        return None
+
+
+async def store_routing_line(
+    redis: Redis | None,
+    fingerprint: str,
+    *,
+    geometry_wkt: str,
+    meta: dict[str, Any],
+) -> None:
+    if redis is None:
+        return
+    try:
+        await redis.set(
+            f"{_ROUTING_CACHE_KEY}{fingerprint}",
+            json.dumps({"wkt": geometry_wkt, "meta": meta}),
+            ex=_ROUTING_CACHE_TTL_SECONDS,
+        )
+    except Exception:  # noqa: BLE001 — caching is an optimisation, never a gate
+        _logger.warning("route_routing_cache_write_failed", exc_info=True)
 
 
 async def routing_line_for_waypoints(
     waypoints: list[RouteWaypoint],
+    *,
+    redis: Redis | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Road line through [waypoints], with a plain line as the last resort.
 
     Never raises: saving a draft must not depend on a router being willing
-    to route it.
+    to route it. Consults the shared routing cache first, so a save that
+    follows a preview of the same points costs nothing.
     """
+    fingerprint = routing_fingerprint(waypoints, transport_mode="walk")
+    cached = await cached_routing_line(redis, fingerprint)
+    if cached is not None:
+        return cached
     settings = get_settings()
     routing: RoutingResult | None
     try:
@@ -1388,20 +1485,25 @@ async def routing_line_for_waypoints(
 
     straight = ", ".join(f"{point.lng:.6f} {point.lat:.6f}" for point in waypoints)
     if routing is None:
-        return f"LINESTRING({straight})", {
+        line = f"LINESTRING({straight})"
+        meta: dict[str, Any] = {
             "provider": None,
             "synthetic": True,
             "quality_status": "unverified",
         }
-    return routing.geometry_wkt or f"LINESTRING({straight})", {
-        "provider": routing.provider,
-        "synthetic": routing.synthetic,
-        "distance_meters": routing.total_distance_meters,
-        "movement_duration_seconds": routing.total_duration_seconds,
-        "warnings": list(routing.warnings),
-        "road_types": list(routing.road_types),
-        "quality_status": "unverified",
-    }
+    else:
+        line = routing.geometry_wkt or f"LINESTRING({straight})"
+        meta = {
+            "provider": routing.provider,
+            "synthetic": routing.synthetic,
+            "distance_meters": routing.total_distance_meters,
+            "movement_duration_seconds": routing.total_duration_seconds,
+            "warnings": list(routing.warnings),
+            "road_types": list(routing.road_types),
+            "quality_status": "unverified",
+        }
+    await store_routing_line(redis, fingerprint, geometry_wkt=line, meta=meta)
+    return line, meta
 
 
 async def preview_user_route_draft(
@@ -1453,22 +1555,48 @@ async def preview_user_route_draft(
 
     settings = get_settings()
     transport_mode = type_cast(TransportMode, payload.transport_mode)
-    try:
-        routing = await get_routing_provider(settings).route(
-            waypoints=waypoints,
-            transport_mode=transport_mode,
-        )
-    except RoutingError:
-        _logger.warning("route_draft_preview_routing_failed", exc_info=True)
-        routing = await StubRoutingProvider().route(
-            waypoints=waypoints,
-            transport_mode=transport_mode,
+    # The form previews the same points repeatedly while the author drags one
+    # around, and then saves them. All of that is one routing answer.
+    fingerprint = routing_fingerprint(waypoints, transport_mode=transport_mode)
+    cached = await cached_routing_line(redis, fingerprint)
+    geometry_wkt: str | None
+    meta: dict[str, Any]
+    if cached is not None:
+        geometry_wkt, meta = cached
+    else:
+        try:
+            routing = await get_routing_provider(settings).route(
+                waypoints=waypoints,
+                transport_mode=transport_mode,
+            )
+        except RoutingError:
+            _logger.warning("route_draft_preview_routing_failed", exc_info=True)
+            routing = await StubRoutingProvider().route(
+                waypoints=waypoints,
+                transport_mode=transport_mode,
+            )
+        straight = ", ".join(f"{point.lng:.6f} {point.lat:.6f}" for point in waypoints)
+        geometry_wkt = routing.geometry_wkt or f"LINESTRING({straight})"
+        meta = {
+            "provider": routing.provider,
+            "synthetic": routing.synthetic,
+            "distance_meters": routing.total_distance_meters,
+            "movement_duration_seconds": routing.total_duration_seconds,
+            "warnings": list(routing.warnings),
+            "road_types": list(routing.road_types),
+            "quality_status": "unverified",
+        }
+        await store_routing_line(
+            redis,
+            fingerprint,
+            geometry_wkt=geometry_wkt,
+            meta=meta,
         )
 
     geometry: RouteGeometryOut | None = None
-    if routing.geometry_wkt:
+    if geometry_wkt:
         raw = await session.scalar(
-            select(func.ST_AsGeoJSON(func.ST_GeomFromText(routing.geometry_wkt, 4326)))
+            select(func.ST_AsGeoJSON(func.ST_GeomFromText(geometry_wkt, 4326)))
         )
         if raw:
             geometry = RouteGeometryOut.model_validate(json.loads(raw))
@@ -1489,10 +1617,13 @@ async def preview_user_route_draft(
     return RouteDraftPreviewOut(
         preview_id=preview_id,
         geometry=geometry,
-        distance_meters=routing.total_distance_meters,
-        duration_seconds=routing.total_duration_seconds,
-        provider=routing.provider,
-        synthetic=routing.synthetic,
+        distance_meters=int(meta.get("distance_meters") or 0),
+        duration_seconds=int(meta.get("movement_duration_seconds") or 0),
+        # A cached line from a provider outage carries no provider name; the
+        # `synthetic` flag next to it is what tells the client not to present
+        # it as roads.
+        provider=str(meta.get("provider") or "none"),
+        synthetic=bool(meta.get("synthetic")),
     )
 
 

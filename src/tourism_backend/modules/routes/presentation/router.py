@@ -38,11 +38,13 @@ async def save_route_draft(
     payload: UserRouteDraftIn,
     session: DbSession,
     user_id: CurrentUserId,
+    redis: RedisClient,
 ) -> UserRouteDraftOut:
     return await routes_service.save_user_route_draft(
         session,
         owner_user_id=user_id,
         payload=payload,
+        redis=redis,
     )
 
 

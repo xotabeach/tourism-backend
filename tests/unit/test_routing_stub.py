@@ -118,3 +118,117 @@ async def test_saving_a_draft_survives_a_route_the_router_refuses() -> None:
     assert "34.102400 44.952100" in wkt
     assert meta["synthetic"] is True
     assert meta["quality_status"] == "unverified"
+
+
+async def test_routing_cache_spares_a_second_call_for_the_same_points() -> None:
+    """A save right after a preview must not route the same points again.
+
+    Placing points previews them, and saving routes them — two external
+    calls for one answer, with the author waiting on the second (reported
+    2026-09-08 as a very slow draft save).
+    """
+    import json
+
+    from tourism_backend.modules.route_builder.application.routing import RouteWaypoint
+    from tourism_backend.modules.routes.application.service import (
+        cached_routing_line,
+        routing_fingerprint,
+        store_routing_line,
+    )
+
+    class _Redis:
+        def __init__(self) -> None:
+            self.store: dict[str, str] = {}
+            self.reads = 0
+
+        async def get(self, key: str) -> str | None:
+            self.reads += 1
+            return self.store.get(key)
+
+        async def set(self, key: str, value: str, ex: int | None = None) -> None:
+            self.store[key] = value
+
+    points = [
+        RouteWaypoint(lng=34.1024, lat=44.9521),
+        RouteWaypoint(lng=34.1103, lat=44.9560),
+    ]
+    redis = _Redis()
+
+    first = routing_fingerprint(points, transport_mode="walk")
+    assert await cached_routing_line(redis, first) is None
+
+    await store_routing_line(
+        redis,
+        first,
+        geometry_wkt="LINESTRING(34.1024 44.9521, 34.1103 44.9560)",
+        meta={"provider": "2gis", "synthetic": False},
+    )
+    assert await cached_routing_line(redis, first) == (
+        "LINESTRING(34.1024 44.9521, 34.1103 44.9560)",
+        {"provider": "2gis", "synthetic": False},
+    )
+
+    # Same points, same key — that is the whole point of the fingerprint.
+    assert routing_fingerprint(list(points), transport_mode="walk") == first
+    # A different mode, or a moved point, is a different answer.
+    assert routing_fingerprint(points, transport_mode="car") != first
+    moved = [points[0], RouteWaypoint(lng=34.2, lat=44.9560)]
+    assert routing_fingerprint(moved, transport_mode="walk") != first
+
+    # A cache outage degrades to routing again, never to an error.
+    class _Broken:
+        async def get(self, key: str) -> str:
+            raise RuntimeError("redis down")
+
+        async def set(self, key: str, value: str, ex: int | None = None) -> None:
+            raise RuntimeError("redis down")
+
+    assert await cached_routing_line(_Broken(), first) is None
+    await store_routing_line(_Broken(), first, geometry_wkt="x", meta={})
+    assert await cached_routing_line(None, first) is None
+    # A corrupt entry behaves like a miss.
+    redis.store[f"route-routing:{first}"] = "{not json"
+    assert await cached_routing_line(redis, first) is None
+    redis.store[f"route-routing:{first}"] = json.dumps({"wkt": "L", "meta": {}})
+    assert await cached_routing_line(redis, first) == ("L", {})
+
+
+async def test_routing_line_reads_the_cache_instead_of_the_provider() -> None:
+    """The cached answer wins outright — no provider call, whatever it holds."""
+    from tourism_backend.modules.route_builder.application.routing import RouteWaypoint
+    from tourism_backend.modules.routes.application.service import (
+        routing_line_for_waypoints,
+        store_routing_line,
+    )
+
+    class _Redis:
+        def __init__(self) -> None:
+            self.store: dict[str, str] = {}
+
+        async def get(self, key: str) -> str | None:
+            return self.store.get(key)
+
+        async def set(self, key: str, value: str, ex: int | None = None) -> None:
+            self.store[key] = value
+
+    redis = _Redis()
+    # The same far-apart pair the router refuses outright: if the cache is
+    # consulted, the stored line comes back instead of the straight-line
+    # fallback that a real routing attempt would produce.
+    far_apart = [
+        RouteWaypoint(lng=34.1024, lat=44.9521),
+        RouteWaypoint(lng=34.1663, lat=44.4952),
+    ]
+    from tourism_backend.modules.routes.application.service import routing_fingerprint
+
+    await store_routing_line(
+        redis,
+        routing_fingerprint(far_apart, transport_mode="walk"),
+        geometry_wkt="LINESTRING(1 1, 2 2)",
+        meta={"provider": "2gis", "synthetic": False},
+    )
+
+    wkt, meta = await routing_line_for_waypoints(far_apart, redis=redis)
+
+    assert wkt == "LINESTRING(1 1, 2 2)"
+    assert meta["synthetic"] is False

@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from tourism_backend.config import Settings
@@ -535,3 +535,76 @@ async def test_draft_media_survives_a_resave_from_another_device(
                 )
             )
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_resaving_unchanged_points_does_not_route_again(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """Renaming a route must not wait on a routing call.
+
+    The geometry is recomputed on save because that is when the points can
+    change — but most saves change only the title or the description, and
+    routing those again is pure waiting for the author (reported 2026-09-08).
+    """
+    client, app = publication_context
+    tokens = await _login(client, f"+7911{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    places = await client.get(
+        "/api/v1/places",
+        params={"region_slug": "crimea", "limit": 4},
+    )
+    items = places.json()["items"]
+    place_ids = [item["id"] for item in items[:2]]
+    payload = {
+        "name": "Маршрут",
+        "description": "",
+        "place_ids": place_ids,
+        "filters": [],
+        "pace": "calm",
+        "difficulty": 3,
+    }
+    saved = await client.post("/api/v1/routes/drafts", headers=headers, json=payload)
+    assert saved.status_code == 200, saved.text
+    route_id = saved.json()["id"]
+
+    async def _routing_state() -> tuple[dict[str, Any], bytes | None]:
+        async with app.state.session_factory() as session:
+            route = await session.get(Route, UUID(route_id))
+            assert route is not None
+            accessibility = route.accessibility if isinstance(route.accessibility, dict) else {}
+            geometry = await session.scalar(
+                select(func.ST_AsBinary(Route.geometry)).where(Route.id == UUID(route_id))
+            )
+            return dict(accessibility.get("routing") or {}), geometry
+
+    routing, geometry = await _routing_state()
+    # The stored line remembers which points produced it — that fingerprint
+    # is what lets the next save tell "same route" from "moved a point".
+    assert routing["place_ids"] == place_ids
+    assert geometry is not None
+
+    # A save that only renames keeps the very same line and provenance.
+    renamed = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json={**payload, "route_id": route_id, "name": "Другое название"},
+    )
+    assert renamed.status_code == 200, renamed.text
+    after_rename, geometry_after_rename = await _routing_state()
+    assert after_rename == routing
+    assert geometry_after_rename == geometry
+
+    # Moving a point does route again, and the fingerprint follows.
+    if len(items) > 2:
+        moved_ids = [place_ids[0], items[2]["id"]]
+        moved = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**payload, "route_id": route_id, "place_ids": moved_ids},
+        )
+        assert moved.status_code == 200, moved.text
+        after_move, geometry_after_move = await _routing_state()
+        assert after_move["place_ids"] == moved_ids
+        assert geometry_after_move != geometry
