@@ -149,6 +149,11 @@ def test_settings_require_a_key_when_deepseek_is_selected() -> None:
                 ai_provider=AIProvider.DEEPSEEK,
                 ai_planning_enabled=True,
                 jwt_signing_key="test-jwt-signing-key-at-least-32-chars!!",
+                # Explicit: Settings otherwise reads the developer's own .env,
+                # so a real key sitting there made the missing-key case
+                # impossible to construct and this test failed only on that
+                # machine.
+                deepseek_api_key=None,
             )
         )
     assert "DEEPSEEK_API_KEY" in str(error.value)

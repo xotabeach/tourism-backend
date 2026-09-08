@@ -63,3 +63,32 @@ async def test_stub_requires_two_waypoints() -> None:
     with pytest.raises(RoutingError) as exc:
         await provider.route(waypoints=[_wp(34.0, 44.0)], transport_mode="car")
     assert exc.value.code == "routing_provider_error"
+
+
+async def test_draft_preview_cache_round_trips_and_expires_into_a_miss() -> None:
+    """The raster is addressed by id, so a lost cache entry must read as a
+    miss (404 for the caller) rather than a crash or a half-drawn map."""
+    import json
+
+    from tourism_backend.modules.routes.application.service import draft_preview_shape
+
+    line = [(34.10, 44.39), (34.08, 44.42), (34.05, 44.45)]
+    stops = [(34.10, 44.39), (34.05, 44.45)]
+
+    class _Redis:
+        def __init__(self, raw: object) -> None:
+            self._raw = raw
+
+        async def get(self, key: str) -> object:
+            return self._raw
+
+    stored = json.dumps({"line": line, "stops": stops})
+    assert await draft_preview_shape(_Redis(stored), "id") == (line, stops)
+
+    # Expired entry, no Redis at all, and a corrupt payload all behave alike.
+    assert await draft_preview_shape(_Redis(None), "id") is None
+    assert await draft_preview_shape(None, "id") is None
+    assert await draft_preview_shape(_Redis("{not json"), "id") is None
+    # A line that cannot be drawn is a miss too, not a one-point map.
+    thin = json.dumps({"line": [[34.1, 44.3]], "stops": stops})
+    assert await draft_preview_shape(_Redis(thin), "id") is None

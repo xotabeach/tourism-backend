@@ -1,9 +1,11 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile, status
 
-from tourism_backend.api.deps import CurrentUserId, DbSession
+from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
+from tourism_backend.api.errors import AppError
+from tourism_backend.modules.maps.presentation.router import _fetch, _route_static_params
 from tourism_backend.modules.routes.application import media as route_media
 from tourism_backend.modules.routes.application import review_media, review_service
 from tourism_backend.modules.routes.application import service as routes_service
@@ -17,6 +19,8 @@ from tourism_backend.modules.routes.application.review_schemas import (
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
     RouteDetailOut,
+    RouteDraftPreviewIn,
+    RouteDraftPreviewOut,
     RouteListOut,
     RouteSource,
     UserRouteDraftIn,
@@ -39,6 +43,78 @@ async def save_route_draft(
         owner_user_id=user_id,
         payload=payload,
     )
+
+
+@router.post("/routes/drafts/preview", response_model=RouteDraftPreviewOut)
+async def preview_route_draft(
+    payload: RouteDraftPreviewIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+    redis: RedisClient,
+) -> RouteDraftPreviewOut:
+    """Road geometry for points the author is still placing.
+
+    Authenticated because it spends a routing call, but it reads nothing
+    owned: the points are whatever the form currently holds, saved or not.
+    """
+    assert user_id is not None
+    return await routes_service.preview_user_route_draft(
+        session,
+        payload=payload,
+        redis=redis,
+    )
+
+
+@router.get("/routes/drafts/preview/{preview_id}/map")
+async def route_draft_preview_map(
+    preview_id: str,
+    user_id: CurrentUserId,
+    settings: SettingsDep,
+    redis: RedisClient,
+    request: Request,
+    width: int = Query(default=880, ge=120, le=1280),
+    height: int = Query(default=420, ge=90, le=1280),
+    scale: int = Query(default=2, ge=1, le=2),
+    center_lat: float | None = Query(default=None, ge=-90, le=90),
+    center_lng: float | None = Query(default=None, ge=-180, le=180),
+    zoom: int | None = Query(default=None, ge=1, le=18),
+    pins: str = Query(default="numbered", pattern="^(numbered|none)$"),
+) -> Response:
+    """Raster for a preview computed by the endpoint above.
+
+    Addressed by id rather than by the points themselves: a road line is
+    hundreds of coordinates, well past what a URL can carry, and the image
+    is fetched by an <img>-style GET that cannot post a body.
+    """
+    assert user_id is not None
+    shape = await routes_service.draft_preview_shape(redis, preview_id)
+    if shape is None:
+        raise AppError(
+            code="map_preview_unavailable",
+            message="Route preview expired",
+            status_code=404,
+        )
+    line, stops = shape
+    response = await _fetch(
+        settings=settings,
+        request=request,
+        params=_route_static_params(
+            line,
+            stops,
+            width=width,
+            height=height,
+            scale=scale,
+            center=(center_lat, center_lng)
+            if center_lat is not None and center_lng is not None
+            else None,
+            zoom=zoom,
+            pins=pins,
+        ),
+    )
+    # An unsaved draft is the author's alone, even though the raster
+    # provider is shared.
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @router.delete(

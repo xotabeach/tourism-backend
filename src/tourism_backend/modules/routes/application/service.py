@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -7,11 +8,13 @@ from uuid import UUID, uuid4
 
 from geoalchemy2 import Geometry
 from geoalchemy2.functions import ST_X, ST_Y, ST_AsGeoJSON
+from redis.asyncio import Redis
 from sqlalchemy import Select, cast, delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Exists
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import get_settings
 from tourism_backend.modules.favorites.infrastructure.models import FavoriteRoute
 from tourism_backend.modules.geography.infrastructure.models import Region
 from tourism_backend.modules.identity.infrastructure.models import EXPERT_RANK_ID, TravelRank, User
@@ -20,10 +23,23 @@ from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.application import place_covers
 from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
 from tourism_backend.modules.places.infrastructure.models import Place, PlaceImage
+from tourism_backend.modules.route_builder.application.routing import (
+    RouteWaypoint,
+    RoutingError,
+    TransportMode,
+)
+from tourism_backend.modules.route_builder.infrastructure.routing_factory import (
+    get_routing_provider,
+)
+from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
+    StubRoutingProvider,
+)
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
     RouteDetailOut,
+    RouteDraftPreviewIn,
+    RouteDraftPreviewOut,
     RouteGeometryOut,
     RouteListItemOut,
     RouteListOut,
@@ -1152,3 +1168,161 @@ async def add_user_route_media(
         kind=saved.kind,
         position=position,
     )
+
+
+_logger = logging.getLogger(__name__)
+
+_DRAFT_PREVIEW_TTL_SECONDS = 30 * 60
+_DRAFT_PREVIEW_KEY = "route-draft-preview:"
+
+
+async def _draft_preview_places(
+    session: AsyncSession,
+    *,
+    place_ids: Sequence[UUID],
+) -> list[Place]:
+    """Places in the order the author placed them, validated like a save.
+
+    The same rules as ``save_user_route_draft``: a preview must never reveal
+    an unpublished place, and mixing regions is refused there too.
+    """
+    rows = list(
+        (
+            await session.scalars(
+                select(Place).where(
+                    Place.id.in_(set(place_ids)),
+                    Place.publication_status == "published",
+                )
+            )
+        ).all()
+    )
+    by_id = {place.id: place for place in rows}
+    if len(by_id) != len(set(place_ids)):
+        raise AppError(
+            code="invalid_route_place",
+            message="One or more route places are unavailable",
+            status_code=400,
+        )
+    if len({place.region_id for place in rows}) != 1:
+        raise AppError(
+            code="invalid_route_region",
+            message="All route places must belong to one region",
+            status_code=400,
+        )
+    return [by_id[place_id] for place_id in place_ids]
+
+
+async def preview_user_route_draft(
+    session: AsyncSession,
+    *,
+    payload: RouteDraftPreviewIn,
+    redis: Redis | None = None,
+) -> RouteDraftPreviewOut:
+    """Road geometry for draft points, before there is a route to save.
+
+    The publish form used to draw a stylised placeholder because the static
+    map endpoint needs a saved route id. Authors place points and see a
+    diagram instead of the roads they will actually walk.
+
+    Routing failures degrade to straight segments rather than an error: a
+    preview is advisory, and a straight line on the real basemap still tells
+    the author more than the placeholder did.
+    """
+    places = await _draft_preview_places(session, place_ids=payload.place_ids)
+    geom = cast(Place.location, Geometry)
+    rows = (
+        await session.execute(
+            select(Place.id, ST_X(geom), ST_Y(geom)).where(
+                Place.id.in_({place.id for place in places})
+            )
+        )
+    ).all()
+    point_by_id = {
+        place_id: (float(lng), float(lat))
+        for place_id, lng, lat in rows
+        if lng is not None and lat is not None
+    }
+    waypoints = [
+        RouteWaypoint(
+            lng=point_by_id[place.id][0],
+            lat=point_by_id[place.id][1],
+            place_id=place.id,
+            label=place.name,
+        )
+        for place in places
+        if place.id in point_by_id
+    ]
+    if len(waypoints) < 2:
+        raise AppError(
+            code="invalid_route_place",
+            message="Route points have no coordinates",
+            status_code=400,
+        )
+
+    settings = get_settings()
+    transport_mode = type_cast(TransportMode, payload.transport_mode)
+    try:
+        routing = await get_routing_provider(settings).route(
+            waypoints=waypoints,
+            transport_mode=transport_mode,
+        )
+    except RoutingError:
+        _logger.warning("route_draft_preview_routing_failed", exc_info=True)
+        routing = await StubRoutingProvider().route(
+            waypoints=waypoints,
+            transport_mode=transport_mode,
+        )
+
+    geometry: RouteGeometryOut | None = None
+    if routing.geometry_wkt:
+        raw = await session.scalar(
+            select(func.ST_AsGeoJSON(func.ST_GeomFromText(routing.geometry_wkt, 4326)))
+        )
+        if raw:
+            geometry = RouteGeometryOut.model_validate(json.loads(raw))
+    stops = [(point.lng, point.lat) for point in waypoints]
+    line = list(geometry.coordinates) if geometry else stops
+
+    preview_id = uuid4().hex
+    if redis is not None:
+        try:
+            await redis.set(
+                f"{_DRAFT_PREVIEW_KEY}{preview_id}",
+                json.dumps({"line": line, "stops": stops}),
+                ex=_DRAFT_PREVIEW_TTL_SECONDS,
+            )
+        except Exception:  # noqa: BLE001 — the raster falls back to the points
+            _logger.warning("route_draft_preview_cache_failed", exc_info=True)
+
+    return RouteDraftPreviewOut(
+        preview_id=preview_id,
+        geometry=geometry,
+        distance_meters=routing.total_distance_meters,
+        duration_seconds=routing.total_duration_seconds,
+        provider=routing.provider,
+        synthetic=routing.synthetic,
+    )
+
+
+async def draft_preview_shape(
+    redis: Redis | None,
+    preview_id: str,
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]] | None:
+    """Cached ``(line, stops)`` for a preview, or None once it has expired."""
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(f"{_DRAFT_PREVIEW_KEY}{preview_id}")
+    except Exception:  # noqa: BLE001 — a cache outage is a 404, not a 500
+        _logger.warning("route_draft_preview_read_failed", exc_info=True)
+        return None
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+        line = [(float(x), float(y)) for x, y in data["line"]]
+        stops = [(float(x), float(y)) for x, y in data["stops"]]
+    except Exception:  # noqa: BLE001 — a corrupt entry behaves like a miss
+        _logger.warning("route_draft_preview_decode_failed", exc_info=True)
+        return None
+    return (line, stops) if len(line) >= 2 else None

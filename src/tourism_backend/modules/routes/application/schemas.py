@@ -143,6 +143,35 @@ class RouteMediaOut(BaseModel):
     position: int
 
 
+class RouteDraftPreviewIn(BaseModel):
+    """Ordered points the author has placed so far, saved or not.
+
+    Two points is enough to draw something useful — the author sees the road
+    between start and finish before adding a single stop.
+    """
+
+    place_ids: list[UUID] = Field(min_length=2, max_length=22)
+    transport_mode: Literal["walk", "car", "bicycle", "public_transport"] = "walk"
+
+
+class RouteDraftPreviewOut(BaseModel):
+    """Road geometry for points that are not a saved route yet.
+
+    ``preview_id`` addresses the cached geometry for the raster endpoint:
+    a road line runs to hundreds of points, far past what a URL can carry.
+    """
+
+    preview_id: str
+    geometry: "RouteGeometryOut | None" = None
+    distance_meters: int = 0
+    duration_seconds: int = 0
+    provider: str
+    # True when the provider could not be reached and the line is straight
+    # segments between the points — still worth drawing on a real map, but
+    # the client should not present it as a road.
+    synthetic: bool = False
+
+
 class RouteGeometryOut(BaseModel):
     """Provider geometry in a mobile-friendly GeoJSON subset."""
 
