@@ -27,6 +27,7 @@ from tourism_backend.modules.places.infrastructure.models import Place, PlaceIma
 from tourism_backend.modules.route_builder.application.routing import (
     RouteWaypoint,
     RoutingError,
+    RoutingResult,
     TransportMode,
 )
 from tourism_backend.modules.route_builder.infrastructure.routing_factory import (
@@ -1264,8 +1265,19 @@ async def _route_geometry_for_places(
     ]
     if len(waypoints) < 2:
         return None
+    return await routing_line_for_waypoints(waypoints)
 
+
+async def routing_line_for_waypoints(
+    waypoints: list[RouteWaypoint],
+) -> tuple[str, dict[str, Any]]:
+    """Road line through [waypoints], with a plain line as the last resort.
+
+    Never raises: saving a draft must not depend on a router being willing
+    to route it.
+    """
     settings = get_settings()
+    routing: RoutingResult | None
     try:
         routing = await get_routing_provider(settings).route(
             waypoints=waypoints,
@@ -1273,16 +1285,27 @@ async def _route_geometry_for_places(
         )
     except RoutingError:
         _logger.warning("route_draft_routing_failed", exc_info=True)
-        routing = await StubRoutingProvider().route(
-            waypoints=waypoints,
-            transport_mode="walk",
-        )
+        try:
+            routing = await StubRoutingProvider().route(
+                waypoints=waypoints,
+                transport_mode="walk",
+            )
+        except RoutingError:
+            # The stub refuses the same things the provider does — a walking
+            # leg over its 25km ceiling, say. Worth warning an author about,
+            # but not a reason to refuse to save their draft, so the route
+            # keeps a plain line through its points.
+            _logger.warning("route_draft_routing_unavailable", exc_info=True)
+            routing = None
 
-    geometry_wkt = routing.geometry_wkt
-    if not geometry_wkt:
-        points = ", ".join(f"{point.lng:.6f} {point.lat:.6f}" for point in waypoints)
-        geometry_wkt = f"LINESTRING({points})"
-    return geometry_wkt, {
+    straight = ", ".join(f"{point.lng:.6f} {point.lat:.6f}" for point in waypoints)
+    if routing is None:
+        return f"LINESTRING({straight})", {
+            "provider": None,
+            "synthetic": True,
+            "quality_status": "unverified",
+        }
+    return routing.geometry_wkt or f"LINESTRING({straight})", {
         "provider": routing.provider,
         "synthetic": routing.synthetic,
         "distance_meters": routing.total_distance_meters,

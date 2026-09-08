@@ -92,3 +92,29 @@ async def test_draft_preview_cache_round_trips_and_expires_into_a_miss() -> None
     # A line that cannot be drawn is a miss too, not a one-point map.
     thin = json.dumps({"line": [[34.1, 44.3]], "stops": stops})
     assert await draft_preview_shape(_Redis(thin), "id") is None
+
+
+async def test_saving_a_draft_survives_a_route_the_router_refuses() -> None:
+    """A leg past the walking ceiling must not 500 the save.
+
+    Both the provider and the stub reject it, and only the provider's
+    rejection was caught — so saving a draft whose points sit ~50km apart
+    (which the publication integration tests do) raised out of the endpoint.
+    """
+    from tourism_backend.modules.route_builder.application.routing import RouteWaypoint
+    from tourism_backend.modules.routes.application.service import (
+        routing_line_for_waypoints,
+    )
+
+    # Simferopol to Yalta on foot: ~50km, over the stub's 25km leg ceiling.
+    far_apart = [
+        RouteWaypoint(lng=34.1024, lat=44.9521),
+        RouteWaypoint(lng=34.1663, lat=44.4952),
+    ]
+
+    wkt, meta = await routing_line_for_waypoints(far_apart)
+
+    assert wkt.startswith("LINESTRING("), wkt
+    assert "34.102400 44.952100" in wkt
+    assert meta["synthetic"] is True
+    assert meta["quality_status"] == "unverified"
