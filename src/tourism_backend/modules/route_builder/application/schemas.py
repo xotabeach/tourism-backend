@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
-from tourism_backend.modules.routes.application.schemas import RouteListItemOut
+from tourism_backend.modules.route_builder.application.itinerary import TripPlanOut
+from tourism_backend.modules.routes.application.schemas import (
+    RouteGeometryOut,
+    RouteListItemOut,
+    RouteStopOut,
+)
 
 # "photo" — «инстаграм-маршрут»: точки ради видов и кадров, а не ради
 # самого пути. Отдельный тип, а не интерес «Фото»: он меняет и подбор
@@ -41,6 +46,7 @@ class RouteMatchParamsIn(BaseModel):
     with_children: bool | None = None
     with_pets: bool | None = None
     avoid_crowds: bool | None = None
+    trip_start_date: date | None = None
     region_slug: str = Field(default="crimea", min_length=1, max_length=128)
 
     @field_validator("city", "season", "region_slug")
@@ -144,6 +150,7 @@ class RouteProposalCardBlockOut(BaseModel):
     locality_label: str | None = Field(default=None, max_length=120)
     tags: list[str] = Field(default_factory=list, max_length=8)
     budget_label: str | None = Field(default=None, max_length=40)
+    budget_caption: str = Field(default="Минимальный бюджет", max_length=40)
     difficulty_label: str | None = Field(default=None, max_length=40)
     primary_action_label: str = Field(default="Пройти маршрут", max_length=40)
     # ``catalog`` = existing DB route preview; ``assembled`` = generated detail.
@@ -259,6 +266,22 @@ ChatBlockOut = (
 )
 
 
+class RouteProposalPreviewOut(BaseModel):
+    proposal_id: str
+    title: str
+    stops: list[RouteStopOut]
+    geometry: RouteGeometryOut | None = None
+    distance_meters: int = 0
+    synthetic: bool = True
+    static_map_url: str | None = None
+    trip_plan: TripPlanOut | None = None
+
+
+class ProposalTripDateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_date: date
+
+
 class RouteProposalOut(BaseModel):
     proposal_id: str
     status: ProposalStatus
@@ -357,6 +380,25 @@ class RoutePlanningMessageListOut(BaseModel):
     offset: int
 
 
+class ChatControlsIn(BaseModel):
+    """One explicit confirmation, including unchanged values and false toggles."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    city: str | None = Field(default=None, min_length=1, max_length=80)
+    budget_amount: StrictInt | None = Field(default=None, ge=0, le=1_000_000)
+    with_children: StrictBool | None = None
+    with_pets: StrictBool | None = None
+    avoid_crowds: StrictBool | None = None
+
+    @field_validator("city")
+    @classmethod
+    def clean_city(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("City must not be blank")
+        return value.strip() if value is not None else None
+
+
 class RoutePlanningMessageIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -364,6 +406,7 @@ class RoutePlanningMessageIn(BaseModel):
     want_generate: bool = False
     action_id: str | None = Field(default=None, max_length=64)
     control_value: float | bool | None = None
+    controls: ChatControlsIn | None = None
 
     @field_validator("text")
     @classmethod

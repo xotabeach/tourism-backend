@@ -62,8 +62,9 @@ def test_recommendation_accept_patch() -> None:
 
 
 def test_prefer_ready_and_controls() -> None:
-    assert prefer_ready_ask_field(["city", "pace"]) == "ready"
-    controls = interactive_control_blocks(ask_field="ready", constraints={})
+    assert prefer_ready_ask_field(["city", "pace"]) == "transport_mode"
+    assert interactive_control_blocks(ask_field="ready", constraints={}) == []
+    controls = interactive_control_blocks(ask_field="budget", constraints={})
     types = {block.type for block in controls}
     assert "slider" in types
     assert "toggle" in types

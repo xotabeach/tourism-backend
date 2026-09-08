@@ -30,7 +30,7 @@ def test_fallback_ready_and_snippet() -> None:
         user_snippet="",
     )
     assert ready.ask_field == "ready"
-    assert "Подбери" in ready.assistant_text or "давай" in ready.assistant_text.casefold()
+    assert "готовые маршруты" in ready.assistant_text
 
     with_snippet = fallback_structured_turn(
         confirmed_fields=["city"],

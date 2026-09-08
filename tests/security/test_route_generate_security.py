@@ -171,6 +171,42 @@ async def test_chat_generate_requires_travel_plus_then_accept(
     assert body["proposal"]["status"] == "draft"
     proposal_id = body["proposal"]["proposal_id"]
 
+    preview_url = f"/api/v1/route-builder/proposals/{proposal_id}/preview"
+    unauthenticated = await live_client.get(preview_url)
+    assert unauthenticated.status_code == 401
+    foreign_tokens = await _login(live_client, f"+7906{uuid4().int % 10_000_000:07d}")
+    foreign_headers = {"Authorization": f"Bearer {foreign_tokens['access_token']}"}
+    for suffix in ("preview", "map"):
+        foreign = await live_client.get(
+            f"/api/v1/route-builder/proposals/{proposal_id}/{suffix}",
+            headers=foreign_headers,
+        )
+        assert foreign.status_code == 404, foreign.text
+    foreign_date = await live_client.patch(
+        f"/api/v1/route-builder/proposals/{proposal_id}/trip-date",
+        headers=foreign_headers,
+        json={"start_date": "2026-09-20"},
+    )
+    assert foreign_date.status_code == 404
+    preview = await live_client.get(preview_url, headers=headers)
+    assert preview.status_code == 200, preview.text
+    assert len(preview.json()["stops"]) >= 2
+    if preview.json()["geometry"] is not None:
+        assert preview.json()["geometry"]["coordinates"]
+    else:
+        assert preview.json()["synthetic"] is True
+        assert all(stop["lat"] is not None for stop in preview.json()["stops"])
+    assert preview.json()["trip_plan"]["days"]
+    again_preview = await live_client.get(preview_url, headers=headers)
+    assert again_preview.json() == preview.json()
+    dated = await live_client.patch(
+        f"/api/v1/route-builder/proposals/{proposal_id}/trip-date",
+        headers=headers,
+        json={"start_date": "2026-09-20"},
+    )
+    assert dated.status_code == 200, dated.text
+    assert dated.json()["trip_plan"]["start_date"] == "2026-09-20"
+
     accepted = await live_client.post(
         f"/api/v1/route-builder/proposals/{proposal_id}/accept",
         headers=headers,
@@ -179,6 +215,14 @@ async def test_chat_generate_requires_travel_plus_then_accept(
     accepted_body = accepted.json()
     assert accepted_body["status"] == "accepted"
     assert accepted_body["route_id"]
+    assert accepted_body["quota"]["weekly_used"] == body["proposal"]["quota"]["weekly_used"]
+
+    locked_date = await live_client.patch(
+        f"/api/v1/route-builder/proposals/{proposal_id}/trip-date",
+        headers=headers,
+        json={"start_date": "2026-09-21"},
+    )
+    assert locked_date.status_code == 409
 
     # Idempotent accept
     again = await live_client.post(

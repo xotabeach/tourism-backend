@@ -29,7 +29,15 @@ async def test_mock_chat_turn_ready_when_enough_confirmed() -> None:
     result = await provider.chat_turn(
         messages=[ChatMessage(role="user", content="Больше гор")],
         constraints={"city": "Ялта", "interests": ["горы"]},
-        confirmed_fields=["city", "interests", "pace", "duration"],
+        confirmed_fields=[
+            "city",
+            "interests",
+            "pace",
+            "duration",
+            "transport_mode",
+            "people",
+            "budget_amount",
+        ],
     )
     assert result.ask_field == "ready"
     assert "want_generate" in result.action_ids

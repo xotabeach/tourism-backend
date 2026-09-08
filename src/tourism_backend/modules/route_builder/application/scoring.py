@@ -110,6 +110,8 @@ class RouteMatchCandidate:
     # Distinct category slugs across the route's stops (ADR-009: primary
     # interest/trip-type signal, since it is the one field with full coverage).
     category_slugs: frozenset[str] = frozenset()
+    typical_crowding: str = "unknown"
+    price_min_amount: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +151,8 @@ def _haystack(candidate: RouteMatchCandidate) -> str:
 
 def _city_score(city: str, candidate: RouteMatchCandidate) -> tuple[float, str | None]:
     needle = city.casefold()
+    if needle == "крым":
+        return 0.75, "маршрут по Крыму"
     localities = [name.casefold() for name in candidate.locality_names]
     places = [name.casefold() for name in candidate.place_names]
     name = candidate.name.casefold()
@@ -174,8 +178,9 @@ def _duration_score(
     if low <= minutes <= high:
         return 1.0, "длительность совпадает"
     if minutes < low:
-        gap = (low - minutes) / max(low, 1)
-        return max(0.15, 1.0 - gap), None
+        # Trip length is available time, not a requirement to spend every
+        # minute on one route. Day trips belong in a multi-day shortlist.
+        return 0.85, "можно пройти за часть поездки"
     gap = (minutes - high) / max(high, 1)
     return max(0.15, 1.0 - gap), None
 
@@ -366,6 +371,17 @@ def score_candidate(
     candidate: RouteMatchCandidate,
     preferences: UserPreferenceSignals | None = None,
 ) -> ScoredMatch:
+    if (
+        (params.with_children is True and candidate.suitable_for_children is False)
+        or (params.with_pets is True and candidate.pets_allowed is False)
+        or (params.paid_ok is False and (candidate.price_min_amount or 0) > 0)
+        or (
+            params.transport_mode not in {None, "mixed"}
+            and _normalize_transport(candidate.transport_mode) is not None
+            and _normalize_transport(candidate.transport_mode) != params.transport_mode
+        )
+    ):
+        return ScoredMatch(candidate=candidate, score=0, reasons=("не подходит по ограничениям",))
     text = _haystack(candidate)
     parts: list[tuple[float, float, str | None]] = []
     # (weight, score, reason)
@@ -385,6 +401,19 @@ def score_candidate(
     parts.append((0.03, s_score, s_reason))
     f_score, f_reason = _party_flags_score(params, candidate)
     parts.append((0.02, f_score, f_reason))
+    if params.avoid_crowds:
+        crowd = {"low": 1.0, "medium": 0.5, "high": 0.0}.get(candidate.typical_crowding, 0.5)
+        parts.append((0.12, crowd, "обычно мало людей" if crowd == 1 else None))
+    if params.budget_amount is not None and candidate.price_min_amount is not None:
+        days = max(1, ((candidate.estimated_duration_minutes or 0) + 479) // 480)
+        affordable = candidate.price_min_amount <= params.budget_amount * days
+        parts.append(
+            (
+                0.12,
+                1.0 if affordable else 0.0,
+                "известная стоимость укладывается в бюджет" if affordable else None,
+            )
+        )
     pref_score, pref_reason = _preference_score(preferences, candidate)
     # Profile preferences are useful for cold-start personalization, but must
     # never overpower the current query.  The cap keeps a single preference

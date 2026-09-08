@@ -33,12 +33,14 @@ _CONFIRMABLE_FIELDS: frozenset[str] = frozenset(
         "with_children",
         "with_pets",
         "avoid_crowds",
+        "trip_start_date",
     }
 )
 
 # Canonical id → label + optional constraint patch (+ field marked confirmed).
 _ACTION_CATALOG: dict[str, dict[str, Any]] = {
-    "want_generate": {"label": "Подбери маршрут", "patch": None, "field": None},
+    "want_generate": {"label": "Показать варианты", "patch": None, "field": None},
+    "reply": {"label": "Да, конечно", "patch": None, "field": None},
     "build_custom_route": {
         "label": "Собрать собственный маршрут",
         "patch": None,
@@ -452,20 +454,8 @@ def build_actions_block(
             resolved_field = field
             ids = list(_ASK_FIELD_DEFAULTS.get(field, ()))
     cap = _MAX_SHEET_ACTIONS if resolved_field in _SHEET_TITLES else _MAX_ACTIONS
-    if (
-        include_generate
-        and "want_generate" not in ids
-        and (ask_field == "ready" or not unknown_fields(confirmed_fields or []))
-    ):
-        ids = ["want_generate", *ids]
-    # Offer generate as escape hatch once a couple of fields are confirmed.
-    if (
-        include_generate
-        and "want_generate" not in ids
-        and len(ids) < cap
-        and (ask_field in {None, "ready"} or len(sanitize_confirmed_fields(confirmed_fields)) >= 2)
-    ):
-        ids.append("want_generate")
+    if not include_generate:
+        ids = [item for item in ids if item != "want_generate"]
 
     actions: list[dict[str, str]] = []
     for action_id in ids[:cap]:
@@ -474,7 +464,7 @@ def build_actions_block(
             continue
         actions.append({"id": action_id, "label": label})
     if not actions:
-        actions = [{"id": "want_generate", "label": "Подбери маршрут"}]
+        return []
     layout: Literal["wrap", "stack", "sheet"] = (
         "sheet" if resolved_field in _SHEET_TITLES else "wrap"
     )
@@ -590,7 +580,7 @@ def interactive_control_blocks(
                     options=[SelectOptionOut(value=value, label=label) for value, label in options],
                 )
             )
-    if ask_field in {"budget", "ready"}:
+    if ask_field == "budget":
         current = constraints.get("budget_amount")
         value = float(current) if isinstance(current, int) else 3000.0
         out.append(
@@ -604,7 +594,7 @@ def interactive_control_blocks(
                 unit="₽",
             )
         )
-    if ask_field in {"with_children", "ready", "people"}:
+    if ask_field in {"with_children", "budget"}:
         out.append(
             ToggleBlockOut(
                 id="with_children",
@@ -630,10 +620,15 @@ def interactive_control_blocks(
 
 
 def prefer_ready_ask_field(confirmed_fields: list[str]) -> str:
-    """Fewer quiz turns: city + one preference is enough to offer generate."""
+    """Do not guess transport or trip length from form defaults."""
     confirmed = set(sanitize_confirmed_fields(confirmed_fields))
-    if "city" in confirmed and confirmed & {"pace", "interests", "season", "duration"}:
-        return "ready"
-    if len(confirmed) >= 3:
-        return "ready"
-    return first_missing_ask_field(confirmed_fields)
+    for field in ("city", "transport_mode", "duration"):
+        if field not in confirmed:
+            return field
+    if not confirmed & {"pace", "interests", "season"}:
+        return "interests"
+    if "people" not in confirmed:
+        return "people"
+    if "budget_amount" not in confirmed:
+        return "budget"
+    return "ready"

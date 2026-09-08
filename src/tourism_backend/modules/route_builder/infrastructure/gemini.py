@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from tourism_backend.modules.route_builder.application.ai import (
+    CHAT_MAX_OUTPUT_TOKENS,
     AIProviderProbeResult,
     ChatMessage,
     ChatTurnResult,
@@ -191,7 +192,7 @@ class GeminiProvider:
         confirmed_fields: list[str] | None = None,
         place_hints: list[dict[str, str]] | None = None,
         tool_context: dict[str, Any] | None = None,
-        max_tokens: int = 360,
+        max_tokens: int = CHAT_MAX_OUTPUT_TOKENS,
     ) -> ChatTurnResult:
         confirmed = list(confirmed_fields or [])
         known = known_constraints(constraints, confirmed)
@@ -244,13 +245,12 @@ class GeminiProvider:
                 user_snippet=last_user,
             )
         ask = structured.ask_field or hint_ask
-        if prefer_ready_ask_field(confirmed) == "ready" and ask != "ready":
-            ask = "ready"
         return ChatTurnResult(
             assistant_text=structured.assistant_text,
             proposed_constraints=structured.constraint_patch or None,
             ask_field=ask,
             action_ids=structured.action_ids,
+            quick_replies=structured.quick_replies,
             tool_requests=structured.tool_requests,
             provider="gemini",
             structured_parse=parse_status,

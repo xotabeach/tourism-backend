@@ -37,8 +37,7 @@ def test_city_ask_field_no_longer_duplicates_the_dropdown_as_chips() -> None:
     )
     ids = {item["id"] for block in blocks for item in block.actions}
     assert not {"city_yalta", "city_sevastopol", "city_sudak"} & ids
-    # The escape hatch stays: the user can still ask for a route right away.
-    assert ids == {"want_generate"}
+    assert ids == set()
     # ...but it must not pose as a second city picker. With layout="sheet" and
     # sheet_title="Выбрать город" the client drew a dropdown button next to the
     # real select, and opening it showed only this one chip (screenshot
@@ -153,7 +152,7 @@ def test_save_preferences_is_a_recognized_no_patch_action() -> None:
 
 def test_avoid_crowds_toggle_appears_alongside_children_and_pets() -> None:
     blocks = interactive_control_blocks(
-        ask_field="ready",
+        ask_field="budget",
         constraints={"avoid_crowds": True},
     )
     by_id = {block.id: block for block in blocks}

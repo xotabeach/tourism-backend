@@ -3,6 +3,9 @@
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+# Room for the compact answer, validated patch, tools and contextual replies.
+CHAT_MAX_OUTPUT_TOKENS = 512
+
 
 @dataclass(frozen=True, slots=True)
 class AIProviderProbeResult:
@@ -24,6 +27,7 @@ class ChatTurnResult:
     proposed_constraints: dict[str, Any] | None = None
     ask_field: str | None = None
     action_ids: tuple[str, ...] = ()
+    quick_replies: tuple[dict[str, str], ...] = ()
     tool_requests: tuple[dict[str, Any], ...] = ()
     provider: str = "mock"
     structured_parse: str = "ok"
@@ -40,6 +44,7 @@ class StructuredChatTurn:
     assistant_text: str
     ask_field: str | None = None
     action_ids: tuple[str, ...] = ()
+    quick_replies: tuple[dict[str, str], ...] = ()
     constraint_patch: dict[str, Any] = field(default_factory=dict)
     tool_requests: tuple[dict[str, Any], ...] = ()
 
@@ -57,7 +62,7 @@ class AIPlanningProvider(Protocol):
         confirmed_fields: list[str] | None = None,
         place_hints: list[dict[str, str]] | None = None,
         tool_context: dict[str, Any] | None = None,
-        max_tokens: int = 320,
+        max_tokens: int = CHAT_MAX_OUTPUT_TOKENS,
     ) -> ChatTurnResult:
         """One bounded assistant turn for Crimea route planning chat."""
         ...

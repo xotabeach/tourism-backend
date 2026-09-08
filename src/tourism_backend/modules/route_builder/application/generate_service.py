@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
 from geoalchemy2 import Geography, Geometry, WKTElement
@@ -17,10 +17,12 @@ from tourism_backend.config import get_settings
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
 from tourism_backend.modules.places.infrastructure.models import Place, RoadEvent
+from tourism_backend.modules.route_builder.application.itinerary import build_trip_plan
 from tourism_backend.modules.route_builder.application.place_picker import (
     PickedPlace,
     pick_places_for_params,
     picked_place_from_orm,
+    place_planning_warnings,
 )
 from tourism_backend.modules.route_builder.application.quota import (
     quota_snapshot,
@@ -48,6 +50,7 @@ from tourism_backend.modules.route_builder.application.schemas import (
     RouteMatchParamsIn,
     RouteProposalCardBlockOut,
     RouteProposalOut,
+    RouteProposalPreviewOut,
 )
 from tourism_backend.modules.route_builder.application.scoring import (
     UserPreferenceSignals,
@@ -67,6 +70,7 @@ from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
 from tourism_backend.modules.route_builder.infrastructure.tsp_factory import (
     get_tsp_provider,
 )
+from tourism_backend.modules.routes.application.schemas import RouteGeometryOut, RouteStopOut
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 from tourism_backend.modules.subscriptions.application import service as travel_plus
 from tourism_backend.modules.subscriptions.application.entitlements import (
@@ -455,18 +459,21 @@ def _blocks_for_proposal(
         cover_url=proposal.cover_url,
         place_ids=[str(place.place_id) for place in places],
         rating=None,
-        distance_km=None,
+        distance_km=round(proposal.preview["distance_meters"] / 1000, 1)
+        if proposal.preview and proposal.preview.get("distance_meters")
+        else None,
         locality_label=params.city[:120],
         tags=tags[:8],
         budget_label=budget_label,
-        difficulty_label=_difficulty_for_pace(params.pace)[:40],
+        budget_caption="Бюджет на день",
+        difficulty_label={"calm": "1/5", "moderate": "3/5", "active": "5/5"}[params.pace],
         primary_action_label="Пройти маршрут",
         card_variant="assembled",
         gallery_urls=gallery[:8],
         start_label=start_name,
-        start_subtitle=f"г. {params.city}"[:120] if start else None,
+        start_subtitle=None,
         finish_label=finish_name,
-        finish_subtitle=f"г. {params.city}"[:120] if finish else None,
+        finish_subtitle=None,
         locations=locations,
         route_id=str(proposal.route_id) if proposal.route_id else None,
     )
@@ -633,6 +640,7 @@ async def generate_route(
     *,
     user_id: UUID,
     payload: RouteGenerateIn,
+    recent_place_ids: frozenset[UUID] = frozenset(),
 ) -> RouteGenerateOut:
     user = await session.get(User, user_id)
     if user is None:
@@ -649,6 +657,7 @@ async def generate_route(
         session,
         params=params,
         max_points=policy.max_route_points,
+        recent_place_ids=recent_place_ids,
         preferences=UserPreferenceSignals(
             categories=frozenset(user.preferred_categories or ()),
             difficulty=user.preferred_difficulty,
@@ -691,6 +700,9 @@ async def generate_route(
         updated_at=now,
     )
     session.add(proposal)
+    proposal.preview = (await _build_preview(session, proposal, places, routing)).model_dump(
+        mode="json"
+    )
     await session.flush()
 
     route: Route | None = None
@@ -705,6 +717,10 @@ async def generate_route(
             routing=routing,
             road_events=road_events,
         )
+        route.accessibility = {
+            **(route.accessibility or {}),
+            "trip_plan": proposal.preview["trip_plan"],
+        }
         proposal.route_id = route.id
         proposal.status = "accepted"
         proposal.accepted_at = now
@@ -807,6 +823,13 @@ async def accept_proposal(
         routing=routing,
         road_events=road_events,
     )
+    proposal.preview = (await _build_preview(session, proposal, loaded, routing)).model_dump(
+        mode="json"
+    )
+    route.accessibility = {
+        **(route.accessibility or {}),
+        "trip_plan": proposal.preview["trip_plan"],
+    }
     now = datetime.now(UTC)
     proposal.route_id = route.id
     proposal.status = "accepted"
@@ -819,6 +842,106 @@ async def accept_proposal(
     policy = policy_for_user(user) if user is not None else FREE_POLICY
     snap = await quota_snapshot(session, user_id=user_id, policy=policy)
     return _proposal_out(proposal, loaded, snap)
+
+
+async def _build_preview(
+    session: AsyncSession,
+    proposal: RouteProposal,
+    places: list[PickedPlace],
+    routing: RoutingResult,
+) -> RouteProposalPreviewOut:
+    params = RouteMatchParamsIn.model_validate(proposal.params)
+    waypoints = await _waypoints_for_places(session, places)
+    geometry = None
+    if routing.geometry_wkt:
+        raw = await session.scalar(
+            select(func.ST_AsGeoJSON(func.ST_GeomFromText(routing.geometry_wkt, 4326)))
+        )
+        if raw:
+            geometry = RouteGeometryOut.model_validate(json.loads(raw))
+    trip_plan = build_trip_plan(
+        stops=[
+            (str(place.place_id), place.name, place.recommended_visit_minutes or 45)
+            for place in places
+        ],
+        routing=routing,
+        pace=params.pace,
+        transport_mode=params.transport_mode,
+        with_children=params.with_children,
+        start_date=params.trip_start_date,
+    )
+    trip_plan.warnings.extend(place_planning_warnings(params, places))
+    return RouteProposalPreviewOut(
+        proposal_id=str(proposal.id),
+        title=proposal.title,
+        stops=[
+            RouteStopOut(
+                id=place.place_id,
+                position=index + 1,
+                place_id=place.place_id,
+                place_name=place.name,
+                place_slug="",
+                visit_duration_minutes=place.recommended_visit_minutes,
+                note=None,
+                is_optional=False,
+                lng=point.lng,
+                lat=point.lat,
+                place_short_description=place.short_description,
+                place_cover_url=place.cover_hint,
+            )
+            for index, (place, point) in enumerate(zip(places, waypoints, strict=True))
+        ],
+        geometry=geometry,
+        distance_meters=routing.total_distance_meters,
+        synthetic=routing.synthetic,
+        static_map_url=f"/api/v1/route-builder/proposals/{proposal.id}/map",
+        trip_plan=trip_plan,
+    )
+
+
+async def proposal_preview(
+    session: AsyncSession, *, user_id: UUID, proposal_id: UUID
+) -> RouteProposalPreviewOut:
+    proposal = await session.get(RouteProposal, proposal_id)
+    if proposal is None or proposal.user_id != user_id:
+        raise AppError(code="proposal_not_found", message="Proposal not found", status_code=404)
+    if proposal.preview:
+        return RouteProposalPreviewOut.model_validate(proposal.preview)
+    # Older chats have no geometry snapshot. Compute it once without accepting
+    # the proposal, creating a route, or consuming another generation quota.
+    places: list[PickedPlace] = []
+    for place_id in proposal.place_ids:
+        place = await session.get(Place, place_id)
+        if place is None:
+            raise AppError(
+                code="insufficient_places", message="Place is no longer available", status_code=422
+            )
+        places.append(_picked_from_place(place))
+    routing = await _route_places(
+        session, places=places, params=RouteMatchParamsIn.model_validate(proposal.params)
+    )
+    preview = await _build_preview(session, proposal, places, routing)
+    proposal.preview = preview.model_dump(mode="json")
+    await session.commit()
+    return preview
+
+
+async def update_proposal_trip_date(
+    session: AsyncSession, *, user_id: UUID, proposal_id: UUID, start_date: date
+) -> RouteProposalPreviewOut:
+    preview = await proposal_preview(session, user_id=user_id, proposal_id=proposal_id)
+    proposal = await session.get(RouteProposal, proposal_id)
+    assert proposal is not None  # ownership checked by proposal_preview
+    if proposal.status != "draft":
+        raise AppError(
+            code="proposal_not_editable", message="Proposal is no longer a draft", status_code=409
+        )
+    proposal.params = {**proposal.params, "trip_start_date": start_date.isoformat()}
+    if preview.trip_plan is not None:
+        preview.trip_plan.start_date = start_date
+    proposal.preview = preview.model_dump(mode="json")
+    await session.commit()
+    return preview
 
 
 async def reject_proposal(

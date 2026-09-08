@@ -6,12 +6,16 @@ import json
 import re
 from typing import Any
 
+from pydantic import ValidationError
+
 from tourism_backend.modules.route_builder.application.ai import StructuredChatTurn
 from tourism_backend.modules.route_builder.application.chat_actions import (
+    action_label,
     first_missing_ask_field,
     normalize_action_id,
     sanitize_confirmed_fields,
 )
+from tourism_backend.modules.route_builder.application.schemas import RouteMatchParamsIn
 
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
 _MAX_ACTION_IDS = 6
@@ -45,6 +49,7 @@ _PATCH_KEYS = frozenset(
         "with_children",
         "with_pets",
         "avoid_crowds",
+        "trip_start_date",
         "interests_add",
     }
 )
@@ -79,6 +84,27 @@ def parse_structured_turn(
                 action_ids.append(canonical)
 
     patch = _sanitize_patch(payload.get("constraint_patch"))
+    quick_replies: list[dict[str, str]] = []
+    raw_replies = payload.get("quick_replies")
+    if isinstance(raw_replies, list):
+        for reply in raw_replies[:4]:
+            if not isinstance(reply, dict):
+                continue
+            raw_id, label = reply.get("id"), reply.get("label")
+            if not isinstance(raw_id, str) or not isinstance(label, str):
+                continue
+            action_id = normalize_action_id(raw_id)
+            label = " ".join(label.split())
+            if action_id in {"save_preferences", "clear_params", "build_custom_route"}:
+                label = action_label(action_id) or label
+            if (
+                action_id
+                and 1 <= len(label) <= 60
+                and not any(token in label for token in ("<", ">", "http://", "https://"))
+            ):
+                item = {"id": action_id, "label": label}
+                if item not in quick_replies:
+                    quick_replies.append(item)
     tool_requests: list[dict[str, Any]] = []
     raw_tools = payload.get("tool_requests") or payload.get("tools")
     if isinstance(raw_tools, list):
@@ -89,6 +115,7 @@ def parse_structured_turn(
         assistant_text=text.strip()[:_MAX_TEXT],
         ask_field=ask_field,
         action_ids=tuple(action_ids),
+        quick_replies=tuple(quick_replies),
         constraint_patch=patch,
         tool_requests=tuple(tool_requests),
     )
@@ -105,10 +132,7 @@ def fallback_structured_turn(
     if len(snippet) > 60:
         snippet = f"{snippet[:57]}..."
     if ask == "ready":
-        text = (
-            "Параметров достаточно. Нажмите «Подбери маршрут» или напишите «давай» — "
-            "соберу карточку предложения."
-        )
+        text = "Параметров достаточно, чтобы сравнить готовые маршруты. Показать варианты?"
     elif snippet:
         text = f"Принял: «{snippet}». Уточните, пожалуйста: {_ask_prompt(ask)}"
     elif known:
@@ -191,4 +215,14 @@ def _sanitize_patch(raw: object) -> dict[str, Any]:
             text = value.strip()[:80]
             if text:
                 out[key] = text
-    return out
+    validated: dict[str, Any] = {}
+    for key, value in out.items():
+        if key == "interests_add":
+            validated[key] = value
+            continue
+        try:
+            params = RouteMatchParamsIn.model_validate({"city": "Крым", key: value})
+        except ValidationError:
+            continue
+        validated[key] = params.model_dump(mode="json")[key]
+    return validated

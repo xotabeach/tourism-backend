@@ -91,6 +91,7 @@ from tourism_backend.modules.route_builder.infrastructure.ai_mock import (
 from tourism_backend.modules.route_builder.infrastructure.models import (
     RoutePlanningMessage,
     RoutePlanningSession,
+    RouteProposal,
 )
 from tourism_backend.modules.runtime_config.application.service import (
     effective_ai_provider_settings,
@@ -409,7 +410,16 @@ async def post_message(
     confirmed = sanitize_confirmed_fields(
         list(planning.confirmed_fields) if isinstance(planning.confirmed_fields, list) else []
     )
-    constraints_dict = dict(planning.constraints)
+    constraints_dict = _constraints_with_preferences(dict(planning.constraints), confirmed, user)
+    turn_explicit_fields: set[str] = set()
+
+    if payload.controls is not None:
+        controls_patch = payload.controls.model_dump(exclude_none=True)
+        turn_explicit_fields.update(fields_touched_by_patch(controls_patch))
+        constraints_dict = merge_constraint_patch(constraints_dict, controls_patch)
+        confirmed = sanitize_confirmed_fields(
+            [*confirmed, *fields_touched_by_patch(controls_patch)]
+        )
 
     # Chip / control / recommendation accept → merge allowlisted patch.
     if payload.action_id:
@@ -421,6 +431,7 @@ async def post_message(
                 previously_confirmed=confirmed,
             )
             touched = fields_touched_by_patch(rec_patch)
+            turn_explicit_fields.update(touched)
             confirmed = sanitize_confirmed_fields([*confirmed, *touched])
         else:
             control_patch = _control_patch(payload.action_id, payload.control_value)
@@ -431,6 +442,7 @@ async def post_message(
                     previously_confirmed=confirmed,
                 )
                 touched = fields_touched_by_patch(control_patch)
+                turn_explicit_fields.update(touched)
                 confirmed = sanitize_confirmed_fields([*confirmed, *touched])
             else:
                 canonical = normalize_action_id(payload.action_id)
@@ -443,6 +455,7 @@ async def post_message(
                             previously_confirmed=confirmed,
                         )
                         touched = fields_touched_by_patch(action_patch)
+                        turn_explicit_fields.update(touched)
                         field = field_for_action(canonical)
                         if field:
                             touched = sanitize_confirmed_fields([*touched, field])
@@ -465,15 +478,27 @@ async def post_message(
         flow = "clear_params"
     elif canonical_action in _SAVE_PREFERENCES_ACTIONS:
         flow = "save_preferences"
-    elif is_control_only:
-        flow = "control_ack"
+    elif is_control_only or payload.controls is not None or canonical_action == "reply":
+        flow = "on_topic_travel"
+
+    # Old clients may still ask for a match early. Form defaults are not a
+    # confirmed transport/duration and must not silently become trip facts.
+    if flow in {"generate", "generate_custom"} and not {
+        "city",
+        "transport_mode",
+        "duration",
+    }.issubset(confirmed):
+        flow = "on_topic_travel"
 
     now = datetime.now(UTC)
     user_payload: dict[str, Any] | None = None
-    if payload.action_id or payload.control_value is not None:
+    if payload.action_id or payload.control_value is not None or payload.controls is not None:
         user_payload = {
             "action_id": payload.action_id,
             "control_value": payload.control_value,
+            "controls": payload.controls.model_dump(exclude_none=True)
+            if payload.controls
+            else None,
         }
     user_msg = RoutePlanningMessage(
         id=uuid4(),
@@ -551,35 +576,17 @@ async def post_message(
             tool_context={},
             include_recommendations=False,
         )
-    elif flow == "control_ack":
-        # Slider/toggle: merge already done — short ack, no LLM reprint.
-        ask_field = prefer_ready_ask_field(confirmed)
-        label = payload.text.strip()[:80] or "параметр"
-        assistant_text = f"Ок, учёл: {label}."
-        provider_name = "control_ack"
-        blocks = _compose_assistant_blocks(
-            constraints=constraints_dict,
-            confirmed_fields=confirmed,
-            ask_field=ask_field,
-            action_ids=["want_generate"] if ask_field == "ready" else None,
-            tool_context={},
-            include_recommendations=False,
-        )
     elif flow in {"generate", "generate_custom"}:
         params = RouteMatchParamsIn.model_validate(constraints_dict)
         force_custom = flow == "generate_custom"
         if not force_custom:
-            try:
-                matched = await match_service.match_routes(
-                    session,
-                    user_id=user_id,
-                    params=params,
-                    ai_planning_enabled=cfg.ai_planning_enabled,
-                )
-                catalog_block = _catalog_match_block(matched, locality_label=params.city)
-            except AppError:
-                # Empty catalog / missing region seed → fall through to generate.
-                catalog_block = None
+            matched = await match_service.match_routes(
+                session,
+                user_id=user_id,
+                params=params,
+                ai_planning_enabled=cfg.ai_planning_enabled,
+            )
+            catalog_block = _catalog_match_block(matched, locality_label=params.city)
             if catalog_block is not None:
                 assistant_text = "Вот подобранные маршруты по выбранным параметрам:"
                 provider_name = "catalog_match"
@@ -601,12 +608,29 @@ async def post_message(
                 ]
                 ask_field = "ready"
             else:
-                force_custom = True
+                assistant_text = (
+                    "В каталоге пока нет подходящих маршрутов по этим условиям. "
+                    "Можем изменить параметры поиска или собрать свой маршрут из доступных мест."
+                )
+                provider_name = "catalog_match"
+                ask_field = "ready"
+                blocks = [
+                    ActionsBlockOut(
+                        actions=[
+                            {"id": "reply", "label": "Хочу изменить условия поиска"},
+                            {"id": "build_custom_route", "label": "Собрать свой маршрут"},
+                        ]
+                    )
+                ]
         if force_custom:
+            recent_place_ids = await _recent_proposal_place_ids(
+                session, user_id=user_id, session_id=planning.id
+            )
             generated = await generate_service.generate_route(
                 session,
                 user_id=user_id,
                 payload=RouteGenerateIn(channel="chat", params=params),
+                recent_place_ids=recent_place_ids,
             )
             await session.refresh(planning)
             proposal_out = generated.proposal
@@ -630,21 +654,51 @@ async def post_message(
         # тогда доверяем тексту, иначе человек видит вопрос, на который нечем ответить.
         ask_field = ask_field_from_text(assistant_text, ask_field)
         if turn.proposed_constraints:
+            # A later spoken correction may revise an earlier choice. Only
+            # this turn's exact UI choices outrank model extraction; otherwise
+            # «теперь поедем на машине» silently kept the old walking setting.
+            effective_patch = {
+                key: value
+                for key, value in turn.proposed_constraints.items()
+                if ("interests" if key == "interests_add" else key) not in turn_explicit_fields
+            }
             constraints_dict = merge_constraint_patch(
                 constraints_dict,
-                turn.proposed_constraints,
+                effective_patch,
                 previously_confirmed=confirmed,
-                protect_confirmed=True,
             )
-            touched = fields_touched_by_patch(turn.proposed_constraints)
+            touched = fields_touched_by_patch(effective_patch)
             confirmed = sanitize_confirmed_fields([*confirmed, *touched])
-            proposed = dict(turn.proposed_constraints)
-            ask_field = prefer_ready_ask_field(confirmed)
+            proposed = effective_patch
+            # Keep the question the model actually asked. Replacing it with
+            # ready after any patch produced controls unrelated to its text.
+            if ask_field in touched:
+                ask_field = prefer_ready_ask_field(confirmed)
+        required_question = next(
+            (field for field in ("city", "transport_mode", "duration") if field not in confirmed),
+            None,
+        )
+        repair_question = required_question if ask_field == "ready" else None
+        if payload.controls is not None and ask_field == "budget" and "budget_amount" in confirmed:
+            repair_question = prefer_ready_ask_field(confirmed)
+        if repair_question:
+            ask_field = repair_question
+            assistant_text = {
+                "city": "Откуда начнём поездку? Выбери город или напиши место старта.",
+                "transport_mode": (
+                    "Как будем передвигаться — пешком, на машине или общественным транспортом?"
+                ),
+                "duration": "Сколько дней отведём на поездку?",
+                "interests": "Что хочется увидеть — побережье, горы или исторические места?",
+                "people": "Сколько человек едет?",
+                "ready": "Теперь можно сравнить готовые маршруты. Показать варианты?",
+            }.get(ask_field, "Что ещё важно учесть в поездке?")
         blocks = _compose_assistant_blocks(
             constraints=constraints_dict,
             confirmed_fields=confirmed,
             ask_field=ask_field,
-            action_ids=list(turn.action_ids) if turn.action_ids else None,
+            action_ids=list(turn.action_ids) if turn.action_ids and not repair_question else None,
+            quick_replies=list(turn.quick_replies) if not repair_question else None,
             tool_context=prefetch,
             include_recommendations=fallback,
             place_candidates=explicit_places,
@@ -708,6 +762,27 @@ async def post_message(
     )
 
 
+async def _recent_proposal_place_ids(
+    session: AsyncSession, *, user_id: UUID, session_id: UUID
+) -> frozenset[UUID]:
+    """A bounded, session-owned diversity signal, not a global exclusion list."""
+    rows = (
+        await session.scalars(
+            select(RouteProposal.place_ids)
+            .join(RoutePlanningMessage, RoutePlanningMessage.proposal_id == RouteProposal.id)
+            .where(
+                RoutePlanningMessage.session_id == session_id,
+                RoutePlanningMessage.user_id == user_id,
+                RoutePlanningMessage.role == "assistant",
+                RouteProposal.user_id == user_id,
+            )
+            .order_by(RoutePlanningMessage.created_at.desc())
+            .limit(3)
+        )
+    ).all()
+    return frozenset(place_id for ids in rows for place_id in ids)
+
+
 async def _assistant_from_ai(
     session: AsyncSession,
     *,
@@ -750,16 +825,16 @@ async def _assistant_from_ai(
     if settings.rag_enabled:
         try:
             retriever = TourismKnowledgeRetriever(embedder=build_embedder(settings))
-            interests = constraints.get("interests")
-            if isinstance(interests, list) and interests:
-                query = " ".join(str(item) for item in interests[:6])[:400]
-            else:
-                query = str(constraints.get("city") or "Крым")[:400]
+            query = _retrieval_query(chat_messages, constraints)
             request = RetrievalRequest(
                 query=query,
                 top_k=settings.rag_top_k,
                 region=str(constraints.get("region_slug") or "crimea")[:64],
-                locality=(str(constraints["city"])[:120] if constraints.get("city") else None),
+                locality=(
+                    str(constraints["city"])[:120]
+                    if constraints.get("city") not in {None, "", "Крым"}
+                    else None
+                ),
             )
             cache = (
                 RagRetrievalCache(redis, ttl_seconds=settings.rag_faq_cache_ttl_seconds)
@@ -904,7 +979,7 @@ def _provider_error_turn(exc: BaseException, confirmed_fields: list[str]) -> Cha
     return ChatTurnResult(
         assistant_text=ai_busy_fallback() if busy else ai_unavailable_fallback(),
         ask_field=prefer_ready_ask_field(confirmed_fields),
-        action_ids=("want_generate",),
+        action_ids=(),
         provider="fallback",
     )
 
@@ -977,6 +1052,7 @@ async def _run_tool_rounds(
             proposed_constraints=follow.proposed_constraints,
             ask_field=follow.ask_field,
             action_ids=follow.action_ids,
+            quick_replies=follow.quick_replies,
             tool_requests=(),
             provider=follow.provider,
             structured_parse=follow.structured_parse,
@@ -995,6 +1071,7 @@ def _compose_assistant_blocks(
     tool_context: dict[str, Any],
     include_recommendations: bool = False,
     place_candidates: list[dict[str, str]] | None = None,
+    quick_replies: list[dict[str, str]] | None = None,
 ) -> list[ChatBlockOut]:
     blocks: list[ChatBlockOut] = []
     # Seasonal tip cards only when AI is unavailable (fallback) — not on every
@@ -1042,7 +1119,16 @@ def _compose_assistant_blocks(
     # чат, и «Подбери маршрут» под вопросом «в какой город?» читался как
     # предложение пропустить ответ.
     has_select = any(getattr(block, "type", None) == "select" for block in controls)
-    if not (has_select and not action_ids):
+    if quick_replies and not controls:
+        replies = [
+            reply
+            for reply in quick_replies
+            if reply["id"] != "want_generate" or ask_field == "ready"
+        ]
+        if replies:
+            blocks.append(ActionsBlockOut(actions=replies[:4]))
+            return blocks
+    if not has_select and ask_field not in {"budget", "with_children"}:
         blocks.extend(
             clarification_action_blocks(
                 constraints,
@@ -1122,7 +1208,11 @@ def _control_patch(
     action_id: str,
     control_value: float | bool | None,
 ) -> dict[str, Any] | None:
-    if action_id == "budget_amount" and isinstance(control_value, (int, float)):
+    if (
+        action_id == "budget_amount"
+        and isinstance(control_value, (int, float))
+        and not isinstance(control_value, bool)
+    ):
         amount = int(control_value)
         amount = max(0, min(amount, 1_000_000))
         return {"budget_amount": amount}
@@ -1139,6 +1229,32 @@ def _control_patch(
     if action_id == "avoid_crowds":
         return {"avoid_crowds": True}
     return None
+
+
+def _constraints_with_preferences(
+    constraints: dict[str, Any], confirmed: list[str], user: User
+) -> dict[str, Any]:
+    prior = _persisted_preferences_prior(user)
+    pace = {"easy": "calm", "moderate": "moderate", "hard": "active"}.get(
+        prior.pop("pace_hint", None)
+    )
+    if pace:
+        prior["pace"] = pace
+    return {**constraints, **{key: value for key, value in prior.items() if key not in confirmed}}
+
+
+def _retrieval_query(messages: list[ChatMessage], constraints: dict[str, Any]) -> str:
+    """Retrieve for the actual question, retaining geographic/trip context."""
+    recent = [message.content for message in messages if message.role == "user"][-2:]
+    interests = constraints.get("interests") or []
+    return " ".join(
+        [
+            recent[-1][:260] if recent else "",
+            str(constraints.get("city") or "Крым"),
+            " ".join(str(item) for item in interests[:3]),
+            recent[-2][:80] if len(recent) > 1 else "",
+        ]
+    )[:400]
 
 
 def _persisted_preferences_prior(user: User) -> dict[str, Any]:

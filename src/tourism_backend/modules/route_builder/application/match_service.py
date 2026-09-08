@@ -172,6 +172,8 @@ async def _load_candidates(
                 locality_names=tuple(dict.fromkeys(localities_by_route.get(route.id, ()))),
                 stops_count=counts.get(route.id, 0),
                 category_slugs=frozenset(categories_by_route.get(route.id, frozenset())),
+                typical_crowding=route.typical_crowding,
+                price_min_amount=route.price_min_amount,
             )
         )
     return out

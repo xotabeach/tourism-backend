@@ -87,6 +87,7 @@ class RouteProposal(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    preview: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
 
 class RoutePlanningSession(Base, UUIDPrimaryKeyMixin, TimestampMixin):

@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from tourism_backend.modules.route_builder.application.ai import (
+    CHAT_MAX_OUTPUT_TOKENS,
     AIProviderProbeResult,
     ChatMessage,
     ChatTurnResult,
 )
 from tourism_backend.modules.route_builder.application.chat_actions import (
-    first_missing_ask_field,
     known_constraints,
     prefer_ready_ask_field,
 )
@@ -36,7 +36,7 @@ class MockAIPlanningProvider:
         confirmed_fields: list[str] | None = None,
         place_hints: list[dict[str, str]] | None = None,
         tool_context: dict[str, Any] | None = None,
-        max_tokens: int = 320,
+        max_tokens: int = CHAT_MAX_OUTPUT_TOKENS,
     ) -> ChatTurnResult:
         _ = max_tokens
         _ = place_hints
@@ -47,8 +47,6 @@ class MockAIPlanningProvider:
             "",
         )
         ask = prefer_ready_ask_field(confirmed)
-        if ask != "ready":
-            ask = first_missing_ask_field(confirmed)
 
         seasonal = (tool_context or {}).get("seasonal_recommendations") or []
         tip_title = ""
@@ -60,27 +58,21 @@ class MockAIPlanningProvider:
         action_ids: tuple[str, ...] = ()
         if ask == "transport_mode":
             action_ids = ("transport_car", "transport_public", "transport_walk")
-            text = (
-                "Принято. Подскажите транспорт — или нажмите «Подбери маршрут», "
-                "если хотите сразу карточку."
-            )
+            text = "Как будем передвигаться — пешком, на машине или общественным транспортом?"
         elif ask == "pace":
-            action_ids = ("pace_calm", "pace_moderate", "pace_active", "want_generate")
-            text = (
-                f"{tip_title + '. ' if tip_title else ''}"
-                "Какой темп ближе — или сразу подберём маршрут?"
-            )
+            action_ids = ("pace_calm", "pace_moderate", "pace_active")
+            text = f"{tip_title + '. ' if tip_title else ''}Какой темп поездки тебе ближе?"
         elif ask == "interests":
-            action_ids = ("interest_sea", "interest_mountains", "want_generate")
-            text = "Что важнее — море, горы — или сразу «Подбери маршрут»?"
+            action_ids = ("interest_sea", "interest_mountains", "interest_history")
+            text = "Что интереснее — побережье, горы или исторические места?"
         elif ask == "duration":
-            action_ids = ("duration_d1_2", "duration_d3_5", "want_generate")
-            text = "На сколько дней — или собрать предложение сейчас?"
+            action_ids = ("duration_d1_2", "duration_d3_5", "duration_d6_7")
+            text = "Сколько дней отведём на поездку?"
         elif ask == "people":
-            action_ids = ("people_1", "people_2", "people_3_plus", "want_generate")
+            action_ids = ("people_1", "people_2", "people_3_plus")
             text = "Сколько человек едет?"
         elif ask == "city":
-            action_ids = ("want_generate",)
+            action_ids = ()
             text = (
                 f"{tip_title + '. ' if tip_title else ''}"
                 "С какого города стартуем? Можно принять рекомендацию ниже "
@@ -98,9 +90,9 @@ class MockAIPlanningProvider:
             action_ids = ("want_generate",)
             city = known.get("city")
             city_bit = f" вокруг {city}" if city else ""
-            text = (
-                f"Параметров достаточно{city_bit}. Нажмите «Подбери маршрут» или напишите «давай»."
-            )
+            text = f"Теперь можно сравнить готовые маршруты{city_bit}. Показать варианты?"
+        elif ask == "budget":
+            text = "Какой бюджет на день комфортен? Здесь же можно уточнить состав поездки."
         else:
             structured = fallback_structured_turn(
                 confirmed_fields=confirmed,

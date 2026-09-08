@@ -215,6 +215,21 @@ async def test_session_bola_and_message_bounds(live_client: AsyncClient) -> None
     )
     assert bad_action.status_code == 422
 
+    # Search only after the essential travel choices are actually confirmed.
+    for action, label in [("duration_d1_2", "1–2 дня")]:
+        clarified = await live_client.post(
+            f"/api/v1/route-builder/sessions/{session_id}/messages",
+            headers=headers_a,
+            json={"text": label, "action_id": action},
+        )
+        assert clarified.status_code == 200, clarified.text
+    city = await live_client.post(
+        f"/api/v1/route-builder/sessions/{session_id}/messages",
+        headers=headers_a,
+        json={"text": "Ялта", "controls": {"city": "Ялта"}},
+    )
+    assert city.status_code == 200, city.text
+
     generate = await live_client.post(
         f"/api/v1/route-builder/sessions/{session_id}/messages",
         headers=headers_a,
@@ -224,11 +239,28 @@ async def test_session_bola_and_message_bounds(live_client: AsyncClient) -> None
     body = generate.json()
     assert body["intent"] == "generate"
     block_types = {block.get("type") for block in body.get("blocks") or []}
-    # Match-first: catalog carousel when hits exist; else generated proposal.
-    if body.get("proposal") is not None:
-        assert body["proposal"]["proposal_id"]
-    else:
-        assert "catalog_match" in block_types
+    # An empty catalogue also needs explicit consent for custom generation.
+    assert body.get("proposal") is None
+    if "catalog_match" not in block_types:
+        action_ids = {
+            action["id"]
+            for block in body.get("blocks") or []
+            for action in block.get("actions", [])
+        }
+        assert "build_custom_route" in action_ids
+
+    # Explicit custom builds are allowed; the second also exercises the
+    # database-backed, session-owned recent-proposal lookup for variety.
+    proposal_ids = []
+    for _ in range(2):
+        custom = await live_client.post(
+            f"/api/v1/route-builder/sessions/{session_id}/messages",
+            headers=headers_a,
+            json={"text": "Собрать свой маршрут", "action_id": "build_custom_route"},
+        )
+        assert custom.status_code == 200, custom.text
+        proposal_ids.append(custom.json()["proposal"]["proposal_id"])
+    assert proposal_ids[0] != proposal_ids[1]
 
     listed = await live_client.get(
         "/api/v1/route-builder/sessions",
@@ -335,8 +367,22 @@ async def test_short_affirmative_does_not_generate_mid_clarification(
         "/api/v1/route-builder/sessions",
         headers=headers,
         json={
-            "params": {"city": "Ялта", "pace": "calm"},
-            "confirmed_fields": ["city", "pace"],
+            "params": {
+                "city": "Ялта",
+                "pace": "calm",
+                "duration": "d1_2",
+                "transport_mode": "walk",
+                "people": 2,
+                "budget_amount": 4000,
+            },
+            "confirmed_fields": [
+                "city",
+                "pace",
+                "duration",
+                "transport_mode",
+                "people",
+                "budget_amount",
+            ],
         },
     )
     ready_id = ready.json()["session_id"]
@@ -347,6 +393,7 @@ async def test_short_affirmative_does_not_generate_mid_clarification(
     )
     assert confirm.status_code == 200, confirm.text
     assert confirm.json()["intent"] == "generate"
+    assert confirm.json().get("proposal") is None
 
 
 @pytest.mark.asyncio

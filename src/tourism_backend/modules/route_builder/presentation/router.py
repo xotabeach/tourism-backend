@@ -2,15 +2,17 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Query
+from fastapi import APIRouter, BackgroundTasks, Query, Request, Response
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
+from tourism_backend.modules.maps.presentation.router import _fetch, _route_static_params
 from tourism_backend.modules.route_builder.application import (
     generate_service,
     match_service,
     session_service,
 )
 from tourism_backend.modules.route_builder.application.schemas import (
+    ProposalTripDateIn,
     RouteGenerateIn,
     RouteGenerateOut,
     RouteMatchOut,
@@ -22,6 +24,7 @@ from tourism_backend.modules.route_builder.application.schemas import (
     RoutePlanningSessionListOut,
     RoutePlanningSessionOut,
     RouteProposalOut,
+    RouteProposalPreviewOut,
 )
 
 router = APIRouter(prefix="/route-builder", tags=["route-builder"])
@@ -53,6 +56,69 @@ async def generate_route(
         user_id=user_id,
         payload=payload,
     )
+
+
+@router.get("/proposals/{proposal_id}/preview", response_model=RouteProposalPreviewOut)
+async def proposal_preview(
+    proposal_id: UUID, session: DbSession, user_id: CurrentUserId
+) -> RouteProposalPreviewOut:
+    return await generate_service.proposal_preview(
+        session, user_id=user_id, proposal_id=proposal_id
+    )
+
+
+@router.patch("/proposals/{proposal_id}/trip-date", response_model=RouteProposalPreviewOut)
+async def update_trip_date(
+    proposal_id: UUID, payload: ProposalTripDateIn, session: DbSession, user_id: CurrentUserId
+) -> RouteProposalPreviewOut:
+    return await generate_service.update_proposal_trip_date(
+        session, user_id=user_id, proposal_id=proposal_id, start_date=payload.start_date
+    )
+
+
+@router.get("/proposals/{proposal_id}/map")
+async def proposal_map(
+    proposal_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    settings: SettingsDep,
+    request: Request,
+    width: int = Query(default=880, ge=120, le=1280),
+    height: int = Query(default=420, ge=90, le=1280),
+    scale: int = Query(default=2, ge=1, le=2),
+    center_lat: float | None = Query(default=None, ge=-90, le=90),
+    center_lng: float | None = Query(default=None, ge=-180, le=180),
+    zoom: int | None = Query(default=None, ge=1, le=18),
+    pins: str = Query(default="numbered", pattern="^(numbered|none)$"),
+) -> Response:
+    preview = await generate_service.proposal_preview(
+        session, user_id=user_id, proposal_id=proposal_id
+    )
+    stops = [
+        (stop.lng, stop.lat)
+        for stop in preview.stops
+        if stop.lng is not None and stop.lat is not None
+    ]
+    line = preview.geometry.coordinates if preview.geometry else stops
+    response = await _fetch(
+        settings=settings,
+        request=request,
+        params=_route_static_params(
+            line,
+            stops,
+            width=width,
+            height=height,
+            scale=scale,
+            center=(center_lat, center_lng)
+            if center_lat is not None and center_lng is not None
+            else None,
+            zoom=zoom,
+            pins=pins,
+        ),
+    )
+    # The proposal is private even though the raster provider is shared.
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @router.post("/proposals/{proposal_id}/accept", response_model=RouteProposalOut)

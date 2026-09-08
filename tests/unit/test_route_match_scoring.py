@@ -75,6 +75,43 @@ def test_transport_aliases_match_walk_and_walking() -> None:
     assert scored.score >= 0.4
 
 
+def test_known_incompatible_transport_is_excluded() -> None:
+    params = RouteMatchParamsIn(city="Ялта", transport_mode="walk")
+    assert score_candidate(params, _candidate(transport_mode="car")).score == 0
+    assert score_candidate(params, _candidate(transport_mode=None)).score > 0
+
+
+def test_explicit_pet_constraint_beats_other_match_signals() -> None:
+    params = RouteMatchParamsIn(city="Ялта", with_pets=True)
+    assert score_candidate(params, _candidate(pets_allowed=False)).score == 0
+    assert score_candidate(params, _candidate(pets_allowed=None)).score > 0
+
+
+def test_crowd_preference_changes_order_without_inventing_unknown_data() -> None:
+    params = RouteMatchParamsIn(city="Ялта", avoid_crowds=True)
+    low = score_candidate(params, _candidate(typical_crowding="low"))
+    unknown = score_candidate(params, _candidate(typical_crowding="unknown"))
+    high = score_candidate(params, _candidate(typical_crowding="high"))
+    assert low.score > unknown.score > high.score
+    assert not any("мало людей" in reason for reason in unknown.reasons)
+
+
+def test_daily_budget_affects_known_cost_ranking() -> None:
+    params = RouteMatchParamsIn(city="Ялта", budget_amount=2000)
+    affordable = score_candidate(params, _candidate(price_min_amount=500))
+    expensive = score_candidate(params, _candidate(price_min_amount=100_000))
+    assert affordable.score > expensive.score
+    free_only = RouteMatchParamsIn(city="Ялта", paid_ok=False)
+    assert score_candidate(free_only, _candidate(price_min_amount=500)).score == 0
+
+
+def test_short_route_is_an_option_for_part_of_a_long_trip() -> None:
+    params = RouteMatchParamsIn(city="Ялта", duration="d3_5")
+    scored = score_candidate(params, _candidate(estimated_duration_minutes=240))
+    assert scored.score >= 0.55
+    assert "можно пройти за часть поездки" in scored.reasons
+
+
 def test_season_aliases_accept_english_catalog_values() -> None:
     params = RouteMatchParamsIn(city="Ялта", duration="d3_5", season="лето")
     scored = score_candidate(

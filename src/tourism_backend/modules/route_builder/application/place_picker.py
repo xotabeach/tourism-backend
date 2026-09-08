@@ -8,7 +8,7 @@ from uuid import UUID
 
 from geoalchemy2 import Geometry
 from geoalchemy2.functions import ST_X, ST_Y
-from sqlalchemy import cast, or_, select
+from sqlalchemy import and_, cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -70,6 +70,11 @@ class PickedPlace:
     accessibility: dict[str, object] | None = None
     osm_tags: dict[str, str] | None = None
     access_transport: tuple[str, ...] = ()
+    payment_status: str = "unknown"
+    is_paid: bool = False
+    price_min_amount: int | None = None
+    price_currency: str = "RUB"
+    typical_crowding: str = "unknown"
 
 
 def _target_stops(duration: DurationOption, max_points: int) -> int:
@@ -82,6 +87,7 @@ def _score_place(
     city_cf: str,
     categories: frozenset[str] = frozenset(),
     preferences: UserPreferenceSignals | None = None,
+    recent_place_ids: frozenset[UUID] = frozenset(),
 ) -> float:
     text = " ".join(
         part
@@ -115,6 +121,19 @@ def _score_place(
         score += 0.06
     if params.paid_ok is False and place.is_paid:
         score -= 0.2
+    if params.avoid_crowds:
+        score += {"low": 0.1, "medium": -0.04, "high": -0.15}.get(place.typical_crowding, 0)
+    if params.budget_amount is not None:
+        # Compare only known rouble prices; unknown is not the same as free.
+        if place.payment_status == "free" and not place.is_paid and not place.price_min_amount:
+            score += 0.1
+        elif place.price_min_amount is not None and place.price_currency == "RUB":
+            headroom = 1 - place.price_min_amount / max(1, params.budget_amount)
+            score += 0.1 * max(-1, min(1, headroom))
+    # Variety stays weaker than an explicit interest/category match. A small
+    # catalogue can still reuse places instead of failing an otherwise valid trip.
+    if place.id in recent_place_ids:
+        score -= 0.1
     if params.pace == "calm" and (place.difficulty or "").casefold() in {
         "easy",
         "лёгкий",
@@ -163,7 +182,48 @@ def picked_place_from_orm(place: Place, *, cover_hint: str | None = None) -> Pic
         ),
         osm_tags=safety_tags_from_payload(place.source_payload),
         access_transport=tuple((place.access_transport or [])[:16]),
+        payment_status=place.payment_status or "unknown",
+        is_paid=bool(place.is_paid),
+        price_min_amount=place.price_min_amount,
+        price_currency=place.price_currency or "RUB",
+        typical_crowding=place.typical_crowding or "unknown",
     )
+
+
+def place_planning_warnings(params: RouteMatchParamsIn, places: list[PickedPlace]) -> list[str]:
+    warnings: list[str] = []
+    if params.budget_amount is not None or params.paid_ok is False:
+        unknown_prices = sum(
+            1
+            for place in places
+            if not (
+                (
+                    place.payment_status == "free"
+                    and not place.is_paid
+                    and not place.price_min_amount
+                )
+                or (place.price_min_amount is not None and place.price_currency == "RUB")
+            )
+        )
+        if unknown_prices:
+            warnings.append(
+                f"Для {unknown_prices} из {len(places)} мест стоимость посещения в рублях "
+                "не подтверждена. Неизвестная цена не означает бесплатный вход."
+            )
+        warnings.append(
+            "Бюджет учтён при выборе мест, но это ещё не смета поездки: "
+            "нужно уточнить тарифы на компанию, питание, транспорт и ночлег."
+        )
+    if params.avoid_crowds:
+        if any(place.typical_crowding in {"unknown", ""} for place in places):
+            warnings.append(
+                "Для части мест нет данных о людности; отсутствие очередей не подтверждено."
+            )
+        if any(place.typical_crowding == "high" for place in places):
+            warnings.append(
+                "В план вошли и обычно людные места. Можно заменить их или выбрать другое время."
+            )
+    return warnings
 
 
 def _hard_place_constraints(params: RouteMatchParamsIn) -> tuple[ColumnElement[bool], ...]:
@@ -189,6 +249,24 @@ def _hard_place_constraints(params: RouteMatchParamsIn) -> tuple[ColumnElement[b
             or_(
                 Place.is_suitable_for_pets.is_(True),
                 Place.is_suitable_for_pets.is_(None),
+            )
+        )
+    if params.paid_ok is False or params.budget_amount == 0:
+        constraints.append(
+            and_(
+                Place.is_paid.is_(False),
+                Place.payment_status != "paid",
+                or_(Place.price_min_amount.is_(None), Place.price_min_amount <= 0),
+            )
+        )
+    elif params.budget_amount is not None:
+        # One visit whose known minimum exceeds a whole day's budget cannot
+        # fit. Do not compare currencies without a verified exchange rate.
+        constraints.append(
+            or_(
+                Place.price_min_amount.is_(None),
+                Place.price_currency != "RUB",
+                Place.price_min_amount <= params.budget_amount,
             )
         )
     return tuple(constraints)
@@ -219,6 +297,7 @@ async def pick_places_for_params(
     params: RouteMatchParamsIn,
     max_points: int,
     preferences: UserPreferenceSignals | None = None,
+    recent_place_ids: frozenset[UUID] = frozenset(),
 ) -> list[PickedPlace]:
     region = await session.scalar(select(Region).where(Region.slug == params.region_slug))
     if region is None:
@@ -285,13 +364,14 @@ async def pick_places_for_params(
                 city_cf,
                 categories_by_place.get(place.id, frozenset()),
                 preferences,
+                recent_place_ids,
             ),
             place.name,
         ),
     )
     target = _target_stops(params.duration, max_points)
 
-    # Candidates are ranked by text relevance only, which can span the whole
+    # Ranked candidates can span the whole
     # region once the city/locality filter falls back broadly. Chain-select
     # geographically so no consecutive leg exceeds what the (stub or real)
     # RoutingProvider allows for the chosen transport mode — otherwise
