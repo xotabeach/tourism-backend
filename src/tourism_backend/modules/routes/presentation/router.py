@@ -27,6 +27,7 @@ from tourism_backend.modules.routes.application.schemas import (
     UserRouteDraftOut,
     UserRouteEditableOut,
     UserRouteMediaOut,
+    UserRouteMediaSyncIn,
 )
 
 router = APIRouter(tags=["routes"])
@@ -147,6 +148,25 @@ async def clear_route_draft_media(
         session,
         route_id=route_id,
         owner_user_id=user_id,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.put(
+    "/routes/drafts/{route_id}/media",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def sync_route_draft_media(
+    route_id: UUID,
+    payload: UserRouteMediaSyncIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> Response:
+    await routes_service.sync_user_route_media(
+        session,
+        route_id=route_id,
+        owner_user_id=user_id,
+        keep=payload.keep,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

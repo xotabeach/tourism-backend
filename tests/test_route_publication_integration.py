@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from tourism_backend.config import Settings
@@ -408,3 +408,130 @@ async def test_route_is_editable_from_another_device_and_requeues_when_live(
     # ...and it cannot be pushed through submit a second time.
     resubmit = await client.post(f"/api/v1/routes/{route_id}/submit", headers=headers)
     assert resubmit.status_code == 409, resubmit.text
+
+
+@pytest.mark.asyncio
+async def test_draft_media_survives_a_resave_from_another_device(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """Photos of a draft reopened elsewhere must not be lost by saving it.
+
+    The editor on the second device holds no files — only the ids the
+    `editable` payload gave it — so its save has nothing to re-upload. When
+    the only way to change the gallery was "archive everything, then upload",
+    that save silently emptied it (reported 2026-09-08).
+    """
+    client, app = publication_context
+    tokens = await _login(client, f"+7909{uuid4().int % 10_000_000:07d}")
+    other = await _login(client, f"+7910{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+
+    places = await client.get(
+        "/api/v1/places",
+        params={"region_slug": "crimea", "limit": 3},
+    )
+    place_ids = [item["id"] for item in places.json()["items"][:2]]
+    saved = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json={
+            "name": "Черновик с фотографиями",
+            "description": "",
+            "place_ids": place_ids,
+            "filters": [],
+            "pace": "calm",
+            "difficulty": 3,
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    route_id = saved.json()["id"]
+
+    try:
+        media_ids = []
+        for position in range(3):
+            upload = await client.post(
+                f"/api/v1/routes/drafts/{route_id}/media",
+                headers=headers,
+                data={"position": str(position)},
+                files={"file": (f"p{position}.png", _png_bytes(), "image/png")},
+            )
+            assert upload.status_code == 200, upload.text
+            media_ids.append(upload.json()["id"])
+
+        # The editable payload is what a second device gets to work from.
+        editable = await client.get(
+            f"/api/v1/routes/{route_id}/editable",
+            headers=headers,
+        )
+        assert [item["id"] for item in editable.json()["media"]] == media_ids
+
+        # Keeping every id, reordered, drops nothing and re-numbers positions.
+        reordered = [media_ids[2], media_ids[0], media_ids[1]]
+        synced = await client.put(
+            f"/api/v1/routes/drafts/{route_id}/media",
+            headers=headers,
+            json={"keep": reordered},
+        )
+        assert synced.status_code == 204, synced.text
+        after = await client.get(
+            f"/api/v1/routes/{route_id}/editable",
+            headers=headers,
+        )
+        assert [item["id"] for item in after.json()["media"]] == reordered
+        assert [item["position"] for item in after.json()["media"]] == [0, 1, 2]
+
+        # The new first photo becomes the cover, so the card does not keep
+        # showing one the author moved to the back.
+        async with app.state.session_factory() as session:
+            covers = list(
+                (
+                    await session.scalars(
+                        select(MediaAttachment).where(
+                            MediaAttachment.entity_type == "route",
+                            MediaAttachment.entity_id == UUID(route_id),
+                            MediaAttachment.status == "active",
+                            MediaAttachment.role == "cover",
+                        )
+                    )
+                ).all()
+            )
+            assert [item.id for item in covers] == [UUID(reordered[0])]
+
+        # Dropping one archives only that one.
+        dropped = await client.put(
+            f"/api/v1/routes/drafts/{route_id}/media",
+            headers=headers,
+            json={"keep": reordered[:2]},
+        )
+        assert dropped.status_code == 204, dropped.text
+        left = await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)
+        assert [item["id"] for item in left.json()["media"]] == reordered[:2]
+
+        # Someone else's draft is not theirs to rearrange.
+        foreign = await client.put(
+            f"/api/v1/routes/drafts/{route_id}/media",
+            headers=other_headers,
+            json={"keep": []},
+        )
+        assert foreign.status_code == 404, foreign.text
+        assert (
+            len(
+                (
+                    await client.get(
+                        f"/api/v1/routes/{route_id}/editable",
+                        headers=headers,
+                    )
+                ).json()["media"]
+            )
+            == 2
+        )
+    finally:
+        async with app.state.session_factory() as session:
+            await session.execute(
+                delete(MediaAttachment).where(
+                    MediaAttachment.entity_type == "route",
+                    MediaAttachment.entity_id == UUID(route_id),
+                )
+            )
+            await session.commit()

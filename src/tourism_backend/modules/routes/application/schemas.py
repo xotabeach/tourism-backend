@@ -110,6 +110,15 @@ class UserRouteEditableOut(BaseModel):
     updated_at: datetime
 
 
+class UserRouteMediaSyncIn(BaseModel):
+    """Ids of the already-stored files the editor still shows, in order.
+
+    An empty list clears the gallery, same as the DELETE endpoint.
+    """
+
+    keep: list[UUID] = Field(default_factory=list, max_length=10)
+
+
 class UserRouteMediaOut(BaseModel):
     id: UUID
     public_path: str
