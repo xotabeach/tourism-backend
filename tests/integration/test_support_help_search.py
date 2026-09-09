@@ -342,7 +342,7 @@ async def test_http_feature_flag_controls_semantic_lookup(
     provider = FixtureMiniLM()
     await index_help(db, app_version=version, provider=provider)
     encoder = HelpQueryEncoder(provider)
-    monkeypatch.setattr(module, "help_query_encoder", lambda _model, _timeout: encoder)
+    monkeypatch.setattr(module, "help_query_encoder", lambda *_args: encoder)
     app = FastAPI()
     app.state.settings = Settings(
         _env_file=None, support_help_semantic_enabled=True, rag_embedding_model=MINILM_MODEL

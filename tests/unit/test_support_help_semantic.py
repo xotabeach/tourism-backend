@@ -70,22 +70,107 @@ class SlowProvider:
         return vector()
 
 
-async def test_timeout_and_overlap_do_not_spawn_more_cpu_work() -> None:
+class QueueingProvider:
+    """Serves one embed at a time, on demand, counting overlap."""
+
+    model_id = MINILM_MODEL
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.concurrent = 0
+        self.max_concurrent = 0
+
+    async def warm(self) -> None:
+        pass
+
+    async def embed(self, query: str) -> list[float]:
+        self.calls += 1
+        self.concurrent += 1
+        self.max_concurrent = max(self.max_concurrent, self.concurrent)
+        try:
+            await asyncio.sleep(0)  # Yield, so an overlapping caller could run.
+            return vector()
+        finally:
+            self.concurrent -= 1
+
+
+async def test_everyone_asking_at_once_still_gets_the_model() -> None:
+    """Overlapping questions queue for MiniLM instead of being downgraded.
+
+    The first version answered one caller from the model and handed every
+    other concurrent caller back to lexical search — two people typing at the
+    same moment got different answer quality for no visible reason.
+    """
+    provider = QueueingProvider()
+    encoder = HelpQueryEncoder(provider, timeout_seconds=5, queue_seconds=5)
+
+    results = await asyncio.gather(*(encoder.encode(f"вопрос {i}") for i in range(5)))
+
+    assert all(result == vector() for result in results)
+    assert provider.calls == 5
+    # Queued, not parallel: the CPU slot is still one at a time.
+    assert provider.max_concurrent == 1
+    assert encoder.waiting == 0
+
+
+async def test_a_queue_too_long_to_serve_answers_from_lexical_search() -> None:
+    """The queue is bounded: past the cap, waiting can no longer pay off."""
     provider = SlowProvider()
-    encoder = HelpQueryEncoder(provider, timeout_seconds=0.01)
-    assert await encoder.encode("первый вопрос") is None
-    assert await encoder.encode("второй вопрос") is None
+    encoder = HelpQueryEncoder(provider, timeout_seconds=5, queue_seconds=5, max_waiting=2)
+    first = asyncio.create_task(encoder.encode("первый"))
+    await provider.started.wait()
+    second = asyncio.create_task(encoder.encode("второй"))
+    await asyncio.sleep(0)
+
+    # Two are in the system; the third is turned away immediately rather than
+    # joining a queue nobody can serve in time.
+    assert await encoder.encode("третий") is None
     assert provider.calls == 1
+
+    provider.release.set()
+    assert await first == vector()
+    assert await second == vector()
+    assert encoder.waiting == 0
+
+
+async def test_waiting_longer_than_the_budget_falls_back_without_queueing_forever() -> None:
+    provider = SlowProvider()
+    encoder = HelpQueryEncoder(provider, timeout_seconds=5, queue_seconds=0.01)
+    first = asyncio.create_task(encoder.encode("первый"))
+    await provider.started.wait()
+
+    # The slot is busy for longer than this caller may wait.
+    assert await encoder.encode("второй") is None
+    assert provider.calls == 1
+
+    provider.release.set()
+    assert await first == vector()
+
+
+async def test_a_timed_out_caller_does_not_hand_the_slot_over_early() -> None:
+    """A cancelled `to_thread` await does not stop torch.
+
+    Releasing the slot when the waiter gives up would start a second encode
+    while the first still burns CPU — the thing the single slot exists to
+    prevent.
+    """
+    provider = SlowProvider()
+    encoder = HelpQueryEncoder(provider, timeout_seconds=0.01, queue_seconds=0.01)
+
+    assert await encoder.encode("первый") is None  # Times out, work continues.
+    assert await encoder.encode("второй") is None  # Slot still held by the first.
+    assert provider.calls == 1
+
     provider.release.set()
     await asyncio.sleep(0)
     await asyncio.sleep(0)
-    assert await encoder.encode("третий вопрос") == vector()
+    assert await encoder.encode("третий") == vector()
     assert provider.calls == 2
 
 
 async def test_cancelled_request_does_not_release_cpu_slot_early() -> None:
     provider = SlowProvider()
-    encoder = HelpQueryEncoder(provider)
+    encoder = HelpQueryEncoder(provider, queue_seconds=0.01)
     request = asyncio.create_task(encoder.encode("частный вопрос"))
     await provider.started.wait()
     request.cancel()

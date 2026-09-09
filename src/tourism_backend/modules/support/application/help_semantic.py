@@ -62,52 +62,114 @@ def normalized_vector(values: Sequence[float]) -> list[float]:
 
 
 class HelpQueryEncoder:
-    """At most one in-flight CPU task per process, including after a timeout.
+    """Serializes MiniLM work and makes callers queue for it, not skip it.
 
-    A cancelled to_thread await does not stop torch. Shield that work and
-    let overlapping requests use FTS, instead of building an unbounded queue.
-    No question/answer cache, no user text in logs.
+    The first version let one request through and handed every overlapping
+    one back to lexical search. That is the wrong trade: two people typing
+    at the same moment got measurably different answer quality for no reason
+    they could see, and no way to ask for the better one.
+
+    So the CPU slot is still one at a time — torch on this host has no spare
+    cores to interleave — but callers now wait their turn inside a bounded
+    budget instead of being dropped. Lexical search remains the fallback for
+    the cases where waiting is worse than answering: a queue already too
+    long to serve in time, a budget spent, a model that will not load.
+
+    Two invariants worth keeping while editing:
+    - the slot is released when the work actually finishes, never when a
+      caller stops waiting for it — a cancelled `to_thread` await does not
+      stop torch, and releasing early would run two encodes at once;
+    - nothing here caches or logs the question.
     """
 
-    def __init__(self, provider: EmbeddingProvider, *, timeout_seconds: float = 1.5):
+    def __init__(
+        self,
+        provider: EmbeddingProvider,
+        *,
+        timeout_seconds: float = 1.5,
+        queue_seconds: float = 6.0,
+        max_waiting: int = 12,
+    ):
         if provider.model_id not in MINILM_ALIASES:
             raise ValueError("Support semantic search requires multilingual MiniLM, not hash-v1")
         self.provider = provider
         self.timeout_seconds = timeout_seconds
-        self._inflight: asyncio.Task[list[float]] | None = None
+        self.queue_seconds = queue_seconds
+        self.max_waiting = max_waiting
+        self._slot = asyncio.Semaphore(1)
+        self._waiting = 0
 
     @property
     def model_id(self) -> str:
         return MINILM_MODEL
 
-    async def encode(self, query: str) -> list[float] | None:
-        if self._inflight is not None and not self._inflight.done():
-            return None
-        task = asyncio.create_task(self.provider.embed(query))
-        self._inflight = task
-        task.add_done_callback(self._consume)
-        try:
-            values = await asyncio.wait_for(asyncio.shield(task), self.timeout_seconds)
-            return normalized_vector(values)
-        except Exception as exc:  # noqa: BLE001 — optional retrieval must fall back to FTS
-            logger.warning("support_help_embedding_unavailable reason=%s", type(exc).__name__)
-            return None
+    @property
+    def waiting(self) -> int:
+        """Callers queued or running. Exposed for tests and metrics only."""
+        return self._waiting
 
-    def _consume(self, task: asyncio.Task[list[float]]) -> None:
+    async def warm(self) -> None:
+        """Loads the weights before anyone is waiting on them.
+
+        Loading is seconds-scale, and it happens inside the first `embed()`.
+        Without this the first question after a restart — and every question
+        during the load — spends its whole budget waiting for the model and
+        falls back to lexical search.
+        """
+        await self.provider.warm()
+
+    async def encode(self, query: str) -> list[float] | None:
+        if self._waiting >= self.max_waiting:
+            # A queue this long cannot be served inside anyone's budget;
+            # answering now from lexical search beats timing out later.
+            logger.warning("support_help_encoder_saturated waiting=%d", self._waiting)
+            return None
+        self._waiting += 1
+        try:
+            try:
+                await asyncio.wait_for(self._slot.acquire(), self.queue_seconds)
+            except TimeoutError:
+                logger.warning("support_help_encoder_queue_timeout")
+                return None
+            try:
+                task = asyncio.create_task(self.provider.embed(query))
+            except BaseException:
+                self._slot.release()
+                raise
+            # The slot follows the work, not the waiter.
+            task.add_done_callback(self._release)
+            try:
+                values = await asyncio.wait_for(asyncio.shield(task), self.timeout_seconds)
+                return normalized_vector(values)
+            except Exception as exc:  # noqa: BLE001 — optional retrieval falls back to FTS
+                logger.warning("support_help_embedding_unavailable reason=%s", type(exc).__name__)
+                return None
+        finally:
+            self._waiting -= 1
+
+    def _release(self, task: asyncio.Task[list[float]]) -> None:
         if not task.cancelled():
             task.exception()  # Consume late failures after timeout; never log the query.
-        if self._inflight is task:
-            self._inflight = None
+        self._slot.release()
 
 
 @lru_cache(maxsize=2)
-def help_query_encoder(model_id: str, timeout_seconds: float) -> HelpQueryEncoder | None:
+def help_query_encoder(
+    model_id: str,
+    timeout_seconds: float,
+    queue_seconds: float = 6.0,
+    max_waiting: int = 12,
+) -> HelpQueryEncoder | None:
     if model_id not in MINILM_ALIASES:
         return None
-    # Same provider and process-wide weight cache as tourist RAG; separate data.
+    # Same provider and process-wide weight cache as tourist RAG; separate
+    # data. Cached so every request queues on one shared slot rather than
+    # each building its own — which would defeat the whole limit.
     return HelpQueryEncoder(
         SentenceTransformerEmbeddingProvider(model_name=model_id),
         timeout_seconds=timeout_seconds,
+        queue_seconds=queue_seconds,
+        max_waiting=max_waiting,
     )
 
 

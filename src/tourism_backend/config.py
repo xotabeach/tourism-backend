@@ -152,6 +152,14 @@ class Settings(BaseSettings):
     support_help_semantic_enabled: bool = False
     support_help_semantic_min_score: float = Field(default=0.55, ge=0.0, le=1.0)
     support_help_semantic_timeout_seconds: float = Field(default=1.5, ge=0.05, le=5.0)
+    # How long a question may wait for the shared MiniLM slot before it gives
+    # up and answers from lexical search. People who ask at the same moment
+    # should get the same quality of answer, so they queue rather than being
+    # handed the weaker result immediately.
+    support_help_semantic_queue_seconds: float = Field(default=6.0, ge=0.0, le=30.0)
+    # Queue depth past which waiting can no longer pay off. Guards the single
+    # CPU slot against a pile-up; everyone over it still gets lexical search.
+    support_help_semantic_max_waiting: int = Field(default=12, ge=1, le=200)
 
     # ADR-004/010 RoutingProvider. ``stub`` is synthetic local DX; ``2gis``
     # uses the server-side HTTP Routing API.  Keep the default conservative so

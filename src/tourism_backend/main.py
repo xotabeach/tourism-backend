@@ -1,3 +1,4 @@
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -37,11 +38,41 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Unit tests may construct the app without a live database.
         if settings.app_env not in {AppEnvironment.LOCAL, AppEnvironment.TEST}:
             raise
+    await _warm_help_encoder(settings)
     try:
         yield
     finally:
         await app.state.redis.aclose()
         await app.state.engine.dispose()
+
+
+async def _warm_help_encoder(settings: Settings) -> None:
+    """Loads MiniLM before the first support question, not during it.
+
+    Loading is seconds-scale, and it happens inside the first `embed()`. Left
+    to itself, the first question after every restart — and every question
+    asked while the load runs — spends its whole budget waiting for weights
+    and falls back to lexical search.
+
+    Best-effort: a failure here only means the first question loads the model
+    itself, exactly as it did before.
+    """
+    if not settings.support_help_semantic_enabled:
+        return
+    from tourism_backend.modules.support.application.help_semantic import help_query_encoder
+
+    encoder = help_query_encoder(
+        settings.rag_embedding_model,
+        settings.support_help_semantic_timeout_seconds,
+        settings.support_help_semantic_queue_seconds,
+        settings.support_help_semantic_max_waiting,
+    )
+    if encoder is None:
+        return
+    try:
+        await encoder.warm()
+    except Exception:  # noqa: BLE001 — warmup must never keep the app from starting
+        logging.getLogger(__name__).warning("support_help_warmup_failed", exc_info=True)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

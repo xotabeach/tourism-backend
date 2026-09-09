@@ -23,7 +23,10 @@ def test_pack_has_fifteen_versioned_articles_but_is_not_published() -> None:
     assert catalog.manifest.status == "draft"
     assert not catalog.manifest.release_verified
     assert catalog.manifest.approved_by is None
-    assert catalog.manifest.target_app_version == "0.2.31"
+    # Bump with every mobile release. Help search filters by exact app
+    # version, so a corpus left on the previous one answers "no articles for
+    # this build" to everybody — this assertion is the tripwire for that.
+    assert catalog.manifest.target_app_version == "0.2.4"
     assert len({a.spec.id for a in catalog.articles}) == 15
     assert all(a.spec.evidence and a.spec.revision >= 1 for a in catalog.articles)
     assert all(a.plain_text and "##" not in a.plain_text for a in catalog.articles)

@@ -40,7 +40,10 @@ async def help_search(
     # Free-form support questions belong in a body, not proxy/access-log URLs.
     encoder = (
         help_query_encoder(
-            settings.rag_embedding_model, settings.support_help_semantic_timeout_seconds
+            settings.rag_embedding_model,
+            settings.support_help_semantic_timeout_seconds,
+            settings.support_help_semantic_queue_seconds,
+            settings.support_help_semantic_max_waiting,
         )
         if settings.support_help_semantic_enabled
         else None

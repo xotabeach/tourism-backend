@@ -1,6 +1,6 @@
 # Проверенная по коду справка и поиск инструкций — SUP-01
 
-15 статей для готовящейся сборки `0.2.31`. Статус корпуса — **draft**:
+15 статей для готовящейся сборки `0.2.4`. Статус корпуса — **draft**:
 сверка с кодом выполнена, выпуск и редакционное одобрение владельцем
 не подтверждены. Корпус не опубликован. Код поискового помощника готов
 локально, но до публикации он не предлагает эти статьи через API.
@@ -68,7 +68,7 @@ uv run python scripts/import_support_help.py
 ## Поисковый API и приложение
 
 - `POST /api/v1/support/help/search`: JSON `q` (до 400 символов) и
-  `app_version` (например, `0.2.31`). Свободный вопрос не помещается в URL.
+  `app_version` (например, `0.2.4`). Свободный вопрос не помещается в URL.
 - `GET /api/v1/support/help/{article_id}`: обязательные `revision` и
   `app_version`; полная статья или `404`, если редакция недоступна.
 - Открыта только публичная справка: published, `ru`, точная версия,
@@ -113,10 +113,10 @@ FTS и semantic объединяются по позициям (RRF), не сл�
 
 ```bash
 # Только чтение DB: без загрузки модели или записи индекса
-uv run python scripts/index_support_help.py --app-version 0.2.31
+uv run python scripts/index_support_help.py --app-version 0.2.4
 
 # Только после одобрения и фактической публикации статей владельцем
-uv run --extra rag python scripts/index_support_help.py --app-version 0.2.31 --apply
+uv run --extra rag python scripts/index_support_help.py --app-version 0.2.4 --apply
 ```
 
 CLI индексирует только опубликованные неистёкшие редакции, не меняет статус
