@@ -375,6 +375,21 @@ async def list_messages(
     )
 
 
+# Purposes in which a bare "да"/"ок" means "build it" once every field is
+# confirmed. Answering "да" while the assistant is telling you about a place
+# or comparing two of them is agreement with what was said, not an order to
+# generate a route.
+#
+# An unset goal counts: a session created straight from the params form has
+# never had a conversational turn to set one, and its author filled in and
+# confirmed the whole form — which is the planning path, not an aside.
+_CONFIRMABLE_GOALS = frozenset({"discover", "clarify"})
+
+
+def _goal_accepts_confirmation(goal: object) -> bool:
+    return not isinstance(goal, str) or goal in _CONFIRMABLE_GOALS
+
+
 async def post_message(
     session: AsyncSession,
     *,
@@ -470,7 +485,7 @@ async def post_message(
     intent = classify_chat_intent(
         payload.text,
         generate_confirm_ok=(
-            constraints_dict.get("dialogue_goal") == "discover"
+            _goal_accepts_confirmation(constraints_dict.get("dialogue_goal"))
             and prefer_ready_ask_field(confirmed) == "ready"
         ),
     )

@@ -307,6 +307,32 @@ async def test_custom_goal_does_not_authorize_generation(chat: SimpleNamespace):
     chat.generate.assert_not_awaited()
 
 
+async def test_yes_confirms_a_form_built_session_that_has_no_goal_yet(
+    chat: SimpleNamespace,
+) -> None:
+    """A session created straight from the params form has no dialogue goal.
+
+    Requiring the goal to already read "discover" excluded exactly that
+    session — its author had filled in and confirmed every field, which is
+    the planning path, and their "ок" stopped meaning "build it".
+    """
+    chat.planning.constraints.pop("dialogue_goal", None)
+    chat.planning.constraints["people"] = 2
+    chat.planning.constraints["budget_amount"] = 4000
+    chat.planning.confirmed_fields = [
+        "city",
+        "pace",
+        "duration",
+        "transport_mode",
+        "people",
+        "budget_amount",
+    ]
+
+    result = await _post(chat, text="ок")
+
+    assert result.intent == "generate"
+
+
 async def test_yes_in_place_question_does_not_trigger_catalogue(chat: SimpleNamespace):
     chat.planning.constraints["dialogue_goal"] = "place_info"
     chat.planning.constraints["search_area"] = "Крым"
