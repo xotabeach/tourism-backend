@@ -236,3 +236,123 @@ async def test_long_source_is_windowed_before_encoding_without_optional_dependen
     assert set("".join(model.windows)) == set(source)
     assert model.windows[0].startswith(source[:8])
     assert model.windows[-1].endswith(source[-8:])
+
+
+async def test_index_job_refuses_a_model_whose_vectors_would_not_match() -> None:
+    """Same 384 dimensions is not the same vector space.
+
+    Indexing with another model would fill the table with numbers that score
+    plausibly against the wrong articles, and nothing downstream would say so.
+    """
+    from tourism_backend.modules.support.application.help_index_job import HelpIndexJob
+
+    job = HelpIndexJob()
+    assert job.last_run.status == "unknown"
+
+    started = job.start(
+        session_maker=lambda **_: None,
+        app_version="0.2.4",
+        model_id="hash-v1",
+        actor="operator",
+    )
+
+    assert started is False
+    assert job.last_run.status == "failed"
+    assert "MiniLM" in (job.last_run.error or "")
+    assert not job.busy
+
+
+async def test_index_job_runs_one_at_a_time_and_reports_the_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tourism_backend.modules.support.application import help_index_job as module
+
+    release = asyncio.Event()
+    calls = 0
+
+    class _Session:
+        async def __aenter__(self) -> "_Session":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def begin(self) -> "_Session":
+            return self
+
+    async def fake_index(session: object, *, app_version: str, provider: object) -> int:
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return 7
+
+    monkeypatch.setattr(module, "index_help", fake_index)
+    monkeypatch.setattr(module, "SentenceTransformerEmbeddingProvider", lambda **_: object())
+
+    job = module.HelpIndexJob()
+    assert job.start(
+        session_maker=lambda **_: _Session(),
+        app_version="0.2.4",
+        model_id=MINILM_MODEL,
+        actor="operator",
+    )
+    await asyncio.sleep(0)
+    assert job.busy
+    assert job.last_run.status == "running"
+
+    # A second press while one is going does not start a parallel run.
+    assert (
+        job.start(
+            session_maker=lambda **_: _Session(),
+            app_version="0.2.4",
+            model_id=MINILM_MODEL,
+            actor="operator",
+        )
+        is False
+    )
+    assert calls == 1
+
+    release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not job.busy:
+            break
+    assert job.last_run.status == "done"
+    assert job.last_run.changed == 7
+    assert job.last_run.actor == "operator"
+
+
+async def test_index_job_keeps_a_failure_visible_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tourism_backend.modules.support.application import help_index_job as module
+
+    class _Session:
+        async def __aenter__(self) -> "_Session":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def begin(self) -> "_Session":
+            return self
+
+    async def boom(session: object, *, app_version: str, provider: object) -> int:
+        raise ValueError("Help corpus exceeds the bounded passage index")
+
+    monkeypatch.setattr(module, "index_help", boom)
+    monkeypatch.setattr(module, "SentenceTransformerEmbeddingProvider", lambda **_: object())
+
+    job = module.HelpIndexJob()
+    assert job.start(
+        session_maker=lambda **_: _Session(),
+        app_version="0.2.4",
+        model_id=MINILM_MODEL,
+        actor=None,
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if not job.busy:
+            break
+    assert job.last_run.status == "failed"
+    assert "bounded passage index" in (job.last_run.error or "")

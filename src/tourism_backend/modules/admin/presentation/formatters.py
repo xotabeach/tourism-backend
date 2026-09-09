@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from markupsafe import Markup, escape
 from starlette.requests import Request
+
+from tourism_backend.modules.admin.presentation.datetime_fmt import format_moscow_plain
 
 _STATUS_LABELS = {
     "open": ("Открыт", "ct-badge-open"),
@@ -50,6 +53,12 @@ _REVIEW_STATUS_LABELS = {
     "published": ("Опубликован", "ct-badge-route-published"),
     "rejected": ("Отклонён", "ct-badge-route-rejected"),
     "deleted": ("Удалён", "ct-badge-route-deleted"),
+}
+
+_HELP_STATUS_LABELS = {
+    "draft": ("Черновик", "ct-badge-route-draft"),
+    "published": ("Опубликована", "ct-badge-route-published"),
+    "withdrawn": ("Отозвана", "ct-badge-route-deleted"),
 }
 
 _ARTICLE_STATUS_LABELS = {
@@ -151,6 +160,39 @@ def format_message_author(model: object, attribute: object) -> Markup:
 
 def format_admin_role(model: object, attribute: object) -> Markup:
     return _badge(getattr(model, "role", None), _ROLE_LABELS)
+
+
+def format_help_status(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "status", None), _HELP_STATUS_LABELS)
+
+
+def format_help_review_until(model: object, attribute: object) -> Markup:
+    """The deadline, plus how close it is.
+
+    An expired article vanishes from search without any other signal, so the
+    list has to say so before an operator goes looking for why the help is
+    empty. Renewal is deliberate: nothing extends this on its own.
+    """
+    value = getattr(model, "review_until", None)
+    if not isinstance(value, datetime):
+        return Markup('<span class="ct-badge ct-badge-closed">—</span>')
+    moment = value if value.tzinfo else value.replace(tzinfo=UTC)
+    now = datetime.now(UTC)
+    stamp = escape(format_moscow_plain(moment, with_seconds=False))
+    if getattr(model, "status", None) != "published":
+        return Markup("<span>{}</span>").format(stamp)
+    days = (moment - now).days
+    if moment <= now:
+        return Markup('{} <span class="ct-badge ct-badge-route-rejected">истёк</span>').format(
+            stamp
+        )
+    if days <= 14:
+        return Markup(
+            '{} <span class="ct-badge ct-badge-route-pending">осталось {} дн.</span>'
+        ).format(stamp, days)
+    return Markup('{} <span class="ct-badge ct-badge-route-published">до {} дн.</span>').format(
+        stamp, days
+    )
 
 
 def format_route_publication_status(model: object, attribute: object) -> Markup:

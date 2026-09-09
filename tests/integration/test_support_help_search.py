@@ -460,3 +460,122 @@ async def test_real_minilm_retrieval_evaluation(db: AsyncSession, pack: HelpCata
     )
     assert metrics["hybrid"]["hits"] >= metrics["full_text"]["hits"]
     assert metrics["hybrid"]["false_matches"] <= metrics["full_text"]["false_matches"]
+
+
+async def test_publishing_from_the_admin_retires_what_it_replaces(
+    db: AsyncSession, pack: HelpCatalog
+) -> None:
+    """One published revision per article, version and language.
+
+    `uq_support_help_current` allows exactly one, so publishing revision 2
+    has to withdraw revision 1 rather than fail on the index — and the
+    operator who published it is what `approved_by` records, instead of
+    whatever string a manifest file happened to carry.
+    """
+    from tourism_backend.modules.support.application.help_publication import (
+        DEFAULT_REVIEW_DAYS,
+        extend_review,
+        publish_revisions,
+        withdraw_revisions,
+    )
+
+    version = pack.manifest.target_app_version
+    now = datetime.now(UTC)
+    deadline = now + timedelta(days=DEFAULT_REVIEW_DAYS)
+
+    first = SupportHelpRevision(
+        article_id="admin-flow",
+        revision=1,
+        app_version=version,
+        language="ru",
+        category="app",
+        faq_id="admin-flow",
+        title="Заголовок",
+        question="Вопрос?",
+        body="Достаточно длинный текст инструкции для проверки публикации.",
+        content_hash="hash-r1",
+        status="draft",
+        created_at=now,
+        updated_at=now,
+    )
+    second = SupportHelpRevision(
+        article_id="admin-flow",
+        revision=2,
+        app_version=version,
+        language="ru",
+        category="app",
+        faq_id="admin-flow",
+        title="Заголовок",
+        question="Вопрос?",
+        body="Исправленный текст той же инструкции, вторая ревизия.",
+        content_hash="hash-r2",
+        status="draft",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add_all([first, second])
+    await db.flush()
+
+    outcome = await publish_revisions(
+        db,
+        revision_ids=[first.id],
+        approved_by="operator-1",
+        review_until=deadline,
+        now=now,
+    )
+    assert outcome.published == 1
+    assert first.status == "published"
+    assert first.approved_by == "operator-1"
+    assert first.review_until == deadline
+
+    # The replacement retires its predecessor instead of colliding with it.
+    outcome = await publish_revisions(
+        db,
+        revision_ids=[second.id],
+        approved_by="operator-2",
+        review_until=deadline,
+        now=now,
+    )
+    assert (outcome.published, outcome.withdrawn) == (1, 1)
+    assert second.status == "published"
+    assert first.status == "withdrawn"
+
+    # Publishing an already-published revision is a no-op, not a duplicate.
+    outcome = await publish_revisions(
+        db,
+        revision_ids=[second.id],
+        approved_by="operator-2",
+        review_until=deadline,
+        now=now,
+    )
+    assert outcome.published == 0
+    assert outcome.skipped
+
+    # A withdrawn revision does not come back; a new one is the way forward.
+    outcome = await publish_revisions(
+        db,
+        revision_ids=[first.id],
+        approved_by="operator-2",
+        review_until=deadline,
+        now=now,
+    )
+    assert outcome.published == 0
+    assert first.status == "withdrawn"
+
+    # Extending touches only what is published.
+    later = now + timedelta(days=200)
+    assert await extend_review(db, revision_ids=[first.id, second.id], review_until=later) == 1
+    assert second.review_until == later
+
+    # A deadline in the past would publish something already expired.
+    with pytest.raises(ValueError, match="в будущем"):
+        await publish_revisions(
+            db,
+            revision_ids=[second.id],
+            approved_by="operator-2",
+            review_until=now - timedelta(days=1),
+            now=now,
+        )
+
+    assert await withdraw_revisions(db, revision_ids=[second.id]) == 1
+    assert second.status == "withdrawn"

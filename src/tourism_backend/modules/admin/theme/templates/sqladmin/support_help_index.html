@@ -1,0 +1,119 @@
+{% extends "sqladmin/layout.html" %}
+{% block content_header %}
+<div class="row align-items-center">
+  <div class="col">
+    <h2 class="page-title">Индекс справки</h2>
+    <div class="page-pretitle">Поиск по смыслу читает отдельный индекс: публикация статьи сама по себе его не обновляет</div>
+  </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="col-12 col-xl-8">
+
+  {% if not semantic_enabled %}
+  <div class="alert alert-warning">
+    Поиск по смыслу выключен (<code>SUPPORT_HELP_SEMANTIC_ENABLED=false</code>).
+    Индекс можно построить заранее, но пока флаг выключен поиск отвечает только
+    полнотекстом.
+  </div>
+  {% endif %}
+  {% if not model_supported %}
+  <div class="alert alert-danger">
+    Текущая модель — <code>{{ model_id }}</code>. Индексация возможна только на
+    multilingual MiniLM: у другой модели та же размерность не означает
+    совместимость векторов.
+  </div>
+  {% endif %}
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="text-secondary mb-2">Покрытие индекса</div>
+      {% if coverage %}
+      <div class="d-flex align-items-center gap-3 flex-wrap">
+        <span class="ct-badge ct-badge-ops" style="font-size: 0.95rem; padding: 0.35rem 0.8rem;">
+          {{ coverage.app_version }}
+        </span>
+        <span>Опубликовано статей: <strong>{{ coverage.published }}</strong></span>
+        <span>Проиндексировано: <strong>{{ coverage.indexed }}</strong></span>
+        {% if coverage.stale %}
+        <span class="ct-badge ct-badge-route-rejected">устарело: {{ coverage.stale }}</span>
+        {% endif %}
+      </div>
+      {% if coverage.published == 0 %}
+      <div class="text-secondary mt-2">
+        Для этой версии нет опубликованных статей — индексировать нечего.
+        Публикация в разделе «Справка».
+      </div>
+      {% elif coverage.complete %}
+      <div class="text-secondary mt-2">Индекс полный: все опубликованные статьи ищутся по смыслу.</div>
+      {% else %}
+      <div class="text-secondary mt-2">
+        Часть статей не участвует в поиске по смыслу. «Устарело» — текст изменился
+        после индексации: такие статьи молча перестают давать семантические
+        совпадения, пока индекс не перестроен.
+      </div>
+      {% endif %}
+      {% else %}
+      <div class="text-secondary">Статей справки в базе пока нет.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <form action="/admin/support/help-index/run" method="POST" class="d-flex align-items-end gap-3 flex-wrap">
+        <div>
+          <label class="form-label">Версия приложения</label>
+          <select name="app_version" class="form-select">
+            {% for version in versions %}
+            <option value="{{ version }}" {% if version == selected %}selected{% endif %}>{{ version }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary" {% if busy or not model_supported %}disabled{% endif %}>
+          {% if busy %}Индексация идёт…{% else %}Переиндексировать{% endif %}
+        </button>
+      </form>
+      <div class="text-secondary mt-2">
+        Загружает модель и пересчитывает векторы опубликованных статей. Идёт в
+        фоне; страницу можно обновить через несколько секунд. Повторный запуск
+        безопасен: неизменившиеся статьи пропускаются.
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <div class="text-secondary mb-2">Последний запуск</div>
+      {% if run.status == "unknown" %}
+      <div>С момента запуска бэкенда индексацию отсюда не запускали.</div>
+      {% else %}
+      <div class="d-flex align-items-center gap-2 mb-2">
+        {% if run.status == "running" %}
+        <span class="ct-badge ct-badge-route-pending">идёт</span>
+        {% elif run.status == "done" %}
+        <span class="ct-badge ct-badge-route-published">завершена</span>
+        {% else %}
+        <span class="ct-badge ct-badge-route-rejected">ошибка</span>
+        {% endif %}
+        <span>версия {{ run.app_version }}</span>
+        {% if run.actor %}<span class="text-secondary">— запустил {{ run.actor }}</span>{% endif %}
+      </div>
+      <div class="text-secondary">
+        Начало: {{ run.started_at.strftime("%d.%m.%Y %H:%M:%S") if run.started_at else "—" }} UTC
+        {% if run.finished_at %}
+        · конец: {{ run.finished_at.strftime("%d.%m.%Y %H:%M:%S") }} UTC
+        {% endif %}
+      </div>
+      {% if run.status == "done" %}
+      <div class="mt-2">Пересчитано статей: <strong>{{ run.changed }}</strong>.</div>
+      {% endif %}
+      {% if run.error %}
+      <div class="alert alert-danger mt-2 mb-0"><code>{{ run.error }}</code></div>
+      {% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+{% endblock %}

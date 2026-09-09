@@ -950,3 +950,79 @@ def test_article_admin_views_are_registered_and_write_gated() -> None:
         assert getattr(handler, "_action", False) is True
         assert handler._add_in_list is True
     assert ArticleBlock.media_attachment_id in ArticleBlockAdmin.column_list
+
+
+def test_help_admin_is_admin_only_and_never_edits_article_text() -> None:
+    """Publication belongs in the admin; rewriting the text does not.
+
+    Search matches embeddings on the article's `content_hash`, and the
+    importer refuses a changed body under the same revision — an edit form
+    here would desync both without saying so.
+    """
+    from starlette.requests import Request
+
+    from tourism_backend.modules.admin.presentation.views import (
+        SupportHelpIndexAdmin,
+        SupportHelpRevisionAdmin,
+    )
+    from tourism_backend.modules.support.infrastructure.help_models import (
+        SupportHelpRevision,
+    )
+
+    assert SupportHelpRevisionAdmin.can_edit is False
+    assert SupportHelpRevisionAdmin.can_create is False
+    assert SupportHelpRevisionAdmin.can_delete is False
+
+    listed = list(SupportHelpRevisionAdmin.column_list)
+    for column in (
+        SupportHelpRevision.status,
+        SupportHelpRevision.review_until,
+        SupportHelpRevision.published_at,
+        SupportHelpRevision.approved_by,
+    ):
+        assert column in listed
+    assert SupportHelpRevision.status in SupportHelpRevisionAdmin.column_formatters
+    assert SupportHelpRevision.review_until in SupportHelpRevisionAdmin.column_formatters
+
+    def _request(roles: list[str]) -> Request:
+        scope = {"type": "http", "session": {"admin_roles": roles}}
+        return Request(scope)  # type: ignore[arg-type]
+
+    for view in (SupportHelpRevisionAdmin, SupportHelpIndexAdmin):
+        assert view.is_accessible(view, _request(["admin"])) is True  # type: ignore[arg-type]
+        assert view.is_accessible(view, _request(["ops"])) is False  # type: ignore[arg-type]
+        assert view.is_visible(view, _request(["ops"])) is False  # type: ignore[arg-type]
+
+
+def test_help_views_are_registered_and_their_template_exists() -> None:
+    from pathlib import Path
+
+    from jinja2 import Environment, FileSystemLoader
+
+    from tourism_backend.modules.admin.presentation.views import (
+        SupportHelpIndexAdmin,
+        SupportHelpRevisionAdmin,
+    )
+    from tourism_backend.modules.support.infrastructure.help_models import (
+        SupportHelpRevision,
+    )
+
+    class _FakeAdmin:
+        def __init__(self) -> None:
+            self.views: list[object] = []
+
+        def add_view(self, view: object) -> None:
+            self.views.append(view)
+
+    admin = _FakeAdmin()
+    register_views(admin, Settings(app_env="test"))
+    assert any(getattr(v, "model", None) is SupportHelpRevision for v in admin.views)
+    assert any(v is SupportHelpIndexAdmin for v in admin.views)
+    assert SupportHelpRevisionAdmin in admin.views
+
+    # The page is only exercised at runtime, so a syntax error would ship.
+    templates = (
+        Path(__file__).resolve().parents[2] / "src/tourism_backend/modules/admin/theme/templates"
+    )
+    env = Environment(loader=FileSystemLoader(str(templates)), autoescape=True)
+    env.parse((templates / "sqladmin/support_help_index.html").read_text(encoding="utf-8"))

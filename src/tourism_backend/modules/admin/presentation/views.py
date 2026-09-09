@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
@@ -45,6 +45,8 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_article_status,
     format_debug_code,
     format_expert_status,
+    format_help_review_until,
+    format_help_status,
     format_masked_token,
     format_message_author,
     format_place_fk,
@@ -134,6 +136,18 @@ from tourism_backend.modules.runtime_config.application.service import (
 from tourism_backend.modules.runtime_config.infrastructure.models import CompanyDetails
 from tourism_backend.modules.subscriptions.application import service as travel_plus_service
 from tourism_backend.modules.subscriptions.infrastructure.models import TravelPlusSubscription
+from tourism_backend.modules.support.application.help_index_job import (
+    help_index_job,
+    index_coverage,
+)
+from tourism_backend.modules.support.application.help_publication import (
+    DEFAULT_REVIEW_DAYS,
+    extend_review,
+    publish_revisions,
+    withdraw_revisions,
+)
+from tourism_backend.modules.support.application.help_semantic import MINILM_ALIASES
+from tourism_backend.modules.support.infrastructure.help_models import SupportHelpRevision
 from tourism_backend.modules.support.infrastructure.models import SupportMessage, SupportTicket
 
 
@@ -3121,6 +3135,301 @@ class ContentReportAdmin(ModelView, model=ContentReport):
         return await self._set_status(request, status_value="rejected")
 
 
+class SupportHelpRevisionAdmin(ModelView, model=SupportHelpRevision):
+    """Help articles, their publication state and how long it is good for.
+
+    Publishing used to be a CLI run against the server against a manifest
+    file. It is an editorial decision, so it belongs here, where the person
+    making it is the one recorded as having made it.
+    """
+
+    category = "Поддержка"
+    category_icon = "fa-solid fa-headset"
+    name = "Статья справки"
+    name_plural = "Справка"
+    icon = "fa-solid fa-circle-question"
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_list = [
+        SupportHelpRevision.article_id,
+        SupportHelpRevision.revision,
+        SupportHelpRevision.app_version,
+        SupportHelpRevision.title,
+        SupportHelpRevision.status,
+        SupportHelpRevision.review_until,
+        SupportHelpRevision.published_at,
+        SupportHelpRevision.approved_by,
+        SupportHelpRevision.updated_at,
+    ]
+    column_labels = {
+        SupportHelpRevision.id: "ID",
+        SupportHelpRevision.article_id: "Статья",
+        SupportHelpRevision.revision: "Ревизия",
+        SupportHelpRevision.app_version: "Версия приложения",
+        SupportHelpRevision.language: "Язык",
+        SupportHelpRevision.category: "Раздел",
+        SupportHelpRevision.faq_id: "ID в FAQ",
+        SupportHelpRevision.title: "Заголовок",
+        SupportHelpRevision.question: "Вопрос",
+        SupportHelpRevision.body: "Текст",
+        SupportHelpRevision.status: "Статус",
+        SupportHelpRevision.approved_by: "Одобрил",
+        SupportHelpRevision.published_at: "Опубликована",
+        SupportHelpRevision.review_until: "Проверена до",
+        SupportHelpRevision.content_hash: "Хеш текста",
+        SupportHelpRevision.created_at: "Создана",
+        SupportHelpRevision.updated_at: "Обновлена",
+    }
+    column_formatters = {
+        SupportHelpRevision.status: format_help_status,
+        SupportHelpRevision.review_until: format_help_review_until,
+    }
+    column_formatters_detail = {
+        SupportHelpRevision.status: format_help_status,
+        SupportHelpRevision.review_until: format_help_review_until,
+    }
+    column_searchable_list = [
+        SupportHelpRevision.article_id,
+        SupportHelpRevision.title,
+        SupportHelpRevision.question,
+    ]
+    column_sortable_list = [
+        SupportHelpRevision.article_id,
+        SupportHelpRevision.app_version,
+        SupportHelpRevision.status,
+        SupportHelpRevision.review_until,
+        SupportHelpRevision.published_at,
+        SupportHelpRevision.updated_at,
+    ]
+    column_default_sort = (SupportHelpRevision.updated_at, True)
+    column_filters: ClassVar[list[Any]] = [
+        AllUniqueStringValuesFilter(SupportHelpRevision.status),
+        AllUniqueStringValuesFilter(SupportHelpRevision.app_version),
+        AllUniqueStringValuesFilter(SupportHelpRevision.category),
+    ]
+    # Text and identity are content-addressed: search matches embeddings on
+    # `content_hash`, and the importer refuses a changed body under the same
+    # revision. Editing them here would desync both.
+    can_create = False
+    can_delete = False
+    can_edit = False
+    page_size = 50
+
+    def is_accessible(self, request: Request) -> bool:
+        return require_admin_role(request)
+
+    def is_visible(self, request: Request) -> bool:
+        return require_admin_role(request)
+
+    @action(
+        name="publish_help",
+        label="Опубликовать",
+        confirmation_message=(
+            "Опубликовать выбранные статьи? Предыдущая опубликованная ревизия той же "
+            "статьи будет отозвана, срок проверки — 90 дней."
+        ),
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def publish_help(self, request: Request) -> Response:
+        return await self._publication_action(request, kind="publish")
+
+    @action(
+        name="withdraw_help",
+        label="Отозвать",
+        confirmation_message=(
+            "Отозвать выбранные статьи? Они пропадут из поиска и из открытых ссылок; "
+            "вернуть можно только новой ревизией."
+        ),
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def withdraw_help(self, request: Request) -> Response:
+        return await self._publication_action(request, kind="withdraw")
+
+    @action(
+        name="extend_help_review",
+        label="Продлить на 90 дней",
+        confirmation_message=(
+            "Продлить срок проверки выбранных опубликованных статей на 90 дней? "
+            "Подтверждайте только то, что действительно перечитали."
+        ),
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def extend_help_review(self, request: Request) -> Response:
+        return await self._publication_action(request, kind="extend")
+
+    async def _publication_action(self, request: Request, *, kind: str) -> Response:
+        referer = request.headers.get("referer") or str(
+            request.url_for("admin:list", identity=self.identity)
+        )
+        actor_id = session_principal_id(request)
+        if actor_id is None or not require_admin_role(request):
+            Flash.error(request, "Доступно только роли admin.")
+            return RedirectResponse(referer, status_code=302)
+        ids: list[UUID] = []
+        for raw in request.query_params.get("pks", "").split(","):
+            with contextlib.suppress(ValueError):
+                ids.append(UUID(raw.strip()))
+        if not ids:
+            return RedirectResponse(referer, status_code=302)
+
+        now = datetime.now(UTC)
+        deadline = now + timedelta(days=DEFAULT_REVIEW_DAYS)
+        async with self.session_maker(expire_on_commit=False) as session:
+            principal = await session.get(AdminPrincipal, actor_id)
+            approver = principal.login if principal is not None else str(actor_id)
+            try:
+                if kind == "publish":
+                    outcome = await publish_revisions(
+                        session,
+                        revision_ids=ids,
+                        approved_by=approver,
+                        review_until=deadline,
+                        now=now,
+                    )
+                    message = (
+                        f"Опубликовано: {outcome.published}. "
+                        f"Отозвано предыдущих: {outcome.withdrawn}. "
+                        f"Проверена до {deadline:%d.%m.%Y}."
+                    )
+                    skipped = outcome.skipped
+                elif kind == "withdraw":
+                    changed = await withdraw_revisions(session, revision_ids=ids, now=now)
+                    message = f"Отозвано статей: {changed}."
+                    skipped = []
+                else:
+                    changed = await extend_review(
+                        session, revision_ids=ids, review_until=deadline, now=now
+                    )
+                    message = f"Продлено статей: {changed}. Новый срок — {deadline:%d.%m.%Y}."
+                    skipped = []
+            except ValueError as exc:
+                await session.rollback()
+                Flash.error(request, str(exc))
+                return RedirectResponse(referer, status_code=302)
+            await record_audit(
+                session,
+                actor_id=actor_id,
+                action=f"admin.support_help_{kind}",
+                entity_type="support_help_revision",
+                entity_id=",".join(str(i) for i in ids)[:200],
+                ip=request.client.host if request.client else None,
+            )
+            await session.commit()
+        if skipped:
+            Flash.error(request, "Пропущено — " + "; ".join(skipped[:5]))
+        Flash.success(
+            request,
+            message + " Не забудьте переиндексировать: поиск по смыслу читает отдельный индекс.",
+        )
+        return RedirectResponse(referer, status_code=302)
+
+
+class SupportHelpIndexAdmin(BaseView):
+    """Runs and reports the semantic index for the help corpus.
+
+    The index is separate from the articles on purpose: it is tied to the
+    model, the splitting rules and the text's hash, so publishing an article
+    does not make it semantically searchable until this has run. That gap is
+    invisible from the article list, which is what this page is for.
+    """
+
+    name = "Индекс справки"
+    category = "Поддержка"
+    category_icon = "fa-solid fa-headset"
+    icon = "fa-solid fa-magnifying-glass-chart"
+
+    session_maker: ClassVar[Any]
+
+    def is_accessible(self, request: Request) -> bool:
+        return require_admin_role(request)
+
+    def is_visible(self, request: Request) -> bool:
+        return require_admin_role(request)
+
+    @expose("/support/help-index", methods=["GET"], identity="support-help-index")
+    async def show(self, request: Request) -> Response:
+        if not require_admin_role(request):
+            Flash.error(request, "Доступно только роли admin.")
+            return RedirectResponse(request.url_for("admin:index"), status_code=303)
+        settings: Settings = request.app.state.settings
+        async with self.session_maker(expire_on_commit=False) as session:
+            versions = list(
+                (
+                    await session.scalars(
+                        select(SupportHelpRevision.app_version)
+                        .distinct()
+                        .order_by(SupportHelpRevision.app_version.desc())
+                    )
+                ).all()
+            )
+            selected = request.query_params.get("app_version") or (versions[0] if versions else "")
+            coverage = await index_coverage(session, app_version=selected) if selected else None
+        return await self.templates.TemplateResponse(
+            request,
+            "sqladmin/support_help_index.html",
+            context={
+                "versions": versions,
+                "selected": selected,
+                "coverage": coverage,
+                "run": help_index_job.last_run,
+                "busy": help_index_job.busy,
+                "model_id": settings.rag_embedding_model,
+                "semantic_enabled": settings.support_help_semantic_enabled,
+                "model_supported": settings.rag_embedding_model in MINILM_ALIASES,
+            },
+        )
+
+    @expose("/support/help-index/run", methods=["POST"])
+    async def run(self, request: Request) -> Response:
+        redirect_url = request.url_for("admin:view-support-help-index")
+        if not require_admin_role(request):
+            Flash.error(request, "Доступно только роли admin.")
+            return RedirectResponse(redirect_url, status_code=303)
+        form = await request.form()
+        app_version = str(form.get("app_version") or "").strip()
+        if not app_version:
+            Flash.error(request, "Выберите версию приложения.")
+            return RedirectResponse(redirect_url, status_code=303)
+        settings: Settings = request.app.state.settings
+        actor_id = session_principal_id(request)
+        async with self.session_maker(expire_on_commit=False) as session:
+            principal = await session.get(AdminPrincipal, actor_id) if actor_id else None
+            actor = principal.login if principal is not None else None
+            await record_audit(
+                session,
+                actor_id=actor_id,
+                action="admin.support_help_reindex",
+                entity_type="support_help_index",
+                entity_id=app_version,
+                ip=request.client.host if request.client else None,
+                commit=True,
+            )
+        started = help_index_job.start(
+            session_maker=self.session_maker,
+            app_version=app_version,
+            model_id=settings.rag_embedding_model,
+            actor=actor,
+        )
+        if started:
+            Flash.success(
+                request,
+                f"Индексация {app_version} запущена. Обновите страницу через несколько "
+                "секунд — она идёт в фоне.",
+            )
+        elif help_index_job.busy:
+            Flash.error(request, "Индексация уже идёт. Дождитесь её завершения.")
+        else:
+            Flash.error(request, help_index_job.last_run.error or "Не удалось запустить.")
+        return RedirectResponse(
+            request.url_for("admin:view-support-help-index").include_query_params(
+                app_version=app_version
+            ),
+            status_code=303,
+        )
+
+
 def register_views(admin: Any, settings: Settings) -> None:
     show_debug = settings.otp_store_debug_code_enabled
 
@@ -3238,6 +3547,8 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(PlaceImageAdmin)
     admin.add_view(MediaAttachmentAdmin)
     admin.add_view(CompanyDetailsAdmin)
+    admin.add_view(SupportHelpRevisionAdmin)
+    admin.add_view(SupportHelpIndexAdmin)
     admin.add_view(RuntimeConfigAdmin)
     # add_base_view (unlike add_model_view) does not wire session_maker —
     # BaseView has no bound model for SQLAdmin to infer a session from. A
@@ -3247,3 +3558,4 @@ def register_views(admin: Any, settings: Settings) -> None:
     session_maker = getattr(admin, "session_maker", None)
     if session_maker is not None:
         RuntimeConfigAdmin.session_maker = session_maker
+        SupportHelpIndexAdmin.session_maker = session_maker
