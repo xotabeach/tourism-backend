@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -44,6 +46,10 @@ from tourism_backend.modules.route_builder.application.chat_actions import (
     patch_for_action,
     prefer_ready_ask_field,
     sanitize_confirmed_fields,
+)
+from tourism_backend.modules.route_builder.application.dialogue import fallback_goal
+from tourism_backend.modules.route_builder.application.discovery import (
+    discovery_patch,
 )
 from tourism_backend.modules.route_builder.application.schemas import (
     ActionsBlockOut,
@@ -463,15 +469,39 @@ async def post_message(
 
     intent = classify_chat_intent(
         payload.text,
-        generate_confirm_ok=prefer_ready_ask_field(confirmed) == "ready",
+        generate_confirm_ok=(
+            constraints_dict.get("dialogue_goal") == "discover"
+            and prefer_ready_ask_field(confirmed) == "ready"
+        ),
     )
     flow: str = intent
+    goal = fallback_goal(payload.text, str(constraints_dict.get("dialogue_goal") or "clarify"))
+    if payload.controls is not None or payload.action_id in _CONTROL_ACTION_IDS:
+        goal = "custom" if constraints_dict.get("planning_mode") == "custom" else "discover"
+    constraints_dict["dialogue_goal"] = goal
+    if (
+        intent not in {"crisis", "off_topic", "injection_attempt"}
+        and not payload.controls
+        and goal in {"discover", "custom"}
+    ):
+        search_patch = discovery_patch(payload.text)
+        if search_patch:
+            constraints_dict = merge_constraint_patch(constraints_dict, search_patch)
+            touched = fields_touched_by_patch(search_patch)
+            confirmed = sanitize_confirmed_fields([*confirmed, *touched])
+            turn_explicit_fields.update(touched)
     canonical_action = normalize_action_id(payload.action_id) if payload.action_id else None
     is_control_only = payload.action_id in _CONTROL_ACTION_IDS and payload.control_value is not None
     if payload.want_generate or canonical_action in _MATCH_FIRST_ACTIONS:
+        goal = "discover"
+        constraints_dict["dialogue_goal"] = goal
+        constraints_dict["planning_mode"] = "discover"
         flow = "generate"
         intent = "generate"
     elif canonical_action in _CUSTOM_GENERATE_ACTIONS:
+        goal = "custom"
+        constraints_dict["dialogue_goal"] = goal
+        constraints_dict["planning_mode"] = "custom"
         flow = "generate_custom"
         intent = "generate"
     elif canonical_action == "clear_params":
@@ -483,7 +513,7 @@ async def post_message(
 
     # Old clients may still ask for a match early. Form defaults are not a
     # confirmed transport/duration and must not silently become trip facts.
-    if flow in {"generate", "generate_custom"} and not {
+    if flow == "generate_custom" and not {
         "city",
         "transport_mode",
         "duration",
@@ -583,10 +613,13 @@ async def post_message(
             matched = await match_service.match_routes(
                 session,
                 user_id=user_id,
-                params=params,
+                params=_discovery_params(constraints_dict, confirmed),
                 ai_planning_enabled=cfg.ai_planning_enabled,
+                confirmed_fields=confirmed,
             )
-            catalog_block = _catalog_match_block(matched, locality_label=params.city)
+            catalog_block = _catalog_match_block(
+                matched, locality_label=_discovery_params(constraints_dict, confirmed).search_area
+            )
             if catalog_block is not None:
                 assistant_text = "Вот подобранные маршруты по выбранным параметрам:"
                 provider_name = "catalog_match"
@@ -649,6 +682,15 @@ async def post_message(
             redis=redis,
         )
         assistant_text = turn.assistant_text
+        if turn.goal and canonical_action not in _CUSTOM_GENERATE_ACTIONS and not payload.controls:
+            goal = turn.goal
+        constraints_dict["dialogue_goal"] = goal
+        if goal == "custom":
+            constraints_dict["planning_mode"] = "custom"
+        elif goal == "discover":
+            constraints_dict["planning_mode"] = "discover"
+        refreshed_catalog = False
+        discovery_replies = None
         ask_field = turn.ask_field or prefer_ready_ask_field(confirmed)
         # Модель нередко спрашивает город прозой, не проставив ask_field —
         # тогда доверяем тексту, иначе человек видит вопрос, на который нечем ответить.
@@ -674,13 +716,103 @@ async def post_message(
             # ready after any patch produced controls unrelated to its text.
             if ask_field in touched:
                 ask_field = prefer_ready_ask_field(confirmed)
-        required_question = next(
-            (field for field in ("city", "transport_mode", "duration") if field not in confirmed),
-            None,
+        required_question = (
+            next(
+                (
+                    field
+                    for field in ("city", "transport_mode", "duration")
+                    if field not in confirmed
+                ),
+                None,
+            )
+            if goal == "custom"
+            else None
         )
+        if goal == "discover":
+            # A model-extracted destination/filter was not available to prefetch.
+            # Never attach old-area cards, or call an unsearched catalogue empty.
+            if prefetch.get("_catalog_signature") != _discovery_signature(
+                constraints_dict, confirmed
+            ):
+                prefetch = {
+                    **{key: value for key, value in prefetch.items() if key != "catalog_preview"},
+                    **await _catalog_discovery_context(
+                        session,
+                        user_id=user.id,
+                        constraints=constraints_dict,
+                        confirmed_fields=confirmed,
+                        settings=cfg,
+                    ),
+                }
+                refreshed_catalog = True
+            if (
+                ask_field == "city"
+                or turn.structured_parse == "fallback"
+                or refreshed_catalog
+                or (ask_field != "ready" and not turn.clarification_reason)
+            ):
+                ask_field = "ready"
+                preview = prefetch.get("catalog_preview")
+                assistant_text = (
+                    "Вот готовые варианты по вашим пожеланиям; "
+                    "можно открыть карточки и сравнить их."
+                    if preview
+                    else "В проверенной части каталога "
+                    "не нашлось готовых "
+                    "маршрутов по этим условиям. Можем расширить поиск или обсудить свой маршрут."
+                    if "search_context" in prefetch
+                    else "Точный город старта пока не нужен. Можно поискать готовые варианты "
+                    "в выбранном районе. Показать маршруты?"
+                )
+                discovery_replies = (
+                    [
+                        {"id": "reply", "label": "Сравни эти варианты"},
+                        {"id": "reply", "label": "Хочу изменить пожелания"},
+                    ]
+                    if preview
+                    else [
+                        {"id": "reply", "label": "Расширить поиск по Крыму"},
+                        {"id": "build_custom_route", "label": "Собрать свой маршрут"},
+                    ]
+                )
+        elif goal == "compare":
+            if "comparison_routes" not in prefetch:
+                prefetch.update(await _comparison_context(session, planning.id))
+            ask_field = "ready"
+            if not prefetch.get("comparison_routes"):
+                assistant_text = (
+                    "Какие маршруты сравнить? Пришлите названия или сначала попросите варианты."
+                )
+            elif fallback:
+                assistant_text = (
+                    "Не удалось получить сравнение помощника. "
+                    "Можно повторить вопрос или открыть показанные карточки."
+                )
+            discovery_replies = [{"id": "reply", "label": "Предложи варианты"}]
+        elif goal in {"place_info", "clarify"}:
+            # No route questionnaire/CTA after a factual answer or open clarification.
+            if fallback:
+                assistant_text = (
+                    "Сейчас не удалось получить ответ помощника. Попробуйте повторить вопрос."
+                )
+            elif ask_field != "ready":
+                assistant_text = (
+                    "Что хочется узнать об этом месте?"
+                    if goal == "place_info"
+                    else "Помочь с идеями поездки, сравнить маршруты или рассказать о месте?"
+                )
+            ask_field = "ready"
+            discovery_replies = [{"id": "reply", "label": "Предложи идеи поездки"}]
         repair_question = required_question if ask_field == "ready" else None
-        if payload.controls is not None and ask_field == "budget" and "budget_amount" in confirmed:
-            repair_question = prefer_ready_ask_field(confirmed)
+        if goal == "custom" and required_question:
+            repair_question = required_question
+        if (
+            not repair_question
+            and payload.controls is not None
+            and ask_field == "budget"
+            and "budget_amount" in confirmed
+        ):
+            repair_question = "ready" if goal == "discover" else prefer_ready_ask_field(confirmed)
         if repair_question:
             ask_field = repair_question
             assistant_text = {
@@ -697,12 +829,20 @@ async def post_message(
             constraints=constraints_dict,
             confirmed_fields=confirmed,
             ask_field=ask_field,
-            action_ids=list(turn.action_ids) if turn.action_ids and not repair_question else None,
-            quick_replies=list(turn.quick_replies) if not repair_question else None,
+            action_ids=(
+                list(turn.action_ids)
+                if turn.action_ids and not repair_question and not discovery_replies
+                else None
+            ),
+            quick_replies=discovery_replies
+            or (list(turn.quick_replies) if not repair_question else None),
             tool_context=prefetch,
-            include_recommendations=fallback,
+            include_recommendations=False,
             place_candidates=explicit_places,
         )
+        preview = prefetch.get("catalog_preview")
+        if goal == "discover" and isinstance(preview, dict):
+            blocks.insert(0, CatalogMatchBlockOut.model_validate(preview))
 
     # Persist merged constraints / confirmed after the turn.
     try:
@@ -806,6 +946,21 @@ async def _assistant_from_ai(
         constraints=constraints,
         confirmed_fields=confirmed_fields,
     )
+    goal = constraints.get("dialogue_goal") or fallback_goal(
+        next((msg.content for msg in reversed(chat_messages) if msg.role == "user"), "")
+    )
+    if goal == "discover":
+        tool_context.update(
+            await _catalog_discovery_context(
+                session,
+                user_id=user.id,
+                constraints=constraints,
+                confirmed_fields=confirmed_fields,
+                settings=settings,
+            )
+        )
+    elif goal == "compare":
+        tool_context.update(await _comparison_context(session, planning.id, rows=history_rows))
     draft = form_draft_constraints(constraints, confirmed_fields)
     if draft:
         tool_context = {**tool_context, "form_draft_not_facts": draft}
@@ -825,14 +980,19 @@ async def _assistant_from_ai(
     if settings.rag_enabled:
         try:
             retriever = TourismKnowledgeRetriever(embedder=build_embedder(settings))
-            query = _retrieval_query(chat_messages, constraints)
+            query = _retrieval_query(
+                chat_messages,
+                {key: value for key, value in constraints.items() if key in confirmed_fields},
+            )
             request = RetrievalRequest(
                 query=query,
                 top_k=settings.rag_top_k,
                 region=str(constraints.get("region_slug") or "crimea")[:64],
                 locality=(
                     str(constraints["city"])[:120]
-                    if constraints.get("city") not in {None, "", "Крым"}
+                    if not constraints.get("search_area")
+                    and "city" in confirmed_fields
+                    and constraints.get("city") not in {None, "", "Крым"}
                     else None
                 ),
             )
@@ -877,9 +1037,62 @@ async def _assistant_from_ai(
             ),
         )
 
+    async def _ground(provider: Any, result: ChatTurnResult) -> ChatTurnResult:
+        nonlocal tool_context
+        semantic_goal = result.goal or goal
+        patch = result.proposed_constraints or {}
+        updated = merge_constraint_patch(constraints, patch, previously_confirmed=confirmed_fields)
+        updated_fields = sanitize_confirmed_fields(
+            [*confirmed_fields, *fields_touched_by_patch(patch)]
+        )
+        needs_data = False
+        if semantic_goal == "discover" and tool_context.get(
+            "_catalog_signature"
+        ) != _discovery_signature(updated, updated_fields):
+            tool_context = {
+                **{key: value for key, value in tool_context.items() if key != "catalog_preview"},
+                **await _catalog_discovery_context(
+                    session,
+                    user_id=user.id,
+                    constraints=updated,
+                    confirmed_fields=updated_fields,
+                    settings=settings,
+                ),
+            }
+            needs_data = True
+        elif semantic_goal == "compare" and "comparison_routes" not in tool_context:
+            tool_context.update(await _comparison_context(session, planning.id, rows=history_rows))
+            needs_data = True
+        if not needs_data or result.structured_parse == "fallback":
+            return result
+        # One bounded synthesis over actual search results after semantic extraction.
+        # No unbounded agent loop, and never claim an ungrounded comparison.
+        remaining = settings.ai_turn_budget_seconds - (time.perf_counter() - started)
+        if remaining <= _MIN_TOOL_ROUND_SECONDS:
+            return replace(result, structured_parse="fallback")
+        try:
+            follow: ChatTurnResult = await asyncio.wait_for(
+                provider.chat_turn(
+                    messages=chat_messages,
+                    constraints={**updated, "dialogue_goal": semantic_goal},
+                    confirmed_fields=updated_fields,
+                    place_hints=place_hints,
+                    tool_context=tool_context,
+                ),
+                timeout=remaining,
+            )
+        except Exception:  # noqa: BLE001 — deterministic grounded response remains available
+            return replace(result, structured_parse="fallback")
+        return replace(
+            follow,
+            goal=result.goal or follow.goal,
+            proposed_constraints={**patch, **(follow.proposed_constraints or {})} or None,
+        )
+
     if not settings.ai_planning_enabled:
         provider: Any = MockAIPlanningProvider()
         result = await _once(provider, tool_context)
+        result = await _ground(provider, result)
         tools_round = 1 if parse_tool_calls(list(result.tool_requests)) else 0
         result, tool_context, explicit_places = await _run_tool_rounds(
             session,
@@ -905,6 +1118,7 @@ async def _assistant_from_ai(
         effective_settings = await effective_ai_provider_settings(session, settings)
         provider = get_ai_planning_provider(effective_settings)
         result = await _once(provider, tool_context)
+        result = await _ground(provider, result)
         tools_round = 1 if parse_tool_calls(list(result.tool_requests)) else 0
         result, tool_context, explicit_places = await _run_tool_rounds(
             session,
@@ -926,9 +1140,15 @@ async def _assistant_from_ai(
             structured_parse=result.structured_parse,
             tools_round=tools_round,
             rag_hit=rag_hit,
-            outage_fallback=False,
+            outage_fallback=result.structured_parse == "fallback",
         )
-        return result, result.provider, False, tool_context, explicit_places
+        return (
+            result,
+            result.provider,
+            result.structured_parse == "fallback",
+            tool_context,
+            explicit_places,
+        )
     except Exception as exc:  # noqa: BLE001 — soft fallback for home-lab outages
         turn = _provider_error_turn(exc, confirmed_fields)
         busy = isinstance(exc, AIProviderBusyError)
@@ -1020,15 +1240,11 @@ async def _run_tool_rounds(
             tool_context = {**tool_context, "place_candidates": places}
             place_hints = list(places)
             explicit_places = list(places)
-    follow_messages = [
-        *chat_messages,
-        ChatMessage(
-            role="system",
-            content="tool_results DATA: " + str(tool_payloads)[:1200],
-        ),
-    ]
+    # All adapters receive complete bounded tool DATA. Gemini intentionally
+    # drops history's system-role messages, so results must live in context.
+    tool_context = {**tool_context, "tool_results": tool_payloads}
     follow_call = provider.chat_turn(
-        messages=follow_messages,
+        messages=chat_messages,
         constraints=constraints,
         confirmed_fields=confirmed_fields,
         place_hints=place_hints,
@@ -1045,17 +1261,25 @@ async def _run_tool_rounds(
         # results only would have enriched it.
         logger.info("ai_chat_tool_round_dropped", extra={"budget_seconds": budget_seconds})
         return result, tool_context, explicit_places
+    if follow.structured_parse == "fallback":
+        return result, tool_context, explicit_places
     # Do not recurse infinitely: ignore further tool_requests on follow-up.
     return (
         ChatTurnResult(
             assistant_text=follow.assistant_text,
-            proposed_constraints=follow.proposed_constraints,
+            proposed_constraints={
+                **(result.proposed_constraints or {}),
+                **(follow.proposed_constraints or {}),
+            }
+            or None,
             ask_field=follow.ask_field,
             action_ids=follow.action_ids,
             quick_replies=follow.quick_replies,
             tool_requests=(),
             provider=follow.provider,
             structured_parse=follow.structured_parse,
+            goal=follow.goal or result.goal,
+            clarification_reason=follow.clarification_reason or result.clarification_reason,
         ),
         tool_context,
         explicit_places,
@@ -1243,6 +1467,92 @@ def _constraints_with_preferences(
     return {**constraints, **{key: value for key, value in prior.items() if key not in confirmed}}
 
 
+async def _catalog_discovery_context(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    constraints: dict[str, Any],
+    confirmed_fields: list[str],
+    settings: Settings,
+) -> dict[str, Any]:
+    params = _discovery_params(constraints, confirmed_fields)
+    matched = await match_service.match_routes(
+        session,
+        user_id=user_id,
+        params=params,
+        confirmed_fields=confirmed_fields,
+        ai_planning_enabled=settings.ai_planning_enabled,
+    )
+    preview = _catalog_match_block(matched, locality_label=params.search_area)
+    return {
+        "_catalog_signature": _discovery_signature(constraints, confirmed_fields),
+        "search_context": {
+            "area": params.search_area,
+            "area_is_default": "search_area" not in confirmed_fields
+            and "city" not in confirmed_fields,
+            "preferred_localities": constraints.get("preferred_localities") or [],
+            "flexible_start": constraints.get("flexible_start", False),
+            "mode": "discover_catalogue_not_build_itinerary",
+            "exact_start_required": False,
+        },
+        "catalog_routes": preview.model_dump(mode="json")["routes"] if preview else [],
+        **({"catalog_preview": preview.model_dump(mode="json")} if preview else {}),
+    }
+
+
+def _discovery_params(constraints: dict[str, Any], confirmed: list[str]) -> RouteMatchParamsIn:
+    # Application scope, NOT a guessed departure city or a user-confirmed preference.
+    area = constraints.get("search_area") if "search_area" in confirmed else None
+    area = area or (constraints.get("city") if "city" in confirmed else None) or "Крым"
+    return RouteMatchParamsIn.model_validate(
+        {**constraints, "city": constraints.get("city") or "Крым", "search_area": area}
+    )
+
+
+def _discovery_signature(constraints: dict[str, Any], confirmed: list[str]) -> str:
+    params = _discovery_params(constraints, confirmed).model_dump(mode="json")
+    params.pop("dialogue_goal", None)
+    params.pop("planning_mode", None)
+    return json.dumps([params, sorted(confirmed)], sort_keys=True, ensure_ascii=False)
+
+
+async def _comparison_context(
+    session: AsyncSession, planning_id: UUID, *, rows: list[Any] | None = None
+) -> dict[str, Any]:
+    if rows is None:
+        rows = list((await session.scalars(llm_history_stmt(planning_id))).all())
+        rows.reverse()
+    ids: list[UUID] = []
+    for row in reversed(rows):
+        payload = getattr(row, "payload", None)
+        if getattr(row, "role", None) != "assistant" or not isinstance(payload, dict):
+            continue
+        for block in payload.get("blocks") or []:
+            if isinstance(block, dict) and block.get("type") == "catalog_match":
+                for route in (block.get("routes") or [])[:5]:
+                    try:
+                        ids.append(UUID(route["route_id"]))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+        if ids:
+            break
+    # Re-read public status; conversation snapshots are not publication authority.
+    routes = await match_service.public_catalogue_routes(session, ids)
+    return {
+        "comparison_routes": [
+            {
+                "route_id": str(route.id),
+                "title": route.name,
+                "duration_minutes": route.estimated_duration_minutes,
+                "transport_mode": route.transport_mode,
+                "difficulty": route.difficulty,
+                "stops_count": route.stops_count,
+            }
+            for route in routes
+        ]
+    }
+
+
 def _retrieval_query(messages: list[ChatMessage], constraints: dict[str, Any]) -> str:
     """Retrieve for the actual question, retaining geographic/trip context."""
     recent = [message.content for message in messages if message.role == "user"][-2:]
@@ -1250,7 +1560,8 @@ def _retrieval_query(messages: list[ChatMessage], constraints: dict[str, Any]) -
     return " ".join(
         [
             recent[-1][:260] if recent else "",
-            str(constraints.get("city") or "Крым"),
+            str(constraints.get("search_area") or constraints.get("city") or "Крым"),
+            " ".join(constraints.get("preferred_localities") or []),
             " ".join(str(item) for item in interests[:3]),
             recent[-2][:80] if len(recent) > 1 else "",
         ]

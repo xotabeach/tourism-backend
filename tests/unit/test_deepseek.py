@@ -43,6 +43,7 @@ async def test_probe_sends_a_bearer_key_and_asks_for_json() -> None:
         assert body["model"] == "deepseek-v4-flash"
         assert body["stream"] is False
         assert body["response_format"] == {"type": "json_object"}
+        assert body["thinking"] == {"type": "disabled"}
         return httpx.Response(200, json=_turn_body('{"status":"ok"}'))
 
     result = await _provider(httpx.MockTransport(handler)).probe()

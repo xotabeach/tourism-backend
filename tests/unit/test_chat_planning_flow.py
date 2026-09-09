@@ -100,7 +100,8 @@ async def test_controls_are_one_model_turn_and_do_not_reprint_form(chat: SimpleN
     assert passed["avoid_crowds"] is True
     assert len(chat.session.add.call_args_list) == 2  # one user and one assistant row
     assert all(block.type not in {"toggle", "slider"} for block in result.blocks)
-    assert result.blocks[0].actions == [{"id": "want_generate", "label": "Да, конечно"}]
+    chat.match.assert_awaited_once()
+    assert result.ask_field == "ready"
 
 
 async def test_empty_catalog_never_generates_without_choice(chat: SimpleNamespace) -> None:
@@ -114,11 +115,85 @@ async def test_empty_catalog_never_generates_without_choice(chat: SimpleNamespac
     )
 
 
-async def test_early_search_asks_missing_transport_and_duration(chat: SimpleNamespace) -> None:
+async def test_early_search_does_not_require_transport_and_duration(chat: SimpleNamespace) -> None:
     chat.planning.confirmed_fields = ["city", "interests"]
     await _post(chat, text="Подбери маршрут", want_generate=True)
-    chat.ai.assert_awaited_once()
-    chat.match.assert_not_awaited()
+    chat.ai.assert_not_awaited()
+    chat.match.assert_awaited_once()
+    chat.generate.assert_not_awaited()
+
+
+async def test_screenshot_requests_show_catalogue_without_mandatory_start(chat: SimpleNamespace):
+    chat.planning.confirmed_fields = []
+    chat.planning.constraints = {"city": "Симферополь"}
+    route_id = uuid4()
+    chat.match.return_value = SimpleNamespace(
+        ideal=[SimpleNamespace(route=SimpleNamespace(id=route_id, name="Симеиз и парк"))], close=[]
+    )
+    chat.ai.return_value = (
+        ChatTurnResult(
+            assistant_text="Принял. Город старта?", ask_field="city", structured_parse="fallback"
+        ),
+        "deepseek",
+        True,
+        {},
+        [],
+    )
+    first = await _post(
+        chat,
+        text=(
+            "привет! сможешь мне подобрать маршруты вдоль южного берега? "
+            "мне очень нравятся поселки по типу Фороса, Симеиза"
+        ),
+    )
+    assert first.ask_field == "ready"
+    assert "Принял" not in first.text
+    assert "city" not in first.confirmed_fields
+    assert first.blocks[0].type == "catalog_match"
+    assert first.blocks[0].routes[0].route_id == str(route_id)
+    assert chat.match.call_args.kwargs["params"].search_area == "Южный берег Крыма"
+    second = await _post(
+        chat,
+        text=(
+            "какой город старта? не нужен мне он, просто хочу начать откуда то "
+            "на южном берегу Крыма. ты же гид, предлагай"
+        ),
+    )
+    assert second.ask_field == "ready"
+    assert second.blocks[0].type == "catalog_match"
+    assert chat.planning.constraints["flexible_start"] is True
+    assert chat.planning.constraints["preferred_localities"] == ["Форос", "Симеиз"]
+    chat.generate.assert_not_awaited()
+
+
+async def test_model_extracted_area_is_searched_before_claiming_no_matches(chat: SimpleNamespace):
+    chat.planning.confirmed_fields = []
+    chat.ai.return_value = (
+        ChatTurnResult(
+            assistant_text="Посмотрим восточное побережье.",
+            ask_field="ready",
+            proposed_constraints={"search_area": "Новый Свет"},
+        ),
+        "gemini",
+        False,
+        {},
+        [],
+    )
+    result = await _post(chat, text="Хочу туда, где снимали любимое кино, предложишь варианты?")
+    chat.match.assert_awaited_once()
+    assert chat.match.call_args.kwargs["params"].search_area == "Новый Свет"
+    assert result.ask_field == "ready"
+    assert "не нашлось" in result.text
+    assert result.proposal is None
+    chat.generate.assert_not_awaited()
+
+
+async def test_discovery_does_not_allow_custom_build_without_parameters(chat: SimpleNamespace):
+    chat.planning.constraints["search_area"] = "Южный берег Крыма"
+    chat.planning.confirmed_fields = ["search_area"]
+    result = await _post(chat, text="Собрать свой", action_id="build_custom_route")
+    assert chat.planning.constraints["planning_mode"] == "custom"
+    assert result.ask_field == "city"
     chat.generate.assert_not_awaited()
 
 
@@ -126,6 +201,129 @@ async def test_natural_quick_reply_reaches_model(chat: SimpleNamespace) -> None:
     await _post(chat, text="Да, конечно", action_id="reply")
     chat.ai.assert_awaited_once()
     chat.generate.assert_not_awaited()
+
+
+async def test_factual_reply_is_not_replaced_with_start_question(chat: SimpleNamespace):
+    chat.planning.confirmed_fields = []
+    chat.ai.return_value = (
+        ChatTurnResult(
+            assistant_text="По справочнику, здесь есть прогулочный парк.", ask_field="ready"
+        ),
+        "gemini",
+        False,
+        {},
+        [],
+    )
+    result = await _post(chat, text="Расскажи об этом парке, пожалуйста")
+    assert result.text == "По справочнику, здесь есть прогулочный парк."
+    assert result.ask_field == "ready"
+    chat.match.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Хочу спокойную прогулку у моря, предложи сам",
+        "Посоветуй что-нибудь для поездки с детьми",
+        "Тишины, воды и красивых видов бы — доверяюсь тебе",
+    ],
+)
+async def test_semantic_discovery_needs_no_destination(chat: SimpleNamespace, query: str):
+    chat.planning.confirmed_fields = []
+    chat.planning.constraints = {"city": "Симферополь", "duration": "d7plus"}
+    chat.ai.return_value = (
+        ChatTurnResult(
+            assistant_text="Выберите город",
+            ask_field="city",
+            goal="discover",
+            proposed_constraints={"interests": ["море"], "pace": "calm"},
+        ),
+        "gemini",
+        False,
+        {},
+        [],
+    )
+    chat.match.return_value = SimpleNamespace(
+        ideal=[SimpleNamespace(route=SimpleNamespace(id=uuid4(), name="Море и парк"))], close=[]
+    )
+    result = await _post(chat, text=query)
+    params = chat.match.call_args.kwargs["params"]
+    assert params.search_area == "Крым"
+    assert params.interests == ["море"]
+    assert result.ask_field == "ready"
+    assert result.blocks[0].type == "catalog_match"
+    assert "city" not in result.confirmed_fields
+    assert "search_area" not in result.confirmed_fields  # app scope, not guessed preference
+    assert chat.planning.constraints["dialogue_goal"] == "discover"
+    chat.generate.assert_not_awaited()
+
+
+async def test_factual_question_interrupts_custom_questionnaire(chat: SimpleNamespace):
+    chat.planning.constraints["planning_mode"] = "custom"
+    chat.planning.confirmed_fields = []
+    chat.ai.return_value = (
+        ChatTurnResult(
+            assistant_text="Вот описание из справочника.", ask_field="ready", goal="place_info"
+        ),
+        "test",
+        False,
+        {},
+        [],
+    )
+    result = await _post(chat, text="Расскажи об истории этого места")
+    assert result.text == "Вот описание из справочника."
+    assert result.ask_field == "ready"
+    chat.match.assert_not_awaited()
+    chat.generate.assert_not_awaited()
+
+
+async def test_compare_keeps_the_shown_options_and_does_not_search(chat: SimpleNamespace):
+    chat.ai.return_value = (
+        ChatTurnResult(
+            assistant_text="Первый короче, второй — для долгой прогулки.",
+            goal="compare",
+            ask_field="ready",
+        ),
+        "test",
+        False,
+        {"comparison_routes": [{"route_id": "shown", "title": "Прогулка"}]},
+        [],
+    )
+    result = await _post(chat, text="Сравни эти варианты")
+    assert result.text.startswith("Первый короче")
+    assert not any(block.type == "catalog_match" for block in result.blocks)
+    chat.match.assert_not_awaited()
+
+
+async def test_custom_goal_does_not_authorize_generation(chat: SimpleNamespace):
+    chat.ai.return_value = (
+        ChatTurnResult(assistant_text="Обсудим собственный план", goal="custom", ask_field="ready"),
+        "test",
+        False,
+        {},
+        [],
+    )
+    await _post(chat, text="Хочу подробный собственный план")
+    chat.generate.assert_not_awaited()
+
+
+async def test_yes_in_place_question_does_not_trigger_catalogue(chat: SimpleNamespace):
+    chat.planning.constraints["dialogue_goal"] = "place_info"
+    chat.planning.constraints["search_area"] = "Крым"
+    chat.planning.confirmed_fields.append("search_area")
+    chat.ai.return_value = (
+        ChatTurnResult(
+            assistant_text="Продолжим рассказ о месте.", goal="place_info", ask_field="ready"
+        ),
+        "test",
+        False,
+        {},
+        [],
+    )
+    result = await _post(chat, text="Да")
+    assert result.text == "Продолжим рассказ о месте."
+    chat.ai.assert_awaited_once()
+    chat.match.assert_not_awaited()
 
 
 async def test_later_spoken_correction_can_change_a_confirmed_choice(chat: SimpleNamespace) -> None:

@@ -3,8 +3,10 @@
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from tourism_backend.modules.route_builder.application.dialogue import DialogueGoal
+
 # Room for the compact answer, validated patch, tools and contextual replies.
-CHAT_MAX_OUTPUT_TOKENS = 512
+CHAT_MAX_OUTPUT_TOKENS = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +33,8 @@ class ChatTurnResult:
     tool_requests: tuple[dict[str, Any], ...] = ()
     provider: str = "mock"
     structured_parse: str = "ok"
+    goal: DialogueGoal | None = None
+    clarification_reason: str | None = None
 
 
 class AIProviderBusyError(Exception):
@@ -47,6 +51,8 @@ class StructuredChatTurn:
     quick_replies: tuple[dict[str, str], ...] = ()
     constraint_patch: dict[str, Any] = field(default_factory=dict)
     tool_requests: tuple[dict[str, Any], ...] = ()
+    goal: DialogueGoal | None = None
+    clarification_reason: str | None = None
 
 
 class AIPlanningProvider(Protocol):

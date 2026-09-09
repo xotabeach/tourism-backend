@@ -15,6 +15,7 @@ from tourism_backend.modules.route_builder.application.chat_actions import (
     normalize_action_id,
     sanitize_confirmed_fields,
 )
+from tourism_backend.modules.route_builder.application.dialogue import valid_goal
 from tourism_backend.modules.route_builder.application.schemas import RouteMatchParamsIn
 
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
@@ -37,6 +38,9 @@ _PATCH_KEYS = frozenset(
     {
         "city",
         "trip_type",
+        "search_area",
+        "preferred_localities",
+        "flexible_start",
         "duration",
         "people",
         "interests",
@@ -71,7 +75,7 @@ def parse_structured_turn(
     if isinstance(ask_raw, str) and ask_raw.strip() in _ASK_FIELDS:
         ask_field = ask_raw.strip()
     if ask_field is None:
-        ask_field = first_missing_ask_field(confirmed_fields or [])
+        ask_field = "ready"
 
     action_ids: list[str] = []
     raw_ids = payload.get("action_ids")
@@ -118,6 +122,12 @@ def parse_structured_turn(
         quick_replies=tuple(quick_replies),
         constraint_patch=patch,
         tool_requests=tuple(tool_requests),
+        goal=valid_goal(payload.get("goal")),
+        clarification_reason=(
+            payload["clarification_reason"].strip()[:160]
+            if isinstance(payload.get("clarification_reason"), str)
+            else None
+        ),
     )
 
 
@@ -128,18 +138,16 @@ def fallback_structured_turn(
 ) -> StructuredChatTurn:
     ask = first_missing_ask_field(confirmed_fields or [])
     known = sanitize_confirmed_fields(confirmed_fields)
-    snippet = user_snippet.strip()
-    if len(snippet) > 60:
-        snippet = f"{snippet[:57]}..."
+    if "search_area" in known:
+        ask = "ready"
     if ask == "ready":
         text = "Параметров достаточно, чтобы сравнить готовые маршруты. Показать варианты?"
-    elif snippet:
-        text = f"Принял: «{snippet}». Уточните, пожалуйста: {_ask_prompt(ask)}"
     elif known:
         text = f"Уточните, пожалуйста: {_ask_prompt(ask)}"
     else:
         text = (
-            "Помогу с маршрутом по Крыму. С какого города стартуем или какой темп поездки хотите?"
+            "Не удалось получить ответ помощника. Можно повторить запрос или "
+            "начать с района Крыма, который хочется посмотреть — точный старт пока не нужен."
         )
         ask = "city" if ask == "ready" else ask
     return StructuredChatTurn(
@@ -198,17 +206,20 @@ def _sanitize_patch(raw: object) -> dict[str, Any]:
             if items:
                 out["interests_add"] = items[:6]
             continue
-        if key == "interests" and isinstance(value, list):
+        if key in {"interests", "preferred_localities"} and isinstance(value, list):
             items = [str(item).strip()[:40] for item in value if str(item).strip()]
-            if items:
-                out["interests"] = items[:12]
+            out[key] = items[: 8 if key == "preferred_localities" else 12]
             continue
         if key in {"people", "budget_amount"} and isinstance(value, int):
             out[key] = value
             continue
-        if key in {"paid_ok", "with_children", "with_pets", "avoid_crowds"} and isinstance(
-            value, bool
-        ):
+        if key in {
+            "paid_ok",
+            "with_children",
+            "with_pets",
+            "avoid_crowds",
+            "flexible_start",
+        } and isinstance(value, bool):
             out[key] = value
             continue
         if isinstance(value, str):

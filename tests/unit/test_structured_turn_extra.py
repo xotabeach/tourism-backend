@@ -37,7 +37,8 @@ def test_fallback_ready_and_snippet() -> None:
         user_snippet="хочу спокойно " + ("x" * 80),
     )
     assert with_snippet.ask_field == "pace"
-    assert "…" in with_snippet.assistant_text or "..." in with_snippet.assistant_text
+    assert "Принял" not in with_snippet.assistant_text
+    assert "хочу спокойно" not in with_snippet.assistant_text
 
 
 def test_parse_rejects_empty_text_and_unknown_ask() -> None:
@@ -47,7 +48,7 @@ def test_parse_rejects_empty_text_and_unknown_ask() -> None:
         confirmed_fields=["city"],
     )
     assert parsed is not None
-    assert parsed.ask_field == "pace"
+    assert parsed.ask_field == "ready"
     assert parsed.action_ids == ("pace_calm",)
 
 

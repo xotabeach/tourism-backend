@@ -16,10 +16,9 @@ from tourism_backend.modules.route_builder.application.ai import (
     ChatTurnResult,
 )
 from tourism_backend.modules.route_builder.application.chat_actions import (
-    known_constraints,
     prefer_ready_ask_field,
-    unknown_fields,
 )
+from tourism_backend.modules.route_builder.application.chat_context import planning_state_note
 from tourism_backend.modules.route_builder.application.prompts import CHAT_SYSTEM_PROMPT
 from tourism_backend.modules.route_builder.application.structured_turn import (
     extract_json_object,
@@ -156,21 +155,8 @@ class LMStudioProvider:
         max_tokens: int = CHAT_MAX_OUTPUT_TOKENS,
     ) -> ChatTurnResult:
         confirmed = list(confirmed_fields or [])
-        known = known_constraints(constraints, confirmed)
-        unknown = unknown_fields(confirmed)
         hint_ask = prefer_ready_ask_field(confirmed)
-        state_note = (
-            "Известно (JSON, только подтверждённые пользователем поля): "
-            + json.dumps(known, ensure_ascii=False)[:800]
-            + "\nНеизвестно (не выдумывай): "
-            + json.dumps(unknown, ensure_ascii=False)
-            + "\nПодсказка ask_field (меньше вопросов): "
-            + hint_ask
-        )
-        if place_hints:
-            state_note += "\nplace_hints: " + json.dumps(place_hints[:8], ensure_ascii=False)[:600]
-        if tool_context:
-            state_note += "\nbackend_DATA: " + json.dumps(tool_context, ensure_ascii=False)[:1200]
+        state_note = planning_state_note(constraints, confirmed, place_hints, tool_context)
         bounded = messages[-12:]
         payload_messages = [
             ChatMessage(role="system", content=_SYSTEM_PROMPT),
@@ -210,6 +196,8 @@ class LMStudioProvider:
             tool_requests=structured.tool_requests,
             provider="lmstudio",
             structured_parse=parse_status,
+            goal=structured.goal,
+            clarification_reason=structured.clarification_reason,
         )
 
     async def draft_place_content(

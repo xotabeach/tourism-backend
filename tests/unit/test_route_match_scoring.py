@@ -50,6 +50,32 @@ def test_wrong_city_is_penalized() -> None:
     assert scored.score < 0.55
 
 
+def test_discovery_area_ignores_draft_city_duration_and_pace() -> None:
+    params = RouteMatchParamsIn(city="Керчь", search_area="Южный берег Крыма")
+    score = score_candidate(params, _candidate(), confirmed_fields=["search_area"])
+    changed = params.model_copy(update={"duration": "d7plus", "pace": "active"})
+    assert score.score >= 0.55
+    assert (
+        score.score
+        == score_candidate(changed, _candidate(), confirmed_fields=["search_area"]).score
+    )
+
+
+def test_discovery_excludes_outside_localities_even_with_coastal_title() -> None:
+    params = RouteMatchParamsIn(city="Ялта", search_area="Южный берег Крыма")
+    assert score_candidate(params, _candidate(locality_names=("Керчь",))).score == 0
+    assert score_candidate(params, _candidate(locality_names=())).score == 0
+
+
+def test_preferred_towns_rank_softly_not_as_mandatory_stops() -> None:
+    params = RouteMatchParamsIn(
+        city="Крым", search_area="Южный берег Крыма", preferred_localities=["Форос", "Симеиз"]
+    )
+    preferred = score_candidate(params, _candidate(locality_names=("Симеиз",)))
+    other_coastal = score_candidate(params, _candidate())
+    assert preferred.score > other_coastal.score > 0
+
+
 def test_partition_offers_generate_without_ideal() -> None:
     weak = score_candidate(
         RouteMatchParamsIn(city="Керчь", duration="d1_2"),

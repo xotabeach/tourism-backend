@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
+from tourism_backend.modules.route_builder.application.dialogue import DialogueGoal
 from tourism_backend.modules.route_builder.application.itinerary import TripPlanOut
 from tourism_backend.modules.routes.application.schemas import (
     RouteGeometryOut,
@@ -31,6 +32,11 @@ class RouteMatchParamsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     city: str = Field(min_length=1, max_length=80)
+    search_area: str | None = Field(default=None, min_length=1, max_length=80)
+    preferred_localities: list[str] = Field(default_factory=list, max_length=8)
+    flexible_start: bool = False
+    planning_mode: Literal["discover", "custom"] = "discover"
+    dialogue_goal: DialogueGoal = "clarify"
     trip_type: TripType | None = None
     duration: DurationOption = "d3_5"
     people: int = Field(default=2, ge=1, le=20)
@@ -49,7 +55,7 @@ class RouteMatchParamsIn(BaseModel):
     trip_start_date: date | None = None
     region_slug: str = Field(default="crimea", min_length=1, max_length=128)
 
-    @field_validator("city", "season", "region_slug")
+    @field_validator("city", "season", "region_slug", "search_area")
     @classmethod
     def strip_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -59,7 +65,7 @@ class RouteMatchParamsIn(BaseModel):
             raise ValueError("Value must not be blank")
         return cleaned
 
-    @field_validator("interests")
+    @field_validator("interests", "preferred_localities")
     @classmethod
     def clean_interests(cls, value: list[str]) -> list[str]:
         cleaned: list[str] = []

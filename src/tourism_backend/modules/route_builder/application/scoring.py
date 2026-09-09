@@ -370,6 +370,8 @@ def score_candidate(
     params: RouteMatchParamsIn,
     candidate: RouteMatchCandidate,
     preferences: UserPreferenceSignals | None = None,
+    *,
+    confirmed_fields: list[str] | None = None,
 ) -> ScoredMatch:
     if (
         (params.with_children is True and candidate.suitable_for_children is False)
@@ -386,15 +388,30 @@ def score_candidate(
     parts: list[tuple[float, float, str | None]] = []
     # (weight, score, reason)
     c_score, c_reason = _city_score(params.city, candidate)
+    if params.search_area:
+        from tourism_backend.modules.route_builder.application.discovery import area_localities
+
+        locations = area_localities(params.search_area)
+        # Structured locality wins over a marketing title mentioning another area.
+        scope_text = " ".join(candidate.locality_names).casefold()
+        if locations and not any(name.casefold() in scope_text for name in locations):
+            return ScoredMatch(candidate=candidate, score=0, reasons=("вне выбранного района",))
+        c_score, c_reason = 1.0, f"район поиска: {params.search_area}"
+        if params.preferred_localities and any(
+            name.casefold() in scope_text for name in params.preferred_localities
+        ):
+            parts.append((0.15, 1.0, "есть места из ваших пожеланий"))
     parts.append((0.32, c_score, c_reason))
     d_score, d_reason = _duration_score(params.duration, candidate.estimated_duration_minutes)
-    parts.append((0.18, d_score, d_reason))
+    if confirmed_fields is None or "duration" in confirmed_fields:
+        parts.append((0.18, d_score, d_reason))
     i_score, i_reason = _interests_score(params.interests, text, candidate.category_slugs)
     parts.append((0.2, i_score, i_reason))
     t_score, t_reason = _trip_type_score(params.trip_type, text, candidate.category_slugs)
     parts.append((0.12, t_score, t_reason))
     p_score, p_reason = _pace_score(params.pace, candidate.difficulty)
-    parts.append((0.08, p_score, p_reason))
+    if confirmed_fields is None or "pace" in confirmed_fields:
+        parts.append((0.08, p_score, p_reason))
     tr_score, tr_reason = _transport_score(params.transport_mode, candidate.transport_mode)
     parts.append((0.05, tr_score, tr_reason))
     s_score, s_reason = _season_score(params.season, candidate.seasonality)

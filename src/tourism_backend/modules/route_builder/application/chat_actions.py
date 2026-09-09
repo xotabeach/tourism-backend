@@ -20,6 +20,9 @@ AskField = Literal[
 _CONFIRMABLE_FIELDS: frozenset[str] = frozenset(
     {
         "city",
+        "search_area",
+        "preferred_localities",
+        "flexible_start",
         "trip_type",
         "duration",
         "people",
@@ -622,6 +625,8 @@ def interactive_control_blocks(
 def prefer_ready_ask_field(confirmed_fields: list[str]) -> str:
     """Do not guess transport or trip length from form defaults."""
     confirmed = set(sanitize_confirmed_fields(confirmed_fields))
+    if "search_area" in confirmed:
+        return "ready"  # Enough to discover catalogue ideas, not to build an itinerary.
     for field in ("city", "transport_mode", "duration"):
         if field not in confirmed:
             return field

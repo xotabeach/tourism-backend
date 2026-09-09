@@ -22,6 +22,7 @@ from tourism_backend.modules.route_builder.application.ai_candidates import (
     detail_dto,
     is_ai_approved_place,
 )
+from tourism_backend.modules.route_builder.application.discovery import area_localities
 from tourism_backend.modules.route_builder.application.distance_matrix import (
     DistanceMatrixError,
 )
@@ -226,7 +227,22 @@ async def prefetch_context(
     season = str(constraints.get("season") or season_from_month())
     tips = _seasonal_recommendations({"season": season}, constraints)
     places: list[dict[str, str]] = []
-    if "city" in confirmed_fields or constraints.get("city"):
+    if "search_area" in confirmed_fields:
+        towns = area_localities(str(constraints["search_area"]))
+        # Rotate preferred examples to the front, without making them mandatory stops.
+        preferred = [
+            town
+            for town in constraints.get("preferred_localities") or []
+            if not towns or town in towns
+        ]
+        towns = tuple(dict.fromkeys([*preferred, *towns]))
+        for town in towns[:4] or ("Крым",):
+            found = await _search_places(session, {"city": town, "limit": 2}, constraints)
+            for place in found.get("places") or []:
+                if place not in places:
+                    places.append(place)
+        places = places[:8]
+    elif "city" in confirmed_fields:
         places_payload = await _search_places(
             session,
             {

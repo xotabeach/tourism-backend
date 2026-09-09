@@ -37,6 +37,7 @@ async def match_routes(
     user_id: UUID,
     params: RouteMatchParamsIn,
     ai_planning_enabled: bool = False,
+    confirmed_fields: list[str] | None = None,
 ) -> RouteMatchOut:
     user = await session.get(User, user_id)
     if user is None:
@@ -51,7 +52,28 @@ async def match_routes(
         travels_with_kids=user.travels_with_kids,
         travels_with_pets=user.travels_with_pets,
     )
-    scored = [score_candidate(params, candidate, preferences) for candidate in candidates]
+    if confirmed_fields is not None:
+        # Chat discovery must not silently apply unconfirmed form defaults.
+        optional = {
+            "transport_mode",
+            "trip_type",
+            "season",
+            "budget_amount",
+            "paid_ok",
+            "with_children",
+            "with_pets",
+            "avoid_crowds",
+        }
+        params = params.model_copy(
+            update={
+                **{key: None for key in optional if key not in confirmed_fields},
+                **({"interests": []} if "interests" not in confirmed_fields else {}),
+            }
+        )
+    scored = [
+        score_candidate(params, candidate, preferences, confirmed_fields=confirmed_fields)
+        for candidate in candidates
+    ]
     ideal_scored, close_scored, offer_generate = partition_scored(scored)
 
     route_ids = [item.candidate.route_id for item in ideal_scored + close_scored]
@@ -185,7 +207,17 @@ async def _list_items_by_ids(
 ) -> dict[UUID, RouteListItemOut]:
     if not route_ids:
         return {}
-    routes = list((await session.scalars(select(Route).where(Route.id.in_(route_ids)))).all())
+    routes = list(
+        (
+            await session.scalars(
+                select(Route).where(
+                    Route.id.in_(route_ids),
+                    *routes_service._PUBLIC_CATALOG,
+                    ~routes_service._has_unpublished_stop(),
+                )
+            )
+        ).all()
+    )
     by_id = {route.id: route for route in routes}
     ordered = [by_id[route_id] for route_id in route_ids if route_id in by_id]
     counts = await routes_service._stops_count_map(session, route_ids)  # noqa: SLF001
@@ -205,3 +237,9 @@ async def _list_items_by_ids(
             author_rank_title=rank_title,
         )
     return items
+
+
+async def public_catalogue_routes(
+    session: AsyncSession, route_ids: list[UUID]
+) -> list[RouteListItemOut]:
+    return list((await _list_items_by_ids(session, list(dict.fromkeys(route_ids))[:5])).values())
