@@ -35,6 +35,7 @@ from tourism_backend.modules.runtime_config.infrastructure import (
 from tourism_backend.modules.subscriptions.infrastructure import (
     models as subscriptions_models,
 )
+from tourism_backend.modules.support.infrastructure import help_models as support_help_models
 from tourism_backend.modules.support.infrastructure import models as support_models
 
 config = context.config
@@ -55,6 +56,7 @@ _ = (
     identity_models,
     favorites_models,
     support_models,
+    support_help_models,
     media_models,
     notifications_models,
     admin_models,

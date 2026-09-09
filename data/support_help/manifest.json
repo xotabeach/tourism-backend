@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "corpus_id": "support-help-2026-09-08",
+  "language": "ru",
+  "target_app_version": "0.2.31",
+  "status": "draft",
+  "release_verified": false,
+  "approved_by": null,
+  "code_verified_on": "2026-09-08",
+  "backend_commit": "e7a062c4bc4d717a1b20a5103d049d1fb1a08562",
+  "mobile_commit": "4b9813b3bd2e08d4b90b3aae463d19e6ffd337eb",
+  "articles": [
+    {
+      "id": "routes-difficulty", "revision": 1, "category": "routes", "faq_id": "difficulty",
+      "title": "Уровень сложности", "question": "Как понять, справлюсь ли я?",
+      "body_file": "articles/routes-difficulty.md",
+      "evidence": ["mobile:lib/features/routes/presentation/route_details_screen.dart"]
+    },
+    {
+      "id": "routes-offline", "revision": 1, "category": "routes", "faq_id": "offline",
+      "title": "Офлайн-прохождение", "question": "Можно ли пройти маршрут без интернета?",
+      "body_file": "articles/routes-offline.md",
+      "evidence": ["mobile:lib/features/routes/application/offline_routes_provider.dart", "mobile:lib/features/route_execution/application/route_execution_offline_coordinator.dart"]
+    },
+    {
+      "id": "routes-route-error", "revision": 1, "category": "routes", "faq_id": "route-error",
+      "title": "Ошибка на маршруте", "question": "Куда сообщить о неточности или закрытом проходе?",
+      "body_file": "articles/routes-route-error.md",
+      "evidence": ["mobile:lib/features/settings/presentation/settings_support_screens.dart", "backend:src/tourism_backend/modules/support/application/service.py"]
+    },
+    {
+      "id": "routes-order", "revision": 1, "category": "routes", "faq_id": "order",
+      "title": "Порядок точек", "question": "Можно ли пропускать точки и как завершить маршрут?",
+      "body_file": "articles/routes-order.md",
+      "evidence": ["backend:src/tourism_backend/modules/route_execution/application/service.py", "mobile:lib/features/route_execution/presentation/route_execution_screen.dart"]
+    },
+    {
+      "id": "routes-season", "revision": 1, "category": "routes", "faq_id": "season",
+      "title": "Сезонность", "question": "Означает ли маршрут на карте, что он доступен сейчас?",
+      "body_file": "articles/routes-season.md",
+      "evidence": ["backend:src/tourism_backend/modules/route_execution/application/service.py", "mobile:lib/features/routes/presentation/route_details_screen.dart"]
+    },
+    {
+      "id": "app-account", "revision": 1, "category": "app", "faq_id": "account",
+      "title": "Смена номера телефона", "question": "Как поменять номер, привязанный к аккаунту?",
+      "body_file": "articles/app-account.md",
+      "evidence": ["mobile:lib/features/settings/presentation/settings_account_screens.dart", "backend:src/tourism_backend/modules/identity/application/service.py"]
+    },
+    {
+      "id": "app-notifications", "revision": 1, "category": "app", "faq_id": "notifications",
+      "title": "Уведомления", "question": "Почему не приходят пуш-уведомления?",
+      "body_file": "articles/app-notifications.md",
+      "evidence": ["mobile:lib/features/settings/presentation/settings_prefs_screens.dart", "mobile:lib/features/settings/presentation/settings_notifications_inbox_screen.dart"]
+    },
+    {
+      "id": "app-ai-chat", "revision": 1, "category": "app", "faq_id": "ai-chat",
+      "title": "Подбор маршрута с ИИ", "question": "Как работает чат-подбор и сохранение маршрута?",
+      "body_file": "articles/app-ai-chat.md",
+      "evidence": ["backend:src/tourism_backend/modules/route_builder/application/session_service.py", "backend:src/tourism_backend/modules/route_builder/application/generate_service.py"]
+    },
+    {
+      "id": "app-data", "revision": 1, "category": "app", "faq_id": "data",
+      "title": "Выход из аккаунта", "question": "Что останется после выхода и что нужно сохранить заранее?",
+      "body_file": "articles/app-data.md",
+      "evidence": ["mobile:lib/features/onboarding/application/session_provider.dart", "mobile:lib/features/routes/application/offline_routes_provider.dart", "mobile:lib/features/route_publish/application/route_publish_controller.dart"]
+    },
+    {
+      "id": "app-login", "revision": 1, "category": "app", "faq_id": "login",
+      "title": "Вход и код подтверждения", "question": "Что делать, если не получается войти?",
+      "body_file": "articles/app-login.md",
+      "evidence": ["mobile:lib/features/auth/presentation/auth_otp_screen.dart", "backend:src/tourism_backend/modules/identity/application/service.py"]
+    },
+    {
+      "id": "app-support", "revision": 1, "category": "app", "faq_id": "support",
+      "title": "Обращение в поддержку", "question": "Как описать проблему и где увидеть ответ?",
+      "body_file": "articles/app-support.md",
+      "evidence": ["mobile:lib/features/settings/presentation/settings_support_screens.dart", "backend:src/tourism_backend/modules/admin/application/support_ops.py"]
+    },
+    {
+      "id": "points-earn", "revision": 1, "category": "travel_points", "faq_id": "earn",
+      "title": "Как начисляются баллы", "question": "За что дают ТревелПоинты и кому они начисляются?",
+      "body_file": "articles/points-earn.md",
+      "evidence": ["backend:src/tourism_backend/modules/identity/application/travel_points.py", "backend:src/tourism_backend/modules/route_execution/application/service.py", "backend:src/tourism_backend/modules/route_execution/application/rewards.py"]
+    },
+    {
+      "id": "points-rank", "revision": 1, "category": "travel_points", "faq_id": "rank",
+      "title": "Звание", "question": "Как повысить звание в профиле?",
+      "body_file": "articles/points-rank.md",
+      "evidence": ["backend:src/tourism_backend/modules/identity/application/travel_points.py", "backend:src/tourism_backend/modules/identity/application/public_service.py"]
+    },
+    {
+      "id": "points-achievements", "revision": 1, "category": "travel_points", "faq_id": "achievements",
+      "title": "Достижения", "question": "Где посмотреть полученные и недоступные достижения?",
+      "body_file": "articles/points-achievements.md",
+      "evidence": ["mobile:lib/features/profile/presentation/achievements_screen.dart", "backend:src/tourism_backend/modules/identity/application/achievements.py"]
+    },
+    {
+      "id": "points-leaderboard", "revision": 1, "category": "travel_points", "faq_id": "leaderboard",
+      "title": "Топ пользователей", "question": "От чего зависит место в топе?",
+      "body_file": "articles/points-leaderboard.md",
+      "evidence": ["backend:src/tourism_backend/modules/identity/application/public_service.py"]
+    }
+  ]
+}

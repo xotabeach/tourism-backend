@@ -147,6 +147,12 @@ class Settings(BaseSettings):
     # answer, since the answer is still personalized per session.
     rag_faq_cache_ttl_seconds: int = Field(default=86400, ge=60)
 
+    # Separate help index, same MiniLM provider/weights as RAG. Opt-in only
+    # after publication, indexing and a retrieval-quality check. Never use hash-v1.
+    support_help_semantic_enabled: bool = False
+    support_help_semantic_min_score: float = Field(default=0.55, ge=0.0, le=1.0)
+    support_help_semantic_timeout_seconds: float = Field(default=1.5, ge=0.05, le=5.0)
+
     # ADR-004/010 RoutingProvider. ``stub`` is synthetic local DX; ``2gis``
     # uses the server-side HTTP Routing API.  Keep the default conservative so
     # a missing external key can never silently change local/test behaviour.

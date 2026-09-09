@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import math
 from functools import lru_cache
+from importlib import import_module
 from typing import Protocol
 
 from tourism_backend.config import Settings
@@ -83,7 +84,7 @@ def _load_sentence_transformer(model_name: str) -> object:
     and naturally supports swapping models without a restart in tests.
     """
     try:
-        from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
+        SentenceTransformer = import_module("sentence_transformers").SentenceTransformer
     except ImportError as exc:
         raise EmbeddingProviderError(
             "sentence-transformers is not installed — install the 'rag' extra "
@@ -134,6 +135,46 @@ class SentenceTransformerEmbeddingProvider:
                 "matching output size or add a migration to widen the column."
             )
         return floats
+
+    async def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        """Index short source passages without silently truncating long ones.
+
+        Used by the isolated help index. The original single-text RAG path
+        remains unchanged. Loading, tokenization and batch encoding stay off
+        the event loop, and share the already cached model weights.
+        """
+        model = await _load_off_loop(self.model_id)
+
+        def encode() -> list[list[float]]:
+            tokenizer = model.tokenizer  # type: ignore[attr-defined]
+            max_length = int(model.max_seq_length)  # type: ignore[attr-defined]
+            width = max_length - tokenizer.num_special_tokens_to_add() - 8
+            if width < 16:
+                raise EmbeddingProviderError("Embedding context is too small for help passages")
+            windows: list[str] = []
+            for source in texts:
+                tokens = tokenizer.encode(source, add_special_tokens=False)
+                if len(tokens) <= width:
+                    windows.append(source)
+                    continue
+                for start in range(0, len(tokens), width - 16):
+                    window = tokenizer.decode(tokens[start : start + width])
+                    if len(tokenizer.encode(window)) > max_length:
+                        raise EmbeddingProviderError("Help passage exceeds the encoder context")
+                    windows.append(window)
+                    if start + width >= len(tokens):
+                        break
+            if not windows:
+                return []
+            if len(windows) > 64:
+                raise EmbeddingProviderError("Too many windows for one help article")
+            vectors = model.encode(windows, normalize_embeddings=True)  # type: ignore[attr-defined]
+            result = [[float(value) for value in vector] for vector in vectors]
+            if any(len(vector) != self._dimension for vector in result):
+                raise EmbeddingProviderError("Unexpected help embedding dimension")
+            return result
+
+        return await asyncio.to_thread(encode)
 
 
 def default_embedder() -> HashEmbeddingProvider:
