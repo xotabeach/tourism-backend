@@ -16,7 +16,11 @@
 # the server .env by hand). Any of these left unset here are simply not
 # touched; the server keeps whatever value is already in its .env:
 #   DEEPSEEK_API_KEY, GEMINI_API_KEY, LM_STUDIO_API_KEY, AI_PROVIDER,
-#   RAG_ENABLED, RAG_EMBEDDING_MODEL
+#   RAG_ENABLED, RAG_EMBEDDING_MODEL, SUPPORT_HELP_SEMANTIC_*
+#
+# The same allowlist exists a second time in deploy-remote.sh ON THE SERVER
+# (SYNCED_ENV_KEYS). A key added here but not there reaches the host and is
+# then ignored — update both.
 #
 # Registry pull on the host uses CI_REGISTRY_* from the job (not a long-lived
 # server-side docker login).
@@ -121,7 +125,13 @@ fi
 # deploy-remote.sh) when the CI/CD variable is actually defined for this
 # pipeline run — an unset variable here leaves the server's existing value
 # alone, it never blanks it out.
-SYNCED_SECRET_ENV_VARS=(DEEPSEEK_API_KEY GEMINI_API_KEY LM_STUDIO_API_KEY AI_PROVIDER RAG_ENABLED RAG_EMBEDDING_MODEL)
+SYNCED_SECRET_ENV_VARS=(
+  DEEPSEEK_API_KEY GEMINI_API_KEY LM_STUDIO_API_KEY AI_PROVIDER
+  RAG_ENABLED RAG_EMBEDDING_MODEL
+  SUPPORT_HELP_SEMANTIC_ENABLED SUPPORT_HELP_SEMANTIC_MIN_SCORE
+  SUPPORT_HELP_SEMANTIC_TIMEOUT_SECONDS SUPPORT_HELP_SEMANTIC_QUEUE_SECONDS
+  SUPPORT_HELP_SEMANTIC_MAX_WAITING
+)
 for _var in "${SYNCED_SECRET_ENV_VARS[@]}"; do
   if [[ -n "${!_var:-}" ]]; then
     remote_env+=("${_var}=$(printf '%q' "${!_var}")")
