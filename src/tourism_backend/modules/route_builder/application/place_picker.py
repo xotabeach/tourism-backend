@@ -370,6 +370,27 @@ async def pick_places_for_params(
         )
 
     places = list((await session.scalars(stmt.limit(120))).all())
+    if len(places) < 2 and locality_ids:
+        # The curated catalogue can know a settlement before enough places
+        # have been assigned to it. Keep the user's recognised locality as
+        # the anchor and widen only to a transport-appropriate nearby radius;
+        # this is intentionally different from the region-wide fallback used
+        # for an explicitly flexible start.
+        locality_center = (
+            select(Locality.center)
+            .where(Locality.id == locality_ids[0], Locality.center.is_not(None))
+            .scalar_subquery()
+        )
+        radius = _START_RADIUS_METERS[normalize_transport_mode(params.transport_mode)]
+        places = list(
+            (
+                await session.scalars(
+                    base_stmt.where(func.ST_DWithin(Place.location, locality_center, radius)).limit(
+                        120
+                    )
+                )
+            ).all()
+        )
     if len(places) < 2 and start_place is not None:
         # Sparse settlement data may require a nearby fallback, but keep it
         # transport-aware and anchored to the chosen point.
