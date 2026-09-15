@@ -32,6 +32,16 @@ RUN .venv/bin/python -c \
 
 FROM python:3.13-slim-bookworm AS runtime
 
+# Debian security updates published after the base image was cut. The image
+# is pinned, so without this the runtime keeps shipping whatever was current
+# when python:3.13-slim-bookworm was built, and trivy fails the pipeline the
+# day an advisory lands — as it did on 2026-09-15 for libpcre2 (CVE-2026-86145,
+# CVE-2026-89161), both already fixed in Debian. Upgrading is the actual fix;
+# the alternative is waiting for someone else to rebuild the base image.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 # The base image's own pip is never invoked at runtime (the app runs from
 # the pre-built .venv below) but its vendored copies of msgpack/setuptools
 # (pip/_vendor/) carry known CVEs that trivy flags regardless — removing an
