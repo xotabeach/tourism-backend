@@ -68,3 +68,21 @@ async def test_validation_error_does_not_reflect_submitted_input(app) -> None:
     assert body["error"]["code"] == "validation_error"
     assert "do-not-reflect-this-secret" not in str(body)
     assert "input" not in body["error"]["details"][0]
+
+
+def test_apk_downloads_instead_of_rendering_as_text() -> None:
+    """The published build is served from /media, and must arrive as a file.
+
+    The slim image has no /etc/mime.types, so Python guesses nothing for .apk
+    and StaticFiles falls back to text/plain — the browser then renders the
+    installer as mojibake instead of offering to save it.
+    """
+    import mimetypes
+
+    from tourism_backend.config import Settings
+
+    create_app(Settings(app_env="test", jwt_signing_key="x" * 32))
+
+    assert mimetypes.guess_type("crimeatrip-latest.apk")[0] == (
+        "application/vnd.android.package-archive"
+    )

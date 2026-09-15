@@ -1,4 +1,5 @@
 import logging
+import mimetypes
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -99,6 +100,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_exception_handlers(app)
     app.include_router(api_router)
     _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    # The slim image carries no /etc/mime.types, so Python guesses nothing for
+    # .apk and StaticFiles falls back to text/plain — a browser then renders
+    # the installer as mojibake instead of downloading it. The build published
+    # under /media/app is served from here.
+    mimetypes.add_type("application/vnd.android.package-archive", ".apk")
     app.mount("/media", StaticFiles(directory=str(_MEDIA_DIR)), name="media")
     mount_admin(app, session_factory=session_factory, settings=resolved_settings)
     # Caddy terminates TLS; without this SQLAdmin emits http:// links (mixed
