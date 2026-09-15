@@ -4,49 +4,23 @@ import re
 from typing import Any
 
 SOUTH_COAST = "Южный берег Крыма"
-SOUTH_COAST_LOCALITIES = (
-    "Форос",
-    "Симеиз",
-    "Алупка",
-    "Ялта",
-    "Гаспра",
-    "Кореиз",
-    "Ливадия",
-    "Массандра",
-    "Никита",
-    "Гурзуф",
-    "Партенит",
-    "Алушта",
-    "Кацивели",
-    "Понизовка",
-)
+# Product areas are geometry, not lists of “important cities”.  Bounds are a
+# coarse catalogue pre-filter; exact route geometry remains authoritative.
+_AREA_BOUNDS: dict[str, tuple[float, float, float, float]] = {
+    # west, south, east, north
+    SOUTH_COAST: (33.70, 44.35, 34.60, 44.72),
+}
 _AREAS = (
     (r"\b(?:юбк|южн\w*\s+берег\w*)\b", SOUTH_COAST),
     (r"\b(?:крым\w*|crimea)\b", "Крым"),
 )
-_TOWNS = {
-    "форос": "Форос",
-    "симеиз": "Симеиз",
-    "ялт": "Ялта",
-    "алупк": "Алупка",
-    "алушт": "Алушта",
-    "гурзуф": "Гурзуф",
-    "судак": "Судак",
-    "евпатори": "Евпатория",
-    "бахчисара": "Бахчисарай",
-    "севастопол": "Севастополь",
-    "феодоси": "Феодосия",
-    "керч": "Керчь",
-    "симферопол": "Симферополь",
-    "новый свет": "Новый Свет",
-}
 
 
 def discovery_patch(text: str) -> dict[str, Any]:
     """Conservative outage-safe hints, not the main model's full NLU.
 
-    Towns mentioned as examples are soft interests, never mandatory stops.
-    Unknown geography is left to the provider/catalogue, not guessed.
+    Named localities are resolved from the database by ``session_service``;
+    this outage fallback deliberately has no embedded town whitelist.
     """
     folded = text.casefold().replace("ё", "е")
     patch: dict[str, Any] = {}
@@ -66,11 +40,28 @@ def discovery_patch(text: str) -> dict[str, Any]:
         if re.search(pattern, folded):
             patch["search_area"] = area
             break
-    towns = [town for stem, town in _TOWNS.items() if re.search(r"\b" + stem + r"\w*\b", folded)]
-    if towns:
-        patch["preferred_localities"] = towns[:8]
-        patch.setdefault("search_area", towns[0] if len(towns) == 1 else "Крым")
-    if re.search(r"(?:любой\s+(?:город|старт)|откуда\s*(?:то|угодно))", folded):
+    if re.search(r"\b(?:пеш(?:ком|ий|ая|ую)|прогулк\w*|гуля(?:ть|ем))\b", folded):
+        patch["transport_mode"] = "walk"
+    elif re.search(r"\b(?:на\s+машин\w*|авто(?:мобил\w*)?)\b", folded):
+        patch["transport_mode"] = "car"
+    elif re.search(r"\bобщественн\w*\s+транспорт\w*\b", folded):
+        patch["transport_mode"] = "public"
+    interests: list[str] = []
+    for pattern, interest in (
+        (r"\b(?:мор\w*|пляж\w*|побереж\w*)\b", "море"),
+        (r"\b(?:гор\w*|скал\w*|вершин\w*)\b", "горы"),
+        (r"\b(?:истори\w*|дворц\w*|крепост\w*|музе\w*)\b", "история"),
+        (r"\b(?:природ\w*|парк\w*|лес\w*)\b", "природа"),
+    ):
+        if re.search(pattern, folded):
+            interests.append(interest)
+    if interests:
+        patch["interests_add"] = interests
+    if re.search(
+        r"(?:любой\s+(?:город|старт)|откуда\s*(?:то|угодно)|"
+        r"выбер\w*\s+сам|предлаг\w*\s+сам|реши\s+сам)",
+        folded,
+    ):
         patch["flexible_start"] = True
     return patch
 
@@ -85,8 +76,10 @@ def wants_discovery(text: str) -> bool:
 
 
 def area_localities(area: str) -> tuple[str, ...]:
-    if area == SOUTH_COAST:
-        return SOUTH_COAST_LOCALITIES
     if area.casefold() in {"крым", "crimea", "весь крым"}:
         return ()
     return (area,)
+
+
+def area_bounds(area: str) -> tuple[float, float, float, float] | None:
+    return _AREA_BOUNDS.get(area)

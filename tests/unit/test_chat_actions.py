@@ -125,6 +125,32 @@ def test_chip_patch_can_overwrite_confirmed_city() -> None:
     assert merged["city"] == "Севастополь"
 
 
+def test_automatic_start_clears_conflicting_exact_anchor() -> None:
+    merged = merge_constraint_patch(
+        {
+            "city": "Ялта",
+            "start_query": "Скала Дива",
+            "start_place_id": "11111111-1111-1111-1111-111111111111",
+        },
+        {"flexible_start": True},
+    )
+
+    assert merged["flexible_start"] is True
+    assert "city" not in merged
+    assert "start_query" not in merged
+    assert "start_place_id" not in merged
+
+
+def test_explicit_start_turns_off_an_older_automatic_choice() -> None:
+    merged = merge_constraint_patch(
+        {"flexible_start": True},
+        {"start_query": "Форос"},
+    )
+
+    assert merged["start_query"] == "Форос"
+    assert merged["flexible_start"] is False
+
+
 def test_form_draft_excludes_confirmed_and_placeholder_city() -> None:
     from tourism_backend.modules.route_builder.application.chat_actions import (
         form_draft_constraints,

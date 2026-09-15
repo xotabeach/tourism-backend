@@ -49,12 +49,12 @@ _ALLOWED_TOOLS = frozenset(
     }
 )
 
-# Region-wide fallback when a city isn't pinned to a locality (e.g. «Крым»).
-_REGION_CITY_ALIASES = frozenset({"крым", "crimea", "полуостров", "весь крым"})
+# Region-wide fallback when a query isn't pinned to a locality (e.g. «Крым»).
+_REGION_QUERY_ALIASES = frozenset({"крым", "crimea", "полуостров", "весь крым"})
 
 
-def _looks_like_region_city(city: str) -> bool:
-    return city.casefold().strip() in _REGION_CITY_ALIASES
+def _looks_like_region_query(query: str) -> bool:
+    return query.casefold().strip() in _REGION_QUERY_ALIASES
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,7 +237,7 @@ async def prefetch_context(
         ]
         towns = tuple(dict.fromkeys([*preferred, *towns]))
         for town in towns[:4] or ("Крым",):
-            found = await _search_places(session, {"city": town, "limit": 2}, constraints)
+            found = await _search_places(session, {"query": town, "limit": 2}, constraints)
             for place in found.get("places") or []:
                 if place not in places:
                     places.append(place)
@@ -246,7 +246,7 @@ async def prefetch_context(
         places_payload = await _search_places(
             session,
             {
-                "city": constraints.get("city"),
+                "query": constraints.get("start_query") or constraints.get("city"),
                 "limit": 6,
             },
             constraints,
@@ -306,9 +306,16 @@ async def _search_places(
     args: dict[str, Any],
     constraints: dict[str, Any],
 ) -> dict[str, Any]:
-    city = str(args.get("city") or constraints.get("city") or "").strip()
-    if not city:
-        return {"places": [], "note": "city_required"}
+    query = str(
+        args.get("query")
+        or args.get("city")  # compatibility with already configured providers
+        or constraints.get("start_query")
+        or constraints.get("city")
+        or constraints.get("search_area")
+        or ""
+    ).strip()
+    if not query:
+        return {"places": [], "note": "location_query_required"}
     limit = args.get("limit", 6)
     if not isinstance(limit, int):
         limit = 6
@@ -317,14 +324,14 @@ async def _search_places(
     if region is None:
         return {"places": []}
 
-    region_wide = _looks_like_region_city(city)
+    region_wide = _looks_like_region_query(query)
     if not region_wide:
         locality_ids = list(
             await session.scalars(
                 select(Locality.id).where(
                     Locality.region_id == region.id,
                     Locality.status == "active",
-                    Locality.name.ilike(f"%{city}%"),
+                    Locality.name.ilike(f"%{query}%"),
                 )
             )
         )
@@ -339,15 +346,15 @@ async def _search_places(
         stmt = stmt.where(
             or_(
                 Place.locality_id.in_(locality_ids),
-                Place.name.ilike(f"%{city}%"),
-                Place.address.ilike(f"%{city}%"),
+                Place.name.ilike(f"%{query}%"),
+                Place.address.ilike(f"%{query}%"),
             )
         )
     elif not region_wide:
         stmt = stmt.where(
             or_(
-                Place.name.ilike(f"%{city}%"),
-                Place.address.ilike(f"%{city}%"),
+                Place.name.ilike(f"%{query}%"),
+                Place.address.ilike(f"%{query}%"),
             )
         )
     rows = [
@@ -356,7 +363,7 @@ async def _search_places(
         if is_ai_approved_place(place, constraints=constraints)
     ]
     interest = str(args.get("interest") or "").casefold()
-    city_cf = city.casefold()
+    query_cf = query.casefold()
     scored: list[tuple[float, Place]] = []
     for place in rows:
         text = " ".join(
@@ -372,14 +379,14 @@ async def _search_places(
             # Region-wide query: every published place is a candidate; keep a
             # small locality baseline so ordering stays stable.
             score = 0.3
-        elif city_cf in text or city_cf in (place.address or "").casefold():
+        elif query_cf in text or query_cf in (place.address or "").casefold():
             score += 0.4
         if interest and interest in text:
             score += 0.3
         scored.append((score, place))
     scored.sort(key=lambda item: (-item[0], item[1].name))
     places = [candidate_dto(place) for _, place in scored[:limit]]
-    return {"places": places, "city": city}
+    return {"places": places, "query": query}
 
 
 async def _get_place_details(

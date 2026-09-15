@@ -111,12 +111,18 @@ def upsert_localities(
         locality.name = payload["name"]
         locality.slug = payload["slug"]
         locality.type = payload.get("type", "city")
+        locality.aliases = payload.get("aliases")
+        locality.population = payload.get("population")
         center = payload.get("center")
         if center:
             locality.center = _point(float(center["lng"]), float(center["lat"]))
         locality.status = "active"
-        locality.freshness_status = "fresh"
-        locality.source_name = "seed"
+        locality.freshness_status = payload.get("freshness_status", "fresh")
+        locality.source_name = payload.get("source_name", "seed")
+        locality.source_external_id = payload.get("source_external_id")
+        locality.source_license = payload.get("source_license")
+        locality.source_url = payload.get("source_url")
+        locality.source_checked_at = _now()
         locality.updated_at = _now()
         session.flush()
         by_slug[locality.slug] = locality
@@ -152,9 +158,29 @@ def upsert_places(
 ) -> int:
     count = 0
     for payload in places:
-        place = session.scalar(
+        by_slug = session.scalar(
             select(Place).where(Place.region_id == region.id, Place.slug == payload["slug"])
         )
+        source_name = payload.get("source_name", "seed")
+        source_external_id = payload.get("source_external_id")
+        by_source = None
+        if source_external_id:
+            by_source = session.scalar(
+                select(Place).where(
+                    Place.source_name == source_name,
+                    Place.source_external_id == source_external_id,
+                )
+            )
+        if by_slug is not None and by_source is not None and by_slug.id != by_source.id:
+            raise SystemExit(
+                "Seed place identity conflict: "
+                f"slug={payload['slug']} and {source_name}:{source_external_id} "
+                "belong to different rows; deduplicate them before seeding"
+            )
+        # An OSM importer initially uses `osm-<type>-<id>` slugs. Curated seed
+        # entries must recognize that same source object and promote its slug,
+        # rather than attempting a duplicate insert.
+        place = by_source or by_slug
         if place is None:
             place = Place(id=uuid4(), region_id=region.id, created_at=_now(), updated_at=_now())
             session.add(place)
@@ -180,11 +206,18 @@ def upsert_places(
         place.seasonality = payload.get("seasonality")
         place.safety_warnings = payload.get("safety_warnings")
         place.publication_status = payload.get("publication_status", "published")
-        place.freshness_status = "fresh"
-        place.source_name = "seed"
-        place.source_external_id = payload.get("source_external_id")
-        place.source_license = payload.get("source_license", "internal")
-        place.source_payload = payload.get("source_payload")
+        place.freshness_status = payload.get("freshness_status", "fresh")
+        place.source_name = source_name
+        if payload.get("source_url"):
+            place.source_url = payload["source_url"]
+        place.source_checked_at = _now()
+        place.source_external_id = source_external_id
+        if payload.get("source_license"):
+            place.source_license = payload["source_license"]
+        elif place.source_license is None:
+            place.source_license = "internal"
+        if "source_payload" in payload:
+            place.source_payload = payload["source_payload"]
         place.data_quality_status = payload.get("data_quality_status", "editorial_reviewed")
         place.updated_at = _now()
         session.flush()
@@ -326,9 +359,10 @@ def upsert_routes(
         route.slug = payload["slug"]
         route.short_description = payload.get("short_description")
         route.description = payload.get("description")
-        route.source = "editorial"
-        route.visibility = "public"
-        route.lifecycle_status = "active"
+        route.source = payload.get("source", "editorial")
+        route.visibility = payload.get("visibility", "public")
+        route.lifecycle_status = payload.get("lifecycle_status", "active")
+        route.publication_status = payload.get("publication_status", "published")
         route.estimated_duration_minutes = payload.get("estimated_duration_minutes")
         route.distance_meters = payload.get("distance_meters")
         route.difficulty = payload.get("difficulty")
@@ -340,8 +374,10 @@ def upsert_routes(
         route.pets_allowed = payload.get("pets_allowed")
         route.accessibility = payload.get("accessibility")
         route.author_label = payload.get("author_label", "КрымТрип редакция")
-        route.source_name = "seed"
-        route.freshness_status = "fresh"
+        route.source_name = payload.get("source_name", "seed")
+        route.source_url = payload.get("source_url")
+        route.source_checked_at = _now()
+        route.freshness_status = payload.get("freshness_status", "fresh")
         route.owner_user_id = None
         route.updated_at = _now()
         session.flush()

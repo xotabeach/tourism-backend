@@ -66,8 +66,8 @@ class TestAskFieldFallback:
             "Отлично, люблю активный темп! Чтобы я подобрал идеальный маршрут, "
             "подскажите, в каком городе или районе Крыма вы планируете отдыхать?"
         )
-        assert ask_field_from_text(text, None) == "city"
-        assert ask_field_from_text(text, "ready") == "city"
+        assert ask_field_from_text(text, None) == "start_location"
+        assert ask_field_from_text(text, "ready") == "start_location"
 
     def test_a_deliberate_field_is_never_second_guessed(self) -> None:
         text = "В каком городе вы сейчас?"

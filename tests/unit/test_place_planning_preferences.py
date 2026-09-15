@@ -151,6 +151,59 @@ async def test_repeat_build_prefers_fresh_places_but_small_catalogue_still_works
     assert [place.place_id for place in chosen] == [place.id for place in expected]
 
 
+async def test_named_place_anchors_a_walk_to_its_own_locality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    region_id, locality_id = uuid4(), uuid4()
+    anchor = _place(name="Скала Дива", locality_id=locality_id)
+    neighbours = [
+        _place(name="Крепость Панеа", locality_id=locality_id),
+        _place(name="Парк Милютина", locality_id=locality_id),
+    ]
+    session = MagicMock(spec=AsyncSession)
+    session.scalar = AsyncMock(
+        side_effect=[SimpleNamespace(id=region_id), anchor],
+    )
+    place_rows = MagicMock()
+    place_rows.all.return_value = [anchor, *neighbours]
+    locality_rows = MagicMock()
+    locality_rows.all.return_value = [
+        SimpleNamespace(id=locality_id, name="Симеиз"),
+    ]
+    session.scalars = AsyncMock(side_effect=[place_rows, locality_rows])
+    monkeypatch.setattr(picker, "_categories_for_places", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        picker,
+        "_coords_for_places",
+        AsyncMock(
+            return_value={
+                anchor.id: (33.9924, 44.4026),
+                neighbours[0].id: (33.9930, 44.4030),
+                neighbours[1].id: (33.9970, 44.4070),
+            }
+        ),
+    )
+    monkeypatch.setattr(picker, "covers_for_places", AsyncMock(return_value={}))
+
+    chosen = await picker.pick_places_for_params(
+        session,
+        params=RouteMatchParamsIn(
+            start_query="Скала Дива",
+            transport_mode="walk",
+            duration="d1_2",
+        ),
+        max_points=3,
+    )
+
+    assert chosen[0].place_id == anchor.id
+    assert {place.locality_name for place in chosen} == {"Симеиз"}
+    place_query = str(
+        session.scalars.call_args_list[0].args[0].compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "places.locality_id =" in place_query
+    assert locality_id.hex in place_query
+
+
 async def test_diversity_lookup_is_bounded_to_current_owner_and_session() -> None:
     user_id, session_id, place_id = uuid4(), uuid4(), uuid4()
     session = MagicMock(spec=AsyncSession)

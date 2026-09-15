@@ -1,3 +1,4 @@
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -38,6 +39,20 @@ class LocalityOut(BaseModel):
     name: str
     slug: str
     type: str
+    aliases: list[str] | None = None
+    population: int | None = None
     status: str
     center_lng: float | None = None
     center_lat: float | None = None
+
+
+class LocationSuggestionOut(BaseModel):
+    """A route endpoint/area candidate from the project's own catalogue."""
+
+    kind: Literal["locality", "place"]
+    id: UUID
+    name: str
+    subtitle: str | None = None
+    locality_type: str | None = None
+    center_lng: float
+    center_lat: float

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings, get_settings
+from tourism_backend.modules.geography.application import service as geography_service
 from tourism_backend.modules.identity.application.chat_preferences import (
     apply_chat_preferences,
 )
@@ -143,6 +145,28 @@ _CONTROL_ACTION_IDS = frozenset({"budget_amount", "with_children", "with_pets", 
 _MATCH_FIRST_ACTIONS = frozenset({"want_generate"})
 _CUSTOM_GENERATE_ACTIONS = frozenset({"build_custom_route"})
 _SAVE_PREFERENCES_ACTIONS = frozenset({"save_preferences"})
+
+
+def _explicit_custom_build(text: str) -> bool:
+    folded = text.casefold().replace("ё", "е")
+    return bool(
+        re.search(
+            r"(?:давай\s+)?(?:собер|собери|постро|построй|состав|составь)"
+            r".{0,35}(?:свой|собствен|маршрут|план)",
+            folded,
+        )
+    )
+
+
+def _delegates_start(text: str) -> bool:
+    folded = text.casefold().replace("ё", "е")
+    return bool(
+        re.search(
+            r"(?:выбер\w*|предлож\w*|реши|подбери).{0,16}сам|"
+            r"откуда\s*(?:то|угодно)|любой\s+(?:старт|населенн\w*\s+пункт)",
+            folded,
+        )
+    )
 
 
 def llm_history_stmt(
@@ -497,12 +521,51 @@ async def post_message(
     if (
         intent not in {"crisis", "off_topic", "injection_attempt"}
         and not payload.controls
+        and not payload.action_id
+        and not payload.want_generate
         and goal in {"discover", "custom"}
     ):
         search_patch = discovery_patch(payload.text)
         if search_patch:
             constraints_dict = merge_constraint_patch(constraints_dict, search_patch)
             touched = fields_touched_by_patch(search_patch)
+            confirmed = sanitize_confirmed_fields([*confirmed, *touched])
+            turn_explicit_fields.update(touched)
+        # Resolve every active locality from the database rather than a
+        # hard-coded city list. Inflected mentions such as «из Фороса» are
+        # returned as soft preferences unless the sentence explicitly names
+        # the start.
+        mentions = await geography_service.mentioned_localities(
+            session,
+            text=payload.text,
+            region_slug=str(constraints_dict.get("region_slug") or "crimea"),
+        )
+        if mentions:
+            names = list(
+                dict.fromkeys(
+                    [
+                        *(constraints_dict.get("preferred_localities") or []),
+                        *(locality.name for locality in mentions),
+                    ]
+                )
+            )[:8]
+            mention_patch: dict[str, Any] = {"preferred_localities": names}
+            if (
+                goal == "custom"
+                and len(mentions) == 1
+                and re.search(
+                    r"\b(?:из|от|старт\w*\s+(?:в|из|от)?)\b",
+                    payload.text.casefold().replace("ё", "е"),
+                )
+            ):
+                mention_patch.update(
+                    {
+                        "start_query": mentions[0].name,
+                        "start_locality_id": str(mentions[0].id),
+                    }
+                )
+            constraints_dict = merge_constraint_patch(constraints_dict, mention_patch)
+            touched = fields_touched_by_patch(mention_patch)
             confirmed = sanitize_confirmed_fields([*confirmed, *touched])
             turn_explicit_fields.update(touched)
     canonical_action = normalize_action_id(payload.action_id) if payload.action_id else None
@@ -519,20 +582,18 @@ async def post_message(
         constraints_dict["planning_mode"] = "custom"
         flow = "generate_custom"
         intent = "generate"
+    elif goal == "custom" and (
+        _explicit_custom_build(payload.text)
+        or (constraints_dict.get("planning_mode") == "custom" and _delegates_start(payload.text))
+    ):
+        constraints_dict["planning_mode"] = "custom"
+        flow = "generate_custom"
+        intent = "generate"
     elif canonical_action == "clear_params":
         flow = "clear_params"
     elif canonical_action in _SAVE_PREFERENCES_ACTIONS:
         flow = "save_preferences"
     elif is_control_only or payload.controls is not None or canonical_action == "reply":
-        flow = "on_topic_travel"
-
-    # Old clients may still ask for a match early. Form defaults are not a
-    # confirmed transport/duration and must not silently become trip facts.
-    if flow == "generate_custom" and not {
-        "city",
-        "transport_mode",
-        "duration",
-    }.issubset(confirmed):
         flow = "on_topic_travel"
 
     now = datetime.now(UTC)
@@ -581,7 +642,7 @@ async def post_message(
                 )
             )
     elif flow == "clear_params":
-        constraints_dict = RouteMatchParamsIn(city="Крым").model_dump(mode="json")
+        constraints_dict = RouteMatchParamsIn().model_dump(mode="json")
         confirmed = []
         assistant_text = "Очистил параметры. Выбери из предложенного или опиши идеальный маршрут."
         ask_field = "pace"
@@ -622,8 +683,27 @@ async def post_message(
             include_recommendations=False,
         )
     elif flow in {"generate", "generate_custom"}:
-        params = RouteMatchParamsIn.model_validate(constraints_dict)
         force_custom = flow == "generate_custom"
+        if force_custom:
+            # Clicking “build” (or saying it explicitly) is authorization to
+            # choose a coherent first draft. Missing details receive visible,
+            # conservative planning defaults instead of reopening a city form.
+            if not any(
+                field in confirmed
+                for field in (
+                    "city",
+                    "start_query",
+                    "start_locality_id",
+                    "start_place_id",
+                    "flexible_start",
+                )
+            ):
+                constraints_dict["flexible_start"] = True
+            if "transport_mode" not in confirmed:
+                constraints_dict["transport_mode"] = "walk"
+            if "duration" not in confirmed:
+                constraints_dict["duration"] = "d1_2"
+        params = RouteMatchParamsIn.model_validate(constraints_dict)
         if not force_custom:
             matched = await match_service.match_routes(
                 session,
@@ -631,6 +711,9 @@ async def post_message(
                 params=_discovery_params(constraints_dict, confirmed),
                 ai_planning_enabled=cfg.ai_planning_enabled,
                 confirmed_fields=confirmed,
+                excluded_route_ids=await _recent_catalog_route_ids(
+                    session, planning_id=planning.id
+                ),
             )
             catalog_block = _catalog_match_block(
                 matched, locality_label=_discovery_params(constraints_dict, confirmed).search_area
@@ -704,7 +787,6 @@ async def post_message(
             constraints_dict["planning_mode"] = "custom"
         elif goal == "discover":
             constraints_dict["planning_mode"] = "discover"
-        refreshed_catalog = False
         discovery_replies = None
         ask_field = turn.ask_field or prefer_ready_ask_field(confirmed)
         # Модель нередко спрашивает город прозой, не проставив ask_field —
@@ -731,18 +813,11 @@ async def post_message(
             # ready after any patch produced controls unrelated to its text.
             if ask_field in touched:
                 ask_field = prefer_ready_ask_field(confirmed)
-        required_question = (
-            next(
-                (
-                    field
-                    for field in ("city", "transport_mode", "duration")
-                    if field not in confirmed
-                ),
-                None,
-            )
-            if goal == "custom"
-            else None
-        )
+        # A custom route no longer means “complete a city form”. The model may
+        # ask one material question with a reason; explicit build consent uses
+        # conservative defaults and lets the deterministic picker choose all
+        # stops. No field is globally mandatory here.
+        required_question = None
         if goal == "discover":
             # A model-extracted destination/filter was not available to prefetch.
             # Never attach old-area cards, or call an unsearched catalogue empty.
@@ -757,39 +832,40 @@ async def post_message(
                         constraints=constraints_dict,
                         confirmed_fields=confirmed,
                         settings=cfg,
+                        planning_id=planning.id,
                     ),
                 }
-                refreshed_catalog = True
-            if (
-                ask_field == "city"
-                or turn.structured_parse == "fallback"
-                or refreshed_catalog
-                or (ask_field != "ready" and not turn.clarification_reason)
-            ):
-                ask_field = "ready"
-                preview = prefetch.get("catalog_preview")
-                assistant_text = (
-                    "Вот готовые варианты по вашим пожеланиям; "
-                    "можно открыть карточки и сравнить их."
-                    if preview
-                    else "В проверенной части каталога "
-                    "не нашлось готовых "
-                    "маршрутов по этим условиям. Можем расширить поиск или обсудить свой маршрут."
-                    if "search_context" in prefetch
-                    else "Точный город старта пока не нужен. Можно поискать готовые варианты "
-                    "в выбранном районе. Показать маршруты?"
-                )
-                discovery_replies = (
-                    [
-                        {"id": "reply", "label": "Сравни эти варианты"},
-                        {"id": "reply", "label": "Хочу изменить пожелания"},
-                    ]
-                    if preview
-                    else [
-                        {"id": "reply", "label": "Расширить поиск по Крыму"},
-                        {"id": "build_custom_route", "label": "Собрать свой маршрут"},
-                    ]
-                )
+            # Text about catalogue results is server-grounded on every turn.
+            # The model may choose the intent and constraints, but cannot
+            # claim three routes while the attached DATA contains one.
+            ask_field = "ready"
+            preview = prefetch.get("catalog_preview")
+            preview_routes = preview.get("routes", []) if isinstance(preview, dict) else []
+            found_count = len(preview_routes)
+            assistant_text = (
+                "Нашёл один готовый маршрут по этим пожеланиям. Открой карточку — "
+                "если направление подходит, сравним его с собственным вариантом."
+                if found_count == 1
+                else f"Нашёл {found_count} готовых маршрута по этим пожеланиям. "
+                "Открой карточки, и я помогу сравнить различия."
+                if 2 <= found_count <= 4
+                else f"Нашёл {found_count} готовых маршрутов по этим пожеланиям. "
+                "Открой карточки, и я помогу сравнить различия."
+                if found_count >= 5
+                else "В проверенной части каталога нет маршрута, который можно честно "
+                "привязать к этим пожеланиям. Расширим район или соберём свой вариант?"
+            )
+            discovery_replies = (
+                [
+                    {"id": "reply", "label": "Сравни эти варианты"},
+                    {"id": "reply", "label": "Хочу изменить пожелания"},
+                ]
+                if preview
+                else [
+                    {"id": "reply", "label": "Расширить поиск по Крыму"},
+                    {"id": "build_custom_route", "label": "Собрать свой маршрут"},
+                ]
+            )
         elif goal == "compare":
             if "comparison_routes" not in prefetch:
                 prefetch.update(await _comparison_context(session, planning.id))
@@ -819,8 +895,6 @@ async def post_message(
             ask_field = "ready"
             discovery_replies = [{"id": "reply", "label": "Предложи идеи поездки"}]
         repair_question = required_question if ask_field == "ready" else None
-        if goal == "custom" and required_question:
-            repair_question = required_question
         if (
             not repair_question
             and payload.controls is not None
@@ -831,7 +905,14 @@ async def post_message(
         if repair_question:
             ask_field = repair_question
             assistant_text = {
-                "city": "Откуда начнём поездку? Выбери город или напиши место старта.",
+                "city": (
+                    "Откуда начнём? Можно написать населённый пункт или конкретное место, "
+                    "либо поручить выбор мне."
+                ),
+                "start_location": (
+                    "Откуда начнём? Можно написать населённый пункт или конкретное место, "
+                    "либо поручить выбор мне."
+                ),
                 "transport_mode": (
                     "Как будем передвигаться — пешком, на машине или общественным транспортом?"
                 ),
@@ -950,6 +1031,7 @@ async def _assistant_from_ai(
 ) -> tuple[ChatTurnResult, str | None, bool, dict[str, Any], list[dict[str, str]]]:
     history_rows = list((await session.scalars(llm_history_stmt(planning.id))).all())
     history_rows.reverse()
+    shown_catalog_ids = _catalog_route_ids_from_rows(history_rows)
     chat_messages: list[ChatMessage] = []
     for row in history_rows:
         if not include_in_llm_history(role=row.role, intent=row.intent, text=row.text):
@@ -972,6 +1054,8 @@ async def _assistant_from_ai(
                 constraints=constraints,
                 confirmed_fields=confirmed_fields,
                 settings=settings,
+                planning_id=planning.id,
+                excluded_route_ids=shown_catalog_ids,
             )
         )
     elif goal == "compare":
@@ -987,7 +1071,12 @@ async def _assistant_from_ai(
     if preferences_prior:
         tool_context = {**tool_context, "user_preferences_prior": preferences_prior}
     place_hints = list(tool_context.get("place_candidates") or [])
-    if not place_hints and "city" in confirmed_fields:
+    if not place_hints and set(confirmed_fields) & {
+        "city",
+        "start_query",
+        "start_locality_id",
+        "start_place_id",
+    }:
         place_hints = await _place_hints(session, constraints)
 
     # Phase 2: retrieve narrative chunks (RAG / pgvector) and feed them as
@@ -1004,10 +1093,11 @@ async def _assistant_from_ai(
                 top_k=settings.rag_top_k,
                 region=str(constraints.get("region_slug") or "crimea")[:64],
                 locality=(
-                    str(constraints["city"])[:120]
+                    str(constraints.get("start_query") or constraints.get("city"))[:120]
                     if not constraints.get("search_area")
-                    and "city" in confirmed_fields
-                    and constraints.get("city") not in {None, "", "Крым"}
+                    and set(confirmed_fields) & {"start_query", "city"}
+                    and (constraints.get("start_query") or constraints.get("city"))
+                    not in {None, "", "Крым"}
                     else None
                 ),
             )
@@ -1072,6 +1162,8 @@ async def _assistant_from_ai(
                     constraints=updated,
                     confirmed_fields=updated_fields,
                     settings=settings,
+                    planning_id=planning.id,
+                    excluded_route_ids=shown_catalog_ids,
                 ),
             }
             needs_data = True
@@ -1430,7 +1522,13 @@ def _catalog_match_block(
                 cover_url=getattr(route, "cover_image_url", None),
                 rating=None,
                 distance_km=distance_km,
-                locality_label=locality_label[:120] if locality_label else None,
+                locality_label=(
+                    str(getattr(hit, "locality_label", ""))[:120]
+                    if getattr(hit, "locality_label", None)
+                    else locality_label[:120]
+                    if locality_label
+                    else None
+                ),
                 tags=tags[:8],
                 budget_label=None,
                 difficulty_label=difficulty_label,
@@ -1489,15 +1587,38 @@ async def _catalog_discovery_context(
     constraints: dict[str, Any],
     confirmed_fields: list[str],
     settings: Settings,
+    planning_id: UUID | None = None,
+    excluded_route_ids: frozenset[UUID] | None = None,
 ) -> dict[str, Any]:
     params = _discovery_params(constraints, confirmed_fields)
+    excluded = (
+        excluded_route_ids
+        if excluded_route_ids is not None
+        else (
+            await _recent_catalog_route_ids(session, planning_id=planning_id)
+            if planning_id is not None
+            else frozenset()
+        )
+    )
     matched = await match_service.match_routes(
         session,
         user_id=user_id,
         params=params,
         confirmed_fields=confirmed_fields,
         ai_planning_enabled=settings.ai_planning_enabled,
+        excluded_route_ids=excluded,
     )
+    # Exclusions rotate a sufficiently rich catalogue. Once the relevant
+    # pool is exhausted, cycle it instead of falsely telling the user that no
+    # matching route exists at all.
+    if excluded and not matched.ideal and not matched.close:
+        matched = await match_service.match_routes(
+            session,
+            user_id=user_id,
+            params=params,
+            confirmed_fields=confirmed_fields,
+            ai_planning_enabled=settings.ai_planning_enabled,
+        )
     preview = _catalog_match_block(matched, locality_label=params.search_area)
     return {
         "_catalog_signature": _discovery_signature(constraints, confirmed_fields),
@@ -1515,13 +1636,53 @@ async def _catalog_discovery_context(
     }
 
 
+async def _recent_catalog_route_ids(
+    session: AsyncSession,
+    *,
+    planning_id: UUID,
+) -> frozenset[UUID]:
+    """Do not repeat cards already shown in the latest chat answers."""
+
+    rows = list(
+        (
+            await session.scalars(
+                select(RoutePlanningMessage)
+                .where(
+                    RoutePlanningMessage.session_id == planning_id,
+                    RoutePlanningMessage.role == "assistant",
+                )
+                .order_by(RoutePlanningMessage.created_at.desc())
+                .limit(4)
+            )
+        ).all()
+    )
+    return _catalog_route_ids_from_rows(rows)
+
+
+def _catalog_route_ids_from_rows(rows: list[Any]) -> frozenset[UUID]:
+    route_ids: set[UUID] = set()
+    for row in rows:
+        payload = getattr(row, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        for block in payload.get("blocks") or []:
+            if not isinstance(block, dict) or block.get("type") != "catalog_match":
+                continue
+            for route in block.get("routes") or []:
+                if not isinstance(route, dict):
+                    continue
+                try:
+                    route_ids.add(UUID(str(route.get("route_id"))))
+                except (TypeError, ValueError):
+                    continue
+    return frozenset(route_ids)
+
+
 def _discovery_params(constraints: dict[str, Any], confirmed: list[str]) -> RouteMatchParamsIn:
-    # Application scope, NOT a guessed departure city or a user-confirmed preference.
+    # Application scope, NOT a guessed departure point or a user-confirmed preference.
     area = constraints.get("search_area") if "search_area" in confirmed else None
     area = area or (constraints.get("city") if "city" in confirmed else None) or "Крым"
-    return RouteMatchParamsIn.model_validate(
-        {**constraints, "city": constraints.get("city") or "Крым", "search_area": area}
-    )
+    return RouteMatchParamsIn.model_validate({**constraints, "search_area": area})
 
 
 def _discovery_signature(constraints: dict[str, Any], confirmed: list[str]) -> str:
@@ -1575,7 +1736,12 @@ def _retrieval_query(messages: list[ChatMessage], constraints: dict[str, Any]) -
     return " ".join(
         [
             recent[-1][:260] if recent else "",
-            str(constraints.get("search_area") or constraints.get("city") or "Крым"),
+            str(
+                constraints.get("search_area")
+                or constraints.get("start_query")
+                or constraints.get("city")
+                or "Крым"
+            ),
             " ".join(constraints.get("preferred_localities") or []),
             " ".join(str(item) for item in interests[:3]),
             recent[-2][:80] if len(recent) > 1 else "",
@@ -1607,15 +1773,15 @@ async def _place_hints(
     session: AsyncSession,
     constraints: dict[str, Any],
 ) -> list[dict[str, str]]:
-    city = constraints.get("city")
-    if not isinstance(city, str) or not city.strip():
+    query = constraints.get("start_query") or constraints.get("city")
+    if not isinstance(query, str) or not query.strip():
         return []
     try:
         result = await execute_tool(
             session,
             ToolCall(
                 name="search_places",
-                arguments={"city": city.strip(), "limit": 6},
+                arguments={"query": query.strip(), "limit": 6},
             ),
             constraints=constraints,
         )

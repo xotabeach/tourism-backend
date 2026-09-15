@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tourism_backend.config import Settings
 from tourism_backend.modules.route_builder.application import session_service as service
 from tourism_backend.modules.route_builder.application.ai import ChatMessage, ChatTurnResult
-from tourism_backend.modules.route_builder.application.schemas import RoutePlanningMessageIn
+from tourism_backend.modules.route_builder.application.schemas import (
+    QuotaSnapshotOut,
+    RoutePlanningMessageIn,
+    RouteProposalOut,
+)
 from tourism_backend.modules.route_builder.application.structured_turn import parse_structured_turn
 from tourism_backend.modules.route_builder.infrastructure.models import RoutePlanningSession
 
@@ -58,7 +62,18 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         )
     )
     match = AsyncMock(return_value=SimpleNamespace(ideal=[], close=[]))
-    generate = AsyncMock()
+    proposal = RouteProposalOut(
+        proposal_id=str(uuid4()),
+        status="draft",
+        channel="chat",
+        title="Автоматически собранный маршрут",
+        assistant_text="Собрал маршрут по твоим параметрам:",
+        place_ids=[str(uuid4()), str(uuid4())],
+        duration_minutes=180,
+        blocks=[],
+        quota=QuotaSnapshotOut(daily_used=1, weekly_used=1),
+    )
+    generate = AsyncMock(return_value=SimpleNamespace(proposal=proposal))
     monkeypatch.setattr(service, "refresh_user_travel_plus", AsyncMock())
     monkeypatch.setattr(service, "require_ai_chat", lambda _: None)
     monkeypatch.setattr(service, "_owned_session", AsyncMock(return_value=planning))
@@ -66,6 +81,22 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(service, "_assistant_from_ai", ai)
     monkeypatch.setattr(service.match_service, "match_routes", match)
     monkeypatch.setattr(service.generate_service, "generate_route", generate)
+    monkeypatch.setattr(service, "_recent_catalog_route_ids", AsyncMock(return_value=frozenset()))
+    monkeypatch.setattr(service, "_recent_proposal_place_ids", AsyncMock(return_value=frozenset()))
+
+    async def mentioned_localities(*_, text: str, **__):
+        names = [
+            name
+            for marker, name in (("форос", "Форос"), ("симеиз", "Симеиз"))
+            if marker in text.casefold()
+        ]
+        return [SimpleNamespace(id=uuid4(), name=name) for name in names]
+
+    monkeypatch.setattr(
+        service.geography_service,
+        "mentioned_localities",
+        AsyncMock(side_effect=mentioned_localities),
+    )
     return SimpleNamespace(
         user=user, planning=planning, session=session, ai=ai, match=match, generate=generate
     )
@@ -183,18 +214,19 @@ async def test_model_extracted_area_is_searched_before_claiming_no_matches(chat:
     chat.match.assert_awaited_once()
     assert chat.match.call_args.kwargs["params"].search_area == "Новый Свет"
     assert result.ask_field == "ready"
-    assert "не нашлось" in result.text
+    assert "нет маршрута" in result.text
     assert result.proposal is None
     chat.generate.assert_not_awaited()
 
 
-async def test_discovery_does_not_allow_custom_build_without_parameters(chat: SimpleNamespace):
+async def test_custom_build_can_choose_missing_parameters(chat: SimpleNamespace):
     chat.planning.constraints["search_area"] = "Южный берег Крыма"
     chat.planning.confirmed_fields = ["search_area"]
     result = await _post(chat, text="Собрать свой", action_id="build_custom_route")
     assert chat.planning.constraints["planning_mode"] == "custom"
-    assert result.ask_field == "city"
-    chat.generate.assert_not_awaited()
+    assert result.ask_field == "ready"
+    assert chat.generate.call_args.kwargs["payload"].params.flexible_start is True
+    assert chat.generate.call_args.kwargs["payload"].params.transport_mode == "walk"
 
 
 async def test_natural_quick_reply_reaches_model(chat: SimpleNamespace) -> None:

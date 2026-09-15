@@ -9,7 +9,7 @@ from tourism_backend.modules.route_builder.infrastructure.ai_mock import (
 
 
 @pytest.mark.asyncio
-async def test_mock_chat_turn_asks_city_when_unconfirmed() -> None:
+async def test_mock_chat_turn_asks_useful_preference_before_start() -> None:
     provider = MockAIPlanningProvider()
     result = await provider.chat_turn(
         messages=[ChatMessage(role="user", content="Люблю дворцы")],
@@ -17,8 +17,9 @@ async def test_mock_chat_turn_asks_city_when_unconfirmed() -> None:
         confirmed_fields=[],
     )
     assert result.provider == "mock"
-    assert result.ask_field == "city"
-    # Draft city must not be stated as already chosen.
+    assert result.ask_field == "interests"
+    # An unconfirmed legacy city must neither become mandatory nor be stated
+    # as already chosen.
     assert "вокруг Ялта" not in result.assistant_text
     assert "параметров достаточно" not in result.assistant_text.casefold()
 

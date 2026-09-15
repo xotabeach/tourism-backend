@@ -1,7 +1,8 @@
 from uuid import UUID
 
 from geoalchemy2 import Geography
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Integer, String, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tourism_backend.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -39,7 +40,16 @@ class Region(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
 
 class Locality(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     __tablename__ = "localities"
-    __table_args__ = (UniqueConstraint("region_id", "slug", name="uq_localities_region_slug"),)
+    __table_args__ = (
+        UniqueConstraint("region_id", "slug", name="uq_localities_region_slug"),
+        Index(
+            "uq_localities_source_external_id",
+            "source_name",
+            "source_external_id",
+            unique=True,
+            postgresql_where=text("source_name IS NOT NULL AND source_external_id IS NOT NULL"),
+        ),
+    )
 
     region_id: Mapped[UUID] = mapped_column(
         ForeignKey("regions.id", ondelete="RESTRICT"),
@@ -54,6 +64,10 @@ class Locality(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(100), nullable=False)
     type: Mapped[str] = mapped_column(String(64), nullable=False, default="city")
+    aliases: Mapped[list[str] | None] = mapped_column(ARRAY(String(255)), nullable=True)
+    population: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_license: Mapped[str | None] = mapped_column(String(128), nullable=True)
     postal_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     center = mapped_column(Geography(geometry_type="POINT", srid=4326), nullable=True)
     boundary = mapped_column(Geography(geometry_type="MULTIPOLYGON", srid=4326), nullable=True)

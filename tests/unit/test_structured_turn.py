@@ -25,7 +25,7 @@ def test_parse_structured_turn_rejects_non_json() -> None:
     assert parse_structured_turn("просто текст без json") is None
 
 
-def test_fallback_structured_turn_missing_city() -> None:
+def test_fallback_structured_turn_does_not_require_a_start_location() -> None:
     turn = fallback_structured_turn(confirmed_fields=[], user_snippet="привет")
-    assert turn.ask_field == "city"
-    assert "город" in turn.assistant_text.casefold() or "крым" in turn.assistant_text.casefold()
+    assert turn.ask_field == "interests"
+    assert "точный старт" in turn.assistant_text.casefold()

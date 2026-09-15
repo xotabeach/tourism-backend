@@ -28,7 +28,6 @@ REQUEST = (
 def test_screenshot_destination_is_not_a_departure_city() -> None:
     assert discovery_patch(REQUEST) == {
         "search_area": SOUTH_COAST,
-        "preferred_localities": ["Форос", "Симеиз"],
     }
 
 

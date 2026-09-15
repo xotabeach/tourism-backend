@@ -24,6 +24,7 @@ _MAX_TEXT = 600
 _ASK_FIELDS = frozenset(
     {
         "city",
+        "start_location",
         "pace",
         "interests",
         "transport_mode",
@@ -37,6 +38,12 @@ _ASK_FIELDS = frozenset(
 _PATCH_KEYS = frozenset(
     {
         "city",
+        "start_query",
+        "finish_query",
+        "start_locality_id",
+        "finish_locality_id",
+        "start_place_id",
+        "finish_place_id",
         "trip_type",
         "search_area",
         "preferred_localities",
@@ -74,6 +81,10 @@ def parse_structured_turn(
     ask_field: str | None = None
     if isinstance(ask_raw, str) and ask_raw.strip() in _ASK_FIELDS:
         ask_field = ask_raw.strip()
+        # Released providers can still answer with the old field name.  Keep
+        # accepting it, but never send the city-only control back to clients.
+        if ask_field == "city":
+            ask_field = "start_location"
     if ask_field is None:
         ask_field = "ready"
 
@@ -147,9 +158,10 @@ def fallback_structured_turn(
     else:
         text = (
             "Не удалось получить ответ помощника. Можно повторить запрос или "
-            "начать с района Крыма, который хочется посмотреть — точный старт пока не нужен."
+            "выбрать направление: море, горы, история или спокойная прогулка. "
+            "Точный старт для первых идей не нужен."
         )
-        ask = "city" if ask == "ready" else ask
+        ask = "interests"
     return StructuredChatTurn(
         assistant_text=text,
         ask_field=ask,
@@ -161,6 +173,7 @@ def fallback_structured_turn(
 def _ask_prompt(ask_field: str) -> str:
     prompts = {
         "city": "город старта?",
+        "start_location": "место старта или поручить его выбор мне?",
         "pace": "спокойный, умеренный или активный темп?",
         "interests": "море, горы или другой фокус?",
         "transport_mode": "машина, общественный транспорт или пешком?",
@@ -232,7 +245,7 @@ def _sanitize_patch(raw: object) -> dict[str, Any]:
             validated[key] = value
             continue
         try:
-            params = RouteMatchParamsIn.model_validate({"city": "Крым", key: value})
+            params = RouteMatchParamsIn.model_validate({key: value})
         except ValidationError:
             continue
         validated[key] = params.model_dump(mode="json")[key]

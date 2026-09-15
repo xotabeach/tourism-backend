@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import cast as type_cast
 from uuid import UUID
 
 from geoalchemy2 import Geometry
 from geoalchemy2.functions import ST_X, ST_Y
-from sqlalchemy import and_, cast, or_, select
+from sqlalchemy import and_, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -17,6 +18,7 @@ from tourism_backend.modules.geography.infrastructure.models import Locality, Re
 from tourism_backend.modules.places.application.osm_field_promotion import safety_tags_from_payload
 from tourism_backend.modules.places.application.place_covers import covers_for_places
 from tourism_backend.modules.places.infrastructure.models import Category, Place, PlaceCategory
+from tourism_backend.modules.route_builder.application.discovery import area_bounds
 from tourism_backend.modules.route_builder.application.routing import (
     default_max_leg_meters,
     normalize_transport_mode,
@@ -42,6 +44,12 @@ _DURATION_STOPS: dict[DurationOption, int] = {
 # the geo-picked chain never trips the routing provider's max-leg check.
 _ROAD_FACTOR = 1.35
 _LEG_SAFETY_MARGIN = 0.9
+_START_RADIUS_METERS = {
+    "walk": 12_000,
+    "car": 40_000,
+    "public": 25_000,
+    "mixed": 40_000,
+}
 
 
 def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -75,6 +83,7 @@ class PickedPlace:
     price_min_amount: int | None = None
     price_currency: str = "RUB"
     typical_crowding: str = "unknown"
+    locality_name: str | None = None
 
 
 def _target_stops(duration: DurationOption, max_points: int) -> int:
@@ -84,7 +93,7 @@ def _target_stops(duration: DurationOption, max_points: int) -> int:
 def _score_place(
     params: RouteMatchParamsIn,
     place: Place,
-    city_cf: str,
+    location_cf: str,
     categories: frozenset[str] = frozenset(),
     preferences: UserPreferenceSignals | None = None,
     recent_place_ids: frozenset[UUID] = frozenset(),
@@ -100,7 +109,7 @@ def _score_place(
         )
     ).casefold()
     score = 0.15
-    if city_cf and (city_cf in text or city_cf in (place.address or "").casefold()):
+    if location_cf and (location_cf in text or location_cf in (place.address or "").casefold()):
         score += 0.35
     for interest in params.interests:
         key = interest.casefold()
@@ -303,42 +312,90 @@ async def pick_places_for_params(
     if region is None:
         raise AppError(code="region_not_found", message="Регион не найден", status_code=404)
 
-    city_cf = params.city.casefold()
-    locality_ids = list(
-        await session.scalars(
-            select(Locality.id).where(
-                Locality.region_id == region.id,
-                Locality.status == "active",
-                Locality.name.ilike(f"%{params.city}%"),
-            )
-        )
+    location_query = params.effective_start_query
+    location_cf = (location_query or "").casefold()
+    # ``city`` is the legacy locality field. Do not probe it as a POI first:
+    # besides wasting a query, a mocked/session-default scalar can be mistaken
+    # for a place. A new ``start_query`` may intentionally name either kind.
+    start_place = await _resolve_anchor_place(
+        session,
+        region_id=region.id,
+        place_id=params.start_place_id,
+        query=params.start_query,
+    )
+    finish_place = await _resolve_anchor_place(
+        session,
+        region_id=region.id,
+        place_id=params.finish_place_id,
+        query=params.finish_query,
+    )
+    locality_ids = await _resolve_locality_ids(
+        session,
+        region_id=region.id,
+        explicit_id=params.start_locality_id,
+        query=location_query if start_place is None else None,
+        preferred_names=params.preferred_localities if not location_query else (),
     )
 
-    stmt = select(Place).where(
+    base_stmt = select(Place).where(
         Place.region_id == region.id,
         Place.publication_status == "published",
         *_hard_place_constraints(params),
     )
+    stmt = base_stmt
     if locality_ids:
+        stmt = stmt.where(Place.locality_id.in_(locality_ids))
+    elif start_place is not None:
+        # A catalogue point already knows its settlement. Prefer that coherent
+        # local cluster over a wide radius that can jump across mountains (for
+        # example, from seaside Simeiz straight to Ai-Petri on a walking trip).
+        if start_place.locality_id is not None:
+            stmt = stmt.where(Place.locality_id == start_place.locality_id)
+        else:
+            radius = _START_RADIUS_METERS[normalize_transport_mode(params.transport_mode)]
+            stmt = stmt.where(func.ST_DWithin(Place.location, start_place.location, radius))
+    elif location_query and location_query.casefold() not in {"крым", "crimea", "весь крым"}:
         stmt = stmt.where(
             or_(
-                Place.locality_id.in_(locality_ids),
-                Place.name.ilike(f"%{params.city}%"),
-                Place.address.ilike(f"%{params.city}%"),
+                Place.name.ilike(f"%{location_query}%"),
+                Place.address.ilike(f"%{location_query}%"),
+                Place.short_description.ilike(f"%{location_query}%"),
             )
         )
-    else:
+    elif params.search_area and (bounds := area_bounds(params.search_area)):
+        geom = cast(Place.location, Geometry)
         stmt = stmt.where(
-            or_(
-                Place.name.ilike(f"%{params.city}%"),
-                Place.address.ilike(f"%{params.city}%"),
-                Place.short_description.ilike(f"%{params.city}%"),
-            )
+            ST_X(geom).between(bounds[0], bounds[2]),
+            ST_Y(geom).between(bounds[1], bounds[3]),
         )
 
     places = list((await session.scalars(stmt.limit(120))).all())
+    if len(places) < 2 and start_place is not None:
+        # Sparse settlement data may require a nearby fallback, but keep it
+        # transport-aware and anchored to the chosen point.
+        radius = _START_RADIUS_METERS[normalize_transport_mode(params.transport_mode)]
+        places = list(
+            (
+                await session.scalars(
+                    base_stmt.where(
+                        func.ST_DWithin(Place.location, start_place.location, radius)
+                    ).limit(120)
+                )
+            ).all()
+        )
     if len(places) < 2:
-        # Fallback: any published places in region.
+        # Unknown free text may broaden only when the user delegated the
+        # choice. An exact request must fail visibly instead of silently
+        # building a route on the other side of Crimea.
+        if location_query and not params.flexible_start:
+            raise AppError(
+                code="location_not_found",
+                message=(
+                    "Не нашли опубликованные точки рядом с указанным местом. "
+                    "Уточните название или разрешите подобрать старт автоматически."
+                ),
+                status_code=422,
+            )
         places = list(
             (
                 await session.scalars(
@@ -354,6 +411,10 @@ async def pick_places_for_params(
             ).all()
         )
 
+    for anchor in (start_place, finish_place):
+        if anchor is not None and all(place.id != anchor.id for place in places):
+            places.append(anchor)
+
     categories_by_place = await _categories_for_places(session, [place.id for place in places])
     ranked = sorted(
         places,
@@ -361,7 +422,7 @@ async def pick_places_for_params(
             -_score_place(
                 params,
                 place,
-                city_cf,
+                location_cf,
                 categories_by_place.get(place.id, frozenset()),
                 preferences,
                 recent_place_ids,
@@ -386,7 +447,11 @@ async def pick_places_for_params(
         allowed_m = (default_max_leg_meters(mode) / _ROAD_FACTOR) * _LEG_SAFETY_MARGIN
 
         remaining = list(geo_candidates)
-        chosen = [remaining.pop(0)]
+        if start_place is not None and start_place in remaining:
+            remaining.remove(start_place)
+            chosen = [start_place]
+        else:
+            chosen = [remaining.pop(0)]
         while len(chosen) < target and remaining:
             last_coords = coords_by_id[chosen[-1].id]
             feasible = [
@@ -402,6 +467,11 @@ async def pick_places_for_params(
     else:
         chosen = ranked[:target]
 
+    if finish_place is not None:
+        chosen = [place for place in chosen if place.id != finish_place.id]
+        chosen = chosen[: max(1, target - 1)]
+        chosen.append(finish_place)
+
     if len(chosen) < 2:
         raise AppError(
             code="insufficient_places",
@@ -409,7 +479,97 @@ async def pick_places_for_params(
             status_code=422,
         )
     covers = await covers_for_places(session, [place.id for place in chosen])
-    return [picked_place_from_orm(place, cover_hint=covers.get(place.id)) for place in chosen]
+    locality_names = await _locality_names_for_places(session, chosen)
+    return [
+        replace(
+            picked_place_from_orm(place, cover_hint=covers.get(place.id)),
+            locality_name=locality_names.get(place.id),
+        )
+        for place in chosen
+    ]
+
+
+async def _resolve_anchor_place(
+    session: AsyncSession,
+    *,
+    region_id: UUID,
+    place_id: str | None,
+    query: str | None,
+) -> Place | None:
+    if place_id:
+        candidate = await session.get(Place, UUID(place_id))
+        if (
+            candidate is not None
+            and candidate.region_id == region_id
+            and candidate.publication_status == "published"
+            and candidate.merged_into_place_id is None
+        ):
+            return candidate
+    if not query or query.casefold() in {"крым", "crimea", "весь крым"}:
+        return None
+    return type_cast(
+        Place | None,
+        await session.scalar(
+            select(Place)
+            .where(
+                Place.region_id == region_id,
+                Place.publication_status == "published",
+                Place.merged_into_place_id.is_(None),
+                func.lower(Place.name) == query.casefold(),
+            )
+            .order_by(Place.name)
+            .limit(1)
+        ),
+    )
+
+
+async def _resolve_locality_ids(
+    session: AsyncSession,
+    *,
+    region_id: UUID,
+    explicit_id: str | None,
+    query: str | None,
+    preferred_names: list[str] | tuple[str, ...],
+) -> list[UUID]:
+    if explicit_id:
+        locality = await session.get(Locality, UUID(explicit_id))
+        if locality is not None and locality.region_id == region_id and locality.status == "active":
+            return [locality.id]
+    names = [name for name in [query, *preferred_names] if name]
+    if not names:
+        return []
+    clauses = [func.lower(Locality.name) == name.casefold() for name in names]
+    return list(
+        await session.scalars(
+            select(Locality.id)
+            .where(
+                Locality.region_id == region_id,
+                Locality.status == "active",
+                or_(*clauses),
+            )
+            .limit(8)
+        )
+    )
+
+
+async def _locality_names_for_places(
+    session: AsyncSession,
+    places: list[Place],
+) -> dict[UUID, str]:
+    locality_ids = {place.locality_id for place in places if place.locality_id is not None}
+    if not locality_ids:
+        return {}
+    names = {
+        locality.id: locality.name
+        for locality in (
+            await session.scalars(select(Locality).where(Locality.id.in_(locality_ids)))
+        ).all()
+    }
+    return {
+        place.id: names[place.locality_id]
+        for place in places
+        if place.locality_id is not None and place.locality_id in names
+    }
 
 
 async def _coords_for_places(

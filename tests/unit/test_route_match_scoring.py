@@ -25,6 +25,7 @@ def _candidate(**overrides: object) -> RouteMatchCandidate:
         "pets_allowed": False,
         "place_names": ("Ласточкино гнездо", "Набережная Ялты"),
         "locality_names": ("Ялта",),
+        "stop_coordinates": ((34.17, 44.50),),
         "stops_count": 4,
     }
     base.update(overrides)
@@ -63,8 +64,17 @@ def test_discovery_area_ignores_draft_city_duration_and_pace() -> None:
 
 def test_discovery_excludes_outside_localities_even_with_coastal_title() -> None:
     params = RouteMatchParamsIn(city="Ялта", search_area="Южный берег Крыма")
-    assert score_candidate(params, _candidate(locality_names=("Керчь",))).score == 0
-    assert score_candidate(params, _candidate(locality_names=())).score == 0
+    outside = ((36.45, 45.35),)
+    assert (
+        score_candidate(
+            params,
+            _candidate(locality_names=("Керчь",), stop_coordinates=outside),
+        ).score
+        == 0
+    )
+    assert (
+        score_candidate(params, _candidate(locality_names=(), stop_coordinates=outside)).score == 0
+    )
 
 
 def test_preferred_towns_rank_softly_not_as_mandatory_stops() -> None:

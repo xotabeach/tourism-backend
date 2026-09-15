@@ -8,6 +8,7 @@ from tourism_backend.modules.route_builder.application.schemas import ActionsBlo
 
 AskField = Literal[
     "city",
+    "start_location",
     "pace",
     "interests",
     "transport_mode",
@@ -20,6 +21,12 @@ AskField = Literal[
 _CONFIRMABLE_FIELDS: frozenset[str] = frozenset(
     {
         "city",
+        "start_query",
+        "finish_query",
+        "start_locality_id",
+        "finish_locality_id",
+        "start_place_id",
+        "finish_place_id",
         "search_area",
         "preferred_localities",
         "flexible_start",
@@ -50,6 +57,11 @@ _ACTION_CATALOG: dict[str, dict[str, Any]] = {
         "field": None,
     },
     "clear_params": {"label": "Очистить мои параметры", "patch": None, "field": None},
+    "start_auto": {
+        "label": "Выбери старт сам",
+        "patch": {"flexible_start": True},
+        "field": "flexible_start",
+    },
     # Explicit-confirmation cross-session write-back (Workstream C) — see
     # identity.application.chat_preferences.apply_chat_preferences. Never
     # triggered automatically; only offered/accepted as a chip tap or an
@@ -220,6 +232,7 @@ _ALIASES: dict[str, str] = {
 }
 
 _ASK_FIELD_DEFAULTS: dict[str, tuple[str, ...]] = {
+    "start_location": ("start_auto",),
     "city": (
         "city_simferopol",
         "city_yalta",
@@ -254,7 +267,6 @@ _ASK_FIELD_DEFAULTS: dict[str, tuple[str, ...]] = {
 }
 
 _MISSING_PRIORITY: tuple[str, ...] = (
-    "city",
     "pace",
     "interests",
     "duration",
@@ -330,7 +342,21 @@ def known_constraints(
 
 def unknown_fields(confirmed_fields: list[str]) -> list[str]:
     confirmed = set(sanitize_confirmed_fields(confirmed_fields))
-    return [field for field in _MISSING_PRIORITY if field not in confirmed]
+    start_known = bool(
+        confirmed
+        & {
+            "city",
+            "start_query",
+            "start_locality_id",
+            "start_place_id",
+            "flexible_start",
+        }
+    )
+    return [
+        field
+        for field in _MISSING_PRIORITY
+        if not (field == "start_location" and start_known) and field not in confirmed
+    ]
 
 
 def first_missing_ask_field(confirmed_fields: list[str]) -> str:
@@ -362,11 +388,32 @@ def merge_constraint_patch(
         return dict(constraints)
     confirmed_before = set(sanitize_confirmed_fields(previously_confirmed))
     merged = dict(constraints)
+    explicit_start_keys = {
+        "city",
+        "start_query",
+        "start_locality_id",
+        "start_place_id",
+    }
+    start_group = {*explicit_start_keys, "flexible_start"}
+    start_group_locked = protect_confirmed and bool(confirmed_before & start_group)
+    if patch.get("flexible_start") is True and not start_group_locked:
+        # "Choose the start yourself" is a real correction, not an extra
+        # flag alongside an older exact place. Remove conflicting anchors so
+        # the picker is genuinely free to choose.
+        for key in explicit_start_keys:
+            if key not in patch:
+                merged.pop(key, None)
+    elif explicit_start_keys & patch.keys() and not start_group_locked:
+        # Conversely, a newly named endpoint overrides an earlier automatic
+        # choice even when the model omits the obvious false flag.
+        merged["flexible_start"] = False
     interests_add = patch.get("interests_add")
     for key, value in patch.items():
         if key == "interests_add":
             continue
         if key not in _CONFIRMABLE_FIELDS:
+            continue
+        if start_group_locked and key in start_group:
             continue
         if protect_confirmed and key in confirmed_before:
             continue
@@ -506,6 +553,7 @@ _CITY_QUESTION_MARKERS = (
     "откуда начнем",
     "стартовый город",
     "точка старта",
+    "место старта",
 )
 
 
@@ -516,13 +564,13 @@ def ask_field_from_text(assistant_text: str | None, current: str | None) -> str 
     to something concrete other than the ready/greeting placeholders, so a
     deliberate answer from the model is not second-guessed.
     """
-    if current == "city" or not assistant_text:
+    if current in {"city", "start_location"} or not assistant_text:
         return current
     if current not in (None, "ready"):
         return current
     lowered = assistant_text.casefold()
     if any(marker in lowered for marker in _CITY_QUESTION_MARKERS):
-        return "city"
+        return "start_location"
     return current
 
 
@@ -627,11 +675,13 @@ def prefer_ready_ask_field(confirmed_fields: list[str]) -> str:
     confirmed = set(sanitize_confirmed_fields(confirmed_fields))
     if "search_area" in confirmed:
         return "ready"  # Enough to discover catalogue ideas, not to build an itinerary.
-    for field in ("city", "transport_mode", "duration"):
-        if field not in confirmed:
-            return field
+    # An exact endpoint is useful context, never a universal prerequisite.
+    # The planner can offer catalogue ideas or choose a coherent first stop.
     if not confirmed & {"pace", "interests", "season"}:
         return "interests"
+    for field in ("transport_mode", "duration"):
+        if field not in confirmed:
+            return field
     if "people" not in confirmed:
         return "people"
     if "budget_amount" not in confirmed:

@@ -5,6 +5,7 @@ from tourism_backend.modules.geography.application import service as geography_s
 from tourism_backend.modules.geography.application.schemas import (
     CountryOut,
     LocalityOut,
+    LocationSuggestionOut,
     RegionOut,
 )
 
@@ -30,3 +31,18 @@ async def get_localities(
     region_slug: str = Query(..., max_length=128),
 ) -> list[LocalityOut]:
     return await geography_service.list_localities(session, region_slug=region_slug)
+
+
+@router.get("/locations/search", response_model=list[LocationSuggestionOut])
+async def search_locations(
+    session: DbSession,
+    q: str = Query(..., min_length=2, max_length=80),
+    region_slug: str = Query(default="crimea", min_length=1, max_length=128),
+    limit: int = Query(default=12, ge=1, le=20),
+) -> list[LocationSuggestionOut]:
+    return await geography_service.search_locations(
+        session,
+        query=q,
+        region_slug=region_slug,
+        limit=limit,
+    )

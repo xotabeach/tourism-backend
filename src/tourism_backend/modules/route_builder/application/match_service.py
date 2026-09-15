@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections import defaultdict
 from uuid import UUID
 
-from sqlalchemy import select
+from geoalchemy2 import Geometry
+from geoalchemy2.functions import ST_X, ST_Y
+from sqlalchemy import cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -38,6 +40,7 @@ async def match_routes(
     params: RouteMatchParamsIn,
     ai_planning_enabled: bool = False,
     confirmed_fields: list[str] | None = None,
+    excluded_route_ids: frozenset[UUID] = frozenset(),
 ) -> RouteMatchOut:
     user = await session.get(User, user_id)
     if user is None:
@@ -45,7 +48,11 @@ async def match_routes(
     await travel_plus.refresh_user_travel_plus(session, user=user)
     policy = policy_for_user(user)
 
-    candidates = await _load_candidates(session, region_slug=params.region_slug)
+    candidates = await _load_candidates(
+        session,
+        region_slug=params.region_slug,
+        excluded_route_ids=excluded_route_ids,
+    )
     preferences = UserPreferenceSignals(
         categories=frozenset(user.preferred_categories or ()),
         difficulty=user.preferred_difficulty,
@@ -85,6 +92,7 @@ async def match_routes(
             score=item.score,
             band="ideal",
             reasons=list(item.reasons),
+            locality_label=_locality_label(item.candidate.locality_names),
         )
         for item in ideal_scored
         if item.candidate.route_id in items_by_id
@@ -95,6 +103,7 @@ async def match_routes(
             score=item.score,
             band="close",
             reasons=list(item.reasons),
+            locality_label=_locality_label(item.candidate.locality_names),
         )
         for item in close_scored
         if item.candidate.route_id in items_by_id
@@ -116,11 +125,22 @@ async def match_routes(
     )
 
 
+def _locality_label(names: tuple[str, ...]) -> str | None:
+    unique = list(dict.fromkeys(name.strip() for name in names if name.strip()))
+    if not unique:
+        return None
+    if len(unique) <= 2:
+        return " · ".join(unique)[:120]
+    return f"{unique[0]} · {unique[1]} и ещё {len(unique) - 2}"[:120]
+
+
 async def _load_candidates(
     session: AsyncSession,
     *,
     region_slug: str,
+    excluded_route_ids: frozenset[UUID] = frozenset(),
 ) -> list[RouteMatchCandidate]:
+    exclusions = (Route.id.notin_(excluded_route_ids),) if excluded_route_ids else ()
     routes = list(
         (
             await session.scalars(
@@ -130,6 +150,7 @@ async def _load_candidates(
                     *routes_service._PUBLIC_CATALOG,  # noqa: SLF001
                     ~routes_service._has_unpublished_stop(),  # noqa: SLF001
                     Region.slug == region_slug,
+                    *exclusions,
                 )
                 .order_by(Route.name, Route.id)
                 .limit(200)
@@ -146,6 +167,8 @@ async def _load_candidates(
                 RouteStop.route_id,
                 Place.name,
                 Locality.name,
+                ST_X(cast(Place.location, Geometry)),
+                ST_Y(cast(Place.location, Geometry)),
             )
             .join(Place, Place.id == RouteStop.place_id)
             .outerjoin(Locality, Locality.id == Place.locality_id)
@@ -156,10 +179,13 @@ async def _load_candidates(
 
     places_by_route: dict[UUID, list[str]] = defaultdict(list)
     localities_by_route: dict[UUID, list[str]] = defaultdict(list)
-    for route_id, place_name, locality_name in stop_rows:
+    coordinates_by_route: dict[UUID, list[tuple[float, float]]] = defaultdict(list)
+    for route_id, place_name, locality_name, lng, lat in stop_rows:
         places_by_route[route_id].append(place_name)
         if locality_name:
             localities_by_route[route_id].append(locality_name)
+        if lng is not None and lat is not None:
+            coordinates_by_route[route_id].append((float(lng), float(lat)))
 
     # Distinct category slugs across each route's stops (ADR-009).
     category_rows = (
@@ -192,6 +218,7 @@ async def _load_candidates(
                 pets_allowed=route.pets_allowed,
                 place_names=tuple(places_by_route.get(route.id, ())),
                 locality_names=tuple(dict.fromkeys(localities_by_route.get(route.id, ()))),
+                stop_coordinates=tuple(coordinates_by_route.get(route.id, ())),
                 stops_count=counts.get(route.id, 0),
                 category_slugs=frozenset(categories_by_route.get(route.id, frozenset())),
                 typical_crowding=route.typical_crowding,

@@ -107,6 +107,7 @@ class RouteMatchCandidate:
     place_names: tuple[str, ...]
     locality_names: tuple[str, ...]
     stops_count: int
+    stop_coordinates: tuple[tuple[float, float], ...] = ()
     # Distinct category slugs across the route's stops (ADR-009: primary
     # interest/trip-type signal, since it is the one field with full coverage).
     category_slugs: frozenset[str] = frozenset()
@@ -149,19 +150,23 @@ def _haystack(candidate: RouteMatchCandidate) -> str:
     return " ".join(parts).casefold()
 
 
-def _city_score(city: str, candidate: RouteMatchCandidate) -> tuple[float, str | None]:
-    needle = city.casefold()
+def _location_score(
+    location: str | None, candidate: RouteMatchCandidate
+) -> tuple[float, str | None]:
+    if not location:
+        return 0.75, "старт можно выбрать автоматически"
+    needle = location.casefold()
     if needle == "крым":
         return 0.75, "маршрут по Крыму"
     localities = [name.casefold() for name in candidate.locality_names]
     places = [name.casefold() for name in candidate.place_names]
     name = candidate.name.casefold()
     if any(needle in loc or loc in needle for loc in localities if loc):
-        return 1.0, f"старт рядом с {city}"
+        return 1.0, f"есть точки рядом с {location}"
     if needle in name:
-        return 0.85, f"в названии есть {city}"
+        return 0.85, f"в названии есть {location}"
     if any(needle in place for place in places):
-        return 0.7, f"есть точки у {city}"
+        return 0.7, f"есть точки у {location}"
     # Soft partial: first 4+ chars
     if len(needle) >= 4 and (needle[:4] in name or any(needle[:4] in place for place in places)):
         return 0.35, None
@@ -387,20 +392,46 @@ def score_candidate(
     text = _haystack(candidate)
     parts: list[tuple[float, float, str | None]] = []
     # (weight, score, reason)
-    c_score, c_reason = _city_score(params.city, candidate)
+    c_score, c_reason = _location_score(params.effective_start_query, candidate)
+    scope_text = " ".join(candidate.locality_names).casefold()
     if params.search_area:
-        from tourism_backend.modules.route_builder.application.discovery import area_localities
+        from tourism_backend.modules.route_builder.application.discovery import (
+            area_bounds,
+            area_localities,
+        )
 
         locations = area_localities(params.search_area)
+        bounds = area_bounds(params.search_area)
         # Structured locality wins over a marketing title mentioning another area.
-        scope_text = " ".join(candidate.locality_names).casefold()
-        if locations and not any(name.casefold() in scope_text for name in locations):
+        inside_bounds = bool(
+            bounds
+            and any(
+                bounds[0] <= lng <= bounds[2] and bounds[1] <= lat <= bounds[3]
+                for lng, lat in candidate.stop_coordinates
+            )
+        )
+        if (
+            locations
+            and not bounds
+            and not any(name.casefold() in scope_text for name in locations)
+        ):
+            return ScoredMatch(candidate=candidate, score=0, reasons=("вне выбранного района",))
+        if bounds and not inside_bounds:
             return ScoredMatch(candidate=candidate, score=0, reasons=("вне выбранного района",))
         c_score, c_reason = 1.0, f"район поиска: {params.search_area}"
-        if params.preferred_localities and any(
-            name.casefold() in scope_text for name in params.preferred_localities
-        ):
-            parts.append((0.15, 1.0, "есть места из ваших пожеланий"))
+    if params.preferred_localities:
+        has_preferred = any(
+            name.casefold() in scope_text
+            or any(name.casefold() in place.casefold() for place in candidate.place_names)
+            for name in params.preferred_localities
+        )
+        parts.append(
+            (
+                0.22,
+                1.0 if has_preferred else 0.05,
+                "есть места из ваших пожеланий" if has_preferred else None,
+            )
+        )
     parts.append((0.32, c_score, c_reason))
     d_score, d_reason = _duration_score(params.duration, candidate.estimated_duration_minutes)
     if confirmed_fields is None or "duration" in confirmed_fields:

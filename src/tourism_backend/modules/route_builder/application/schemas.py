@@ -27,11 +27,23 @@ DayKind = Literal["any", "weekday", "weekend"]
 
 
 class RouteMatchParamsIn(BaseModel):
-    """Normalized form params + optional advanced fields for Travel+/future UI."""
+    """Normalized match constraints.
+
+    ``city`` is retained as a compatibility input for already released mobile
+    clients.  New clients use the typed start/finish references below: a route
+    can start at a locality of any kind, at a catalogue place, at a free-text
+    point, or let the planner choose the whole chain.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    city: str = Field(min_length=1, max_length=80)
+    city: str | None = Field(default=None, min_length=1, max_length=80)
+    start_query: str | None = Field(default=None, min_length=1, max_length=120)
+    finish_query: str | None = Field(default=None, min_length=1, max_length=120)
+    start_locality_id: str | None = Field(default=None, min_length=36, max_length=36)
+    finish_locality_id: str | None = Field(default=None, min_length=36, max_length=36)
+    start_place_id: str | None = Field(default=None, min_length=36, max_length=36)
+    finish_place_id: str | None = Field(default=None, min_length=36, max_length=36)
     search_area: str | None = Field(default=None, min_length=1, max_length=80)
     preferred_localities: list[str] = Field(default_factory=list, max_length=8)
     flexible_start: bool = False
@@ -55,7 +67,14 @@ class RouteMatchParamsIn(BaseModel):
     trip_start_date: date | None = None
     region_slug: str = Field(default="crimea", min_length=1, max_length=128)
 
-    @field_validator("city", "season", "region_slug", "search_area")
+    @field_validator(
+        "city",
+        "start_query",
+        "finish_query",
+        "season",
+        "region_slug",
+        "search_area",
+    )
     @classmethod
     def strip_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -64,6 +83,29 @@ class RouteMatchParamsIn(BaseModel):
         if not cleaned:
             raise ValueError("Value must not be blank")
         return cleaned
+
+    @field_validator(
+        "start_locality_id",
+        "finish_locality_id",
+        "start_place_id",
+        "finish_place_id",
+    )
+    @classmethod
+    def validate_reference_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from uuid import UUID
+
+        try:
+            return str(UUID(value))
+        except ValueError as exc:
+            raise ValueError("Location reference must be a UUID") from exc
+
+    @property
+    def effective_start_query(self) -> str | None:
+        """Human-entered start hint, including legacy ``city`` clients."""
+
+        return self.start_query or self.city
 
     @field_validator("interests", "preferred_localities")
     @classmethod
@@ -91,6 +133,7 @@ class RouteMatchHitOut(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
     band: Literal["ideal", "close"]
     reasons: list[str] = Field(default_factory=list, max_length=8)
+    locality_label: str | None = Field(default=None, max_length=120)
 
 
 GenerateChannel = Literal["form", "chat"]

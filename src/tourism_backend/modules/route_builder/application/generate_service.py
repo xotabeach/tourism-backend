@@ -377,9 +377,21 @@ async def _maybe_optimize_stop_order(
     return [places[index] for index in result.order]
 
 
-def _title_for(params: RouteMatchParamsIn) -> str:
-    interests = ", ".join(params.interests[:2]) if params.interests else "места"
-    return f"{params.city} · {interests}"
+def _title_for(params: RouteMatchParamsIn, places: list[PickedPlace]) -> str:
+    if places:
+        localities = list(
+            dict.fromkeys(place.locality_name for place in places if place.locality_name)
+        )
+        if len(localities) == 1:
+            area = localities[0]
+        elif len(localities) >= 2:
+            area = f"{localities[0]} → {localities[-1]}"
+        else:
+            area = f"{places[0].name} → {places[-1].name}"
+    else:
+        area = params.search_area or params.effective_start_query or "Крым"
+    interests = ", ".join(params.interests[:2]) if params.interests else "маршрут"
+    return f"{area} · {interests}"
 
 
 def _assistant_text(params: RouteMatchParamsIn, places: list[PickedPlace]) -> str:
@@ -462,7 +474,12 @@ def _blocks_for_proposal(
         distance_km=round(proposal.preview["distance_meters"] / 1000, 1)
         if proposal.preview and proposal.preview.get("distance_meters")
         else None,
-        locality_label=params.city[:120],
+        locality_label=(
+            " · ".join(
+                dict.fromkeys(place.locality_name for place in places if place.locality_name)
+            )[:120]
+            or None
+        ),
         tags=tags[:8],
         budget_label=budget_label,
         budget_caption="Бюджет на день",
@@ -527,8 +544,13 @@ async def _persist_generated_route(
         raise AppError(code="invalid_route_place", message="Place missing", status_code=400)
     region_id = first.region_id
 
+    start_description = (
+        f"старт: {params.effective_start_query}"
+        if params.effective_start_query
+        else "старт и финиш подобраны автоматически"
+    )
     description_bits = [
-        f"Сгенерировано по параметрам: {params.city}",
+        f"Сгенерировано по параметрам; {start_description}",
         f"темп {params.pace}",
         f"длительность {params.duration}",
     ]
@@ -673,7 +695,7 @@ async def generate_route(
         params=params,
         road_events=road_events,
     )
-    title = _title_for(params)
+    title = _title_for(params, places)
     assistant_text = _assistant_text(params, places)
     duration = _estimate_duration(places, routing)
     now = datetime.now(UTC)
