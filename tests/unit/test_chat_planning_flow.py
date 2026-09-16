@@ -20,6 +20,7 @@ from tourism_backend.modules.route_builder.application.schemas import (
 )
 from tourism_backend.modules.route_builder.application.structured_turn import parse_structured_turn
 from tourism_backend.modules.route_builder.infrastructure.models import RoutePlanningSession
+from tourism_backend.modules.subscriptions.application.entitlements import FREE_POLICY
 
 
 @pytest.fixture
@@ -75,7 +76,8 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     )
     generate = AsyncMock(return_value=SimpleNamespace(proposal=proposal))
     monkeypatch.setattr(service, "refresh_user_travel_plus", AsyncMock())
-    monkeypatch.setattr(service, "require_ai_chat", lambda _: None)
+    monkeypatch.setattr(service, "require_ai_chat", lambda _: FREE_POLICY)
+    monkeypatch.setattr(service, "require_ai_reply_quota", AsyncMock())
     monkeypatch.setattr(service, "_owned_session", AsyncMock(return_value=planning))
     monkeypatch.setattr(service, "_message_count", AsyncMock(return_value=2))
     monkeypatch.setattr(service, "_assistant_from_ai", ai)

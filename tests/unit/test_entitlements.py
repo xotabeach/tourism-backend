@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from tourism_backend.api.errors import AppError
 from tourism_backend.config import AppEnvironment
 from tourism_backend.modules.subscriptions.application.entitlements import (
     FREE_POLICY,
@@ -21,17 +20,20 @@ class _UserFlag:
 
 
 def test_free_policy_matches_product_contract() -> None:
-    assert FREE_POLICY.ai_chat_enabled is False
-    assert FREE_POLICY.max_weekly_generations == 5
-    assert FREE_POLICY.max_route_points == 5
-    assert FREE_POLICY.alternatives_count == 1
-    assert FREE_POLICY.advanced_filters_enabled is False
+    assert FREE_POLICY.ai_chat_enabled is True
+    assert FREE_POLICY.max_weekly_generations is None
+    assert FREE_POLICY.max_daily_generations == 5
+    assert FREE_POLICY.max_daily_ai_replies == 30
+    assert FREE_POLICY.max_route_points == 12
+    assert FREE_POLICY.alternatives_count == 3
+    assert FREE_POLICY.advanced_filters_enabled is True
 
 
 def test_travel_plus_policy_matches_product_contract() -> None:
     assert TRAVEL_PLUS_POLICY.ai_chat_enabled is True
     assert TRAVEL_PLUS_POLICY.max_weekly_generations is None
-    assert TRAVEL_PLUS_POLICY.max_daily_generations == 30
+    assert TRAVEL_PLUS_POLICY.max_daily_generations == 5
+    assert TRAVEL_PLUS_POLICY.max_daily_ai_replies == 30
     assert TRAVEL_PLUS_POLICY.max_route_points == 12
     assert TRAVEL_PLUS_POLICY.alternatives_count == 3
     assert TRAVEL_PLUS_POLICY.advanced_filters_enabled is True
@@ -44,27 +46,23 @@ def test_policy_for_user_switches_on_flag() -> None:
     assert plus.plan_id == "travel_plus"
 
 
-def test_require_ai_chat_blocks_free() -> None:
-    with pytest.raises(AppError) as exc:
-        require_ai_chat(_UserFlag(travel_plus_active=False))
-    assert exc.value.code == "travel_plus_required"
-    assert exc.value.status_code == 403
+def test_require_ai_chat_allows_free_during_beta() -> None:
+    assert require_ai_chat(_UserFlag(travel_plus_active=False)) is FREE_POLICY
 
 
 @pytest.mark.parametrize(
-    ("env", "allowed"),
+    "env",
     [
-        (AppEnvironment.LOCAL, True),
-        (AppEnvironment.TEST, True),
-        (AppEnvironment.STAGING, False),
-        (AppEnvironment.PRODUCTION, False),
-        (None, False),
-        ("production", False),
-        ("test", True),
+        AppEnvironment.LOCAL,
+        AppEnvironment.TEST,
+        AppEnvironment.STAGING,
+        AppEnvironment.PRODUCTION,
+        None,
+        "production",
+        "test",
     ],
 )
-def test_mock_self_activate_allowed_only_local_and_test(
+def test_mock_self_activate_is_disabled_in_every_environment(
     env: AppEnvironment | str | None,
-    allowed: bool,
 ) -> None:
-    assert mock_self_activate_allowed(env) is allowed
+    assert mock_self_activate_allowed(env) is False

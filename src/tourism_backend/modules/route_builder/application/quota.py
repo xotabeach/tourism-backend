@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.route_builder.application.schemas import QuotaSnapshotOut
-from tourism_backend.modules.route_builder.infrastructure.models import RouteGenerationEvent
+from tourism_backend.modules.route_builder.infrastructure.models import (
+    RouteGenerationEvent,
+    RoutePlanningMessage,
+)
 from tourism_backend.modules.subscriptions.application.entitlements import QuotaPolicy
 
 
@@ -81,6 +84,38 @@ async def require_generation_quota(
                 message="Достигнут недельный лимит генераций маршрута",
                 status_code=429,
             )
+
+
+async def require_ai_reply_quota(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    policy: QuotaPolicy,
+    now: datetime | None = None,
+) -> None:
+    """Serialize and cap assistant replies across all of a user's sessions."""
+    locked = await session.scalar(user_quota_lock_stmt(user_id))
+    if locked is None:
+        raise AppError(code="unauthorized", message="Authentication required", status_code=401)
+    moment = now or datetime.now(UTC)
+    used = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(RoutePlanningMessage)
+            .where(
+                RoutePlanningMessage.user_id == user_id,
+                RoutePlanningMessage.role == "assistant",
+                RoutePlanningMessage.created_at >= _start_of_utc_day(moment),
+            )
+        )
+        or 0
+    )
+    if used >= policy.max_daily_ai_replies:
+        raise AppError(
+            code="ai_reply_quota_exceeded",
+            message="Достигнут дневной лимит ответов ИИ",
+            status_code=429,
+        )
 
 
 async def quota_snapshot(

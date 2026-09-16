@@ -127,27 +127,12 @@ async def test_generate_form_creates_draft_and_enforces_auth(
 
 
 @pytest.mark.asyncio
-async def test_chat_generate_requires_travel_plus_then_accept(
+async def test_chat_generate_allows_free_beta_user_then_accept(
     live_client: AsyncClient,
 ) -> None:
     phone = f"+7906{uuid4().int % 10_000_000:07d}"
     tokens = await _login(live_client, phone, name="БезПлюса")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
-
-    blocked = await live_client.post(
-        "/api/v1/route-builder/generate",
-        headers=headers,
-        json={"channel": "chat", "params": {"city": "Ялта"}},
-    )
-    assert blocked.status_code == 403
-    assert blocked.json()["error"]["code"] == "travel_plus_required"
-
-    activated = await live_client.post(
-        "/api/v1/me/travel-plus/activate",
-        headers=headers,
-        json={"plan": "monthly"},
-    )
-    assert activated.status_code == 200
 
     generated = await live_client.post(
         "/api/v1/route-builder/generate",

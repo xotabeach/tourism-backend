@@ -81,17 +81,8 @@ async def _login(client: AsyncClient, phone: str, name: str = "Чат") -> dict:
     return verify.json()
 
 
-async def _travel_plus(client: AsyncClient, headers: dict[str, str]) -> None:
-    activated = await client.post(
-        "/api/v1/me/travel-plus/activate",
-        headers=headers,
-        json={"plan": "monthly"},
-    )
-    assert activated.status_code == 200, activated.text
-
-
 @pytest.mark.asyncio
-async def test_sessions_require_auth_and_travel_plus(live_client: AsyncClient) -> None:
+async def test_sessions_require_auth_and_allow_free_beta_users(live_client: AsyncClient) -> None:
     unauth = await live_client.post(
         "/api/v1/route-builder/sessions",
         json={"params": {"city": "Ялта"}},
@@ -102,15 +93,6 @@ async def test_sessions_require_auth_and_travel_plus(live_client: AsyncClient) -
     tokens = await _login(live_client, phone)
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
 
-    blocked = await live_client.post(
-        "/api/v1/route-builder/sessions",
-        headers=headers,
-        json={"params": {"city": "Ялта"}},
-    )
-    assert blocked.status_code == 403
-    assert blocked.json()["error"]["code"] == "travel_plus_required"
-
-    await _travel_plus(live_client, headers)
     created = await live_client.post(
         "/api/v1/route-builder/sessions",
         headers=headers,
@@ -140,8 +122,6 @@ async def test_session_bola_and_message_bounds(live_client: AsyncClient) -> None
     tokens_b = await _login(live_client, phone_b, name="Борис")
     headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
     headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
-    await _travel_plus(live_client, headers_a)
-    await _travel_plus(live_client, headers_b)
 
     created = await live_client.post(
         "/api/v1/route-builder/sessions",
@@ -313,7 +293,6 @@ async def test_injection_text_is_redacted_in_stored_history(
     phone = f"+7907{uuid4().int % 10_000_000:07d}"
     tokens = await _login(live_client, phone)
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
-    await _travel_plus(live_client, headers)
     created = await live_client.post(
         "/api/v1/route-builder/sessions",
         headers=headers,
@@ -347,7 +326,6 @@ async def test_short_affirmative_does_not_generate_mid_clarification(
     phone = f"+7907{uuid4().int % 10_000_000:07d}"
     tokens = await _login(live_client, phone)
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
-    await _travel_plus(live_client, headers)
     created = await live_client.post(
         "/api/v1/route-builder/sessions",
         headers=headers,
@@ -404,7 +382,6 @@ async def test_save_preferences_action_persists_to_profile(live_client: AsyncCli
     phone = f"+7907{uuid4().int % 10_000_000:07d}"
     tokens = await _login(live_client, phone)
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
-    await _travel_plus(live_client, headers)
 
     before = await live_client.get("/api/v1/me", headers=headers)
     assert before.status_code == 200, before.text

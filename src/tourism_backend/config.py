@@ -145,7 +145,7 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr | None = None
     # flash — дешёвая модель на каждый ход диалога; pro дороже втрое и для
     # подбора маршрута ничего не добавляет. Обе с контекстом 1M.
-    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_model: str = "deepseek-flash"
     # Резервная цепочка работает как у Gemini: при 429/5xx/таймауте ход
     # повторяется следующей моделью, а не падает пользователю в лицо.
     deepseek_fallback_models: str = "deepseek-v4-pro"

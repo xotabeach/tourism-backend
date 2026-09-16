@@ -5,9 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from tourism_backend.api.errors import AppError
-from tourism_backend.config import AppEnvironment
-
 
 class HasTravelPlusFlag(Protocol):
     travel_plus_active: bool
@@ -21,6 +18,7 @@ class QuotaPolicy:
     ai_chat_enabled: bool
     max_weekly_generations: int | None
     max_daily_generations: int | None
+    max_daily_ai_replies: int
     max_route_points: int
     alternatives_count: int
     advanced_filters_enabled: bool
@@ -32,12 +30,13 @@ class QuotaPolicy:
 
 FREE_POLICY = QuotaPolicy(
     plan_id="free",
-    ai_chat_enabled=False,
-    max_weekly_generations=5,
-    max_daily_generations=None,
-    max_route_points=5,
-    alternatives_count=1,
-    advanced_filters_enabled=False,
+    ai_chat_enabled=True,
+    max_weekly_generations=None,
+    max_daily_generations=5,
+    max_daily_ai_replies=30,
+    max_route_points=12,
+    alternatives_count=3,
+    advanced_filters_enabled=True,
     ads_enabled=True,
     exclusive_routes_enabled=False,
     travel_points_multiplier=1.0,
@@ -48,7 +47,8 @@ TRAVEL_PLUS_POLICY = QuotaPolicy(
     plan_id="travel_plus",
     ai_chat_enabled=True,
     max_weekly_generations=None,
-    max_daily_generations=30,
+    max_daily_generations=5,
+    max_daily_ai_replies=30,
     max_route_points=12,
     alternatives_count=3,
     advanced_filters_enabled=True,
@@ -59,16 +59,10 @@ TRAVEL_PLUS_POLICY = QuotaPolicy(
 )
 
 
-def mock_self_activate_allowed(app_env: AppEnvironment | str | None) -> bool:
-    """Self-serve mock checkout is a local/test convenience, never staging/prod.
-
-    Real billing is not as-built; the HTTP activate path must not grant Travel+
-    on internet-facing environments. Admin grants still use source='admin'.
-    """
-    if app_env is None:
-        return False
-    value = app_env.value if isinstance(app_env, AppEnvironment) else app_env
-    return value in {AppEnvironment.LOCAL.value, AppEnvironment.TEST.value}
+def mock_self_activate_allowed(app_env: object = None) -> bool:
+    """Mock checkout is disabled in every environment during beta."""
+    del app_env
+    return False
 
 
 def policy_for_user(user: HasTravelPlusFlag) -> QuotaPolicy:
@@ -79,12 +73,5 @@ def policy_for_user(user: HasTravelPlusFlag) -> QuotaPolicy:
 
 
 def require_ai_chat(user: HasTravelPlusFlag) -> QuotaPolicy:
-    """Return Travel+ policy or raise for AI endpoints."""
-    policy = policy_for_user(user)
-    if not policy.ai_chat_enabled:
-        raise AppError(
-            code="travel_plus_required",
-            message="Подбор с ИИ доступен только с активной подпиской Тревел+",
-            status_code=403,
-        )
-    return policy
+    """Return the user's policy; AI chat is open to everyone during beta."""
+    return policy_for_user(user)

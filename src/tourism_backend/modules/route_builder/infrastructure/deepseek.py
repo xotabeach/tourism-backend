@@ -4,7 +4,7 @@
 
 * базовый адрес ``https://api.deepseek.com``, метод ``POST /chat/completions``;
 * ключ передаётся заголовком ``Authorization: Bearer``;
-* модели ``deepseek-v4-flash`` (дешёвая) и ``deepseek-v4-pro``, контекст 1M;
+* модели ``deepseek-flash`` (V4.1 Flash) и ``deepseek-v4-pro``, контекст 1M;
 * режим JSON включается ``response_format={"type": "json_object"}`` и требует
   слова «json» в промпте и примера структуры — в CHAT_SYSTEM_PROMPT есть и
   то и другое;

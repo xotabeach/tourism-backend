@@ -5,12 +5,11 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tourism_backend.config import Settings
@@ -83,7 +82,7 @@ async def _login(client: AsyncClient, phone: str, name: str = "Подписчи�
 
 
 @pytest.mark.asyncio
-async def test_travel_plus_activate_cancel_and_me_fields(
+async def test_travel_plus_purchase_is_locked_and_me_has_beta_ai_fields(
     live_client: AsyncClient,
 ) -> None:
     phone = f"+7906{uuid4().int % 10_000_000:07d}"
@@ -96,10 +95,9 @@ async def test_travel_plus_activate_cancel_and_me_fields(
     assert body["travel_plus_active"] is False
     assert body["travel_plus_plan"] is None
     assert body["travel_plus_expires_at"] is None
-    assert body["ai_chat_enabled"] is False
-    assert body["max_route_points"] == 5
-    assert body["alternatives_count"] == 1
-    user_id = body["id"]
+    assert body["ai_chat_enabled"] is True
+    assert body["max_route_points"] == 12
+    assert body["alternatives_count"] == 3
 
     bad = await live_client.post(
         "/api/v1/me/travel-plus/activate",
@@ -115,45 +113,16 @@ async def test_travel_plus_activate_cancel_and_me_fields(
     )
     assert oversized.status_code == 422
 
-    activated = await live_client.post(
+    denied = await live_client.post(
         "/api/v1/me/travel-plus/activate",
         headers=headers,
         json={"plan": "monthly"},
     )
-    assert activated.status_code == 200, activated.text
-    active_body = activated.json()
-    assert active_body["travel_plus_active"] is True
-    assert active_body["travel_plus_plan"] == "monthly"
-    assert active_body["travel_plus_expires_at"] is not None
-    assert active_body["ai_chat_enabled"] is True
-    assert active_body["max_route_points"] == 12
-    assert active_body["alternatives_count"] == 3
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "travel_plus_purchase_unavailable"
 
-    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as session:
-        rows = list(
-            (
-                await session.scalars(
-                    select(TravelPlusSubscription).where(
-                        TravelPlusSubscription.user_id == UUID(user_id)
-                    )
-                )
-            ).all()
-        )
-        assert len(rows) == 1
-        assert rows[0].status == "active"
-        assert rows[0].source == "mock_checkout"
-        user = await session.get(User, UUID(user_id))
-        assert user is not None
-        assert user.travel_plus_active is True
-    await engine.dispose()
-
-    canceled = await live_client.post("/api/v1/me/travel-plus/cancel", headers=headers)
-    assert canceled.status_code == 200, canceled.text
-    canceled_body = canceled.json()
-    assert canceled_body["travel_plus_active"] is False
-    assert canceled_body["travel_plus_plan"] is None
+    unchanged = await live_client.get("/api/v1/me", headers=headers)
+    assert unchanged.json()["travel_plus_active"] is False
 
 
 @pytest.mark.asyncio
@@ -207,21 +176,17 @@ async def test_get_me_expires_stale_travel_plus(live_client: AsyncClient) -> Non
 
 
 @pytest.mark.asyncio
-async def test_travel_plus_activate_rejected_when_mock_checkout_disabled(
+async def test_travel_plus_activate_cannot_be_enabled_by_environment_patch(
     live_client: AsyncClient,
 ) -> None:
-    """M-1: HTTP activate path uses the entitlements gate (staging/prod)."""
+    """The public endpoint fails closed without consulting APP_ENV."""
     phone = f"+7906{uuid4().int % 10_000_000:07d}"
     tokens = await _login(live_client, phone=phone)
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
-    with patch(
-        "tourism_backend.modules.subscriptions.presentation.router.mock_self_activate_allowed",
-        return_value=False,
-    ):
-        denied = await live_client.post(
-            "/api/v1/me/travel-plus/activate",
-            headers=headers,
-            json={"plan": "monthly"},
-        )
+    denied = await live_client.post(
+        "/api/v1/me/travel-plus/activate",
+        headers=headers,
+        json={"plan": "monthly"},
+    )
     assert denied.status_code == 403, denied.text
-    assert denied.json()["error"]["code"] == "mock_checkout_disabled"
+    assert denied.json()["error"]["code"] == "travel_plus_purchase_unavailable"

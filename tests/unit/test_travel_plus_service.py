@@ -88,8 +88,7 @@ async def test_activate_cancel_and_refresh_expiry(session: AsyncSession) -> None
         session,
         user_id=user.id,
         plan="monthly",
-        source="mock_checkout",
-        app_env=AppEnvironment.TEST,
+        source="admin",
         commit=True,
     )
     await session.refresh(user)
@@ -103,7 +102,11 @@ async def test_activate_cancel_and_refresh_expiry(session: AsyncSession) -> None
 
 
 @pytest.mark.asyncio
-async def test_activate_rejects_mock_checkout_outside_local_test(session: AsyncSession) -> None:
+@pytest.mark.parametrize("app_env", list(AppEnvironment))
+async def test_activate_rejects_mock_checkout_in_every_environment(
+    session: AsyncSession,
+    app_env: AppEnvironment,
+) -> None:
     user = await _user(session)
     with pytest.raises(AppError) as exc:
         await travel_plus.activate_travel_plus(
@@ -111,10 +114,10 @@ async def test_activate_rejects_mock_checkout_outside_local_test(session: AsyncS
             user_id=user.id,
             plan="monthly",
             source="mock_checkout",
-            app_env=AppEnvironment.PRODUCTION,
+            app_env=app_env,
             commit=False,
         )
-    assert exc.value.code == "mock_checkout_disabled"
+    assert exc.value.code == "travel_plus_purchase_unavailable"
     assert exc.value.status_code == 403
 
 

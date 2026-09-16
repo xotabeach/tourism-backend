@@ -53,6 +53,7 @@ from tourism_backend.modules.route_builder.application.dialogue import fallback_
 from tourism_backend.modules.route_builder.application.discovery import (
     discovery_patch,
 )
+from tourism_backend.modules.route_builder.application.quota import require_ai_reply_quota
 from tourism_backend.modules.route_builder.application.schemas import (
     ActionsBlockOut,
     CatalogMatchBlockOut,
@@ -428,7 +429,7 @@ async def post_message(
     if user is None:
         raise AppError(code="user_not_found", message="User not found", status_code=404)
     await refresh_user_travel_plus(session, user=user)
-    require_ai_chat(user)
+    policy = require_ai_chat(user)
 
     planning = await _owned_session(
         session,
@@ -451,6 +452,7 @@ async def post_message(
             message="Planning session reached its message limit",
             status_code=409,
         )
+    await require_ai_reply_quota(session, user_id=user_id, policy=policy)
 
     confirmed = sanitize_confirmed_fields(
         list(planning.confirmed_fields) if isinstance(planning.confirmed_fields, list) else []
