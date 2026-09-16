@@ -1,0 +1,76 @@
+{
+  "specName": "smsc-otp-integration",
+  "timestamp": "2026-09-16T00:00:00Z",
+  "status": "completed",
+  "capturedAtCommit": "80641a2",
+  "sourceIssue": null,
+  "previewUrl": null,
+  "qaLog": [
+    {"area": "Async Dispatch Mechanism", "question": "Какой механизм для 'создаётся джоба на отправку' — persisted job table, in-process asyncio.Task, или FastAPI BackgroundTasks?", "answer": "Persisted job-таблица (новое)", "options": ["Persisted job-таблица (новое)", "In-process asyncio.Task (как HelpIndexJob)", "FastAPI BackgroundTasks (как FCM push)"]},
+    {"area": "Async Dispatch Mechanism", "question": "Как персистент-джоба будет фактически обрабатываться без отдельного worker-процесса?", "answer": "Immediate trigger + фоновый поллер (рекомендую)", "options": ["Только immediate trigger после insert", "Immediate trigger + фоновый поллер", "Только поллер (без immediate trigger)"]},
+    {"area": "Failure Handling/Retry", "question": "Retry-политика для поллера при ошибке SMSC?", "answer": "Фиксированное число попыток + backoff, без разделения ошибок", "options": ["Фиксированное число попыток + backoff, без разделения ошибок", "Разделять permanent vs transient ошибки", "Без retry вообще, best-effort как FCM"]},
+    {"area": "Failure Handling/Retry", "question": "Что происходит при повторном request_otp, если SMS-job живого challenge уже failed?", "answer": "Второй вариант с ожиданием естественного истечения TTL, но сократить TTL с 10 до 5 минут", "options": ["Создаётся новая SMS-job для того же challenge", "Ждёт естественного истечения TTL"]},
+    {"area": "Data Model/Delivery Status", "question": "TTL сокращается для обоих сценариев (login + phone change) или только login?", "answer": "5 минут для обоих сценариев", "options": ["5 минут для обоих сценариев", "Только для login/регистрации"]},
+    {"area": "SMSC Client Design", "question": "Что считаем статусом job 'sent' — gateway accepted или confirmed delivery через webhook?", "answer": "sent = шлюз принял запрос (рекомендую)", "options": ["sent = шлюз принял запрос", "sent = подтверждённая доставка через webhook", "Два статуса: accepted и delivered"]},
+    {"area": "Security", "question": "Что делаем с AUTH_OTP_STORE_DEBUG_CODE / AUTH_OTP_ACCEPT_ANY после подключения SMSC?", "answer": "Оставляем как есть, добавляем stub-провайдер", "options": ["Оставляем как есть, добавляем stub-провайдер", "В staging включаем реальный SMSC, debug только local/test"]},
+    {"area": "Admin Panel", "question": "Нужен ли ручной 'retry now' для permanently failed SMS-job в админке?", "answer": "Только просмотр, без ручного действия", "options": ["Только просмотр, без ручного действия", "Добавить ручной retry now"]},
+    {"area": "Config/Secrets/Env", "question": "Текст SMS и sender ID — как оформляем?", "answer": "Шаблон + имя отправителя в админке в настройках конфигурации, дефолты: 'Код подтверждения: {code}' и sender 'КРЫМТРИП'", "options": ["Фиксированный шаблон в коде, без sender ID", "Шаблон из конфига + зарегистрированный sender ID"]},
+    {"area": "SMSC Client Design", "question": "Нужен ли circuit breaker для SMSC-клиента, как у 2GIS?", "answer": "Да, тот же паттерн, что у 2GIS", "options": ["Да, тот же паттерн, что у 2GIS", "Нет, только job-level retry+backoff"]},
+    {"area": "Security", "question": "Джоба хранит открытый код — где берёт его для повторных попыток?", "answer": "Хранить открытый код в самой job-строке на время её жизни", "options": ["Хранить открытый код в job-строке", "Не хранить в БД, только через память процесса"]},
+    {"area": "Security", "question": "Какие митигации нужны для хранения открытого кода в job-строке?", "answer": "Обнулять plaintext после терминального статуса", "options": ["Обнулять plaintext после терминального статуса", "Исключить из admin list/detail view"], "multiSelect": true},
+    {"area": "Data Model/Delivery Status", "question": "Как SmsDeliveryJob должна ссылаться на исходный challenge?", "answer": "Два nullable FK (отдельно на каждый тип challenge)", "options": ["Два nullable FK", "Полиморфная ссылка (challenge_type + challenge_id)", "Самостоятельная, без ссылки на challenge"]},
+    {"area": "Config/Secrets/Env", "question": "Нужен ли soft daily budget/alert на дневной расход SMS?", "answer": "Да, soft daily budget (лог-warning по аналогии с 2GIS)", "options": ["Вне скопа", "Да, soft daily budget"]},
+    {"area": "Config/Secrets/Env", "question": "Как выкатываем SMSC в прод?", "answer": "Сразу включаем в prod при деплое (routing_provider=smsc)", "options": ["Сразу в prod при деплое", "Сначала staging, потом prod отдельным шагом"]}
+  ],
+  "coverageMap": {
+    "Problem & Scope": "done",
+    "Async Dispatch Mechanism": "done",
+    "Data Model/Delivery Status": "done",
+    "SMSC Client Design": "done",
+    "Failure Handling/Retry": "done",
+    "Admin Panel": "done",
+    "Config/Secrets/Env": "done",
+    "Security": "done",
+    "Testing Strategy": "done"
+  },
+  "baseline": {
+    "derivedFrom": "Explore agent codebase analysis pass, tourism-backend @ 80641a2",
+    "capturedAtCommit": "80641a2",
+    "claims": [
+      {"area": "Async Dispatch Mechanism", "claim": "No job/queue infrastructure exists in tourism-backend (no Celery/RQ/BullMQ, no broker); only HelpIndexJob (manual asyncio.Task singleton), FastAPI BackgroundTasks (FCM push, RAG warmup), and host cron", "path": "src/tourism_backend/modules/support/application/help_index_job.py"},
+      {"area": "Data Model/Delivery Status", "claim": "OTP codes generated in identity/application/crypto.py::new_otp_code, stored as code_digest (SHA-256) in AuthOtpChallenge/AuthPhoneChangeChallenge, never delivered — TODO marker in _upsert_auth_otp_challenge", "path": "src/tourism_backend/modules/identity/application/service.py"},
+      {"area": "Admin Panel", "claim": "OtpChallengeAdmin/PhoneChangeChallengeAdmin already registered in SQLAdmin, code_digest excluded from detail view, debug_code shown conditionally", "path": "src/tourism_backend/modules/admin/presentation/views.py"},
+      {"area": "SMSC Client Design", "claim": "2GIS adapters are the richest external-API precedent: httpx.AsyncClient, hand-rolled retry (2 attempts, 0.3s backoff), circuit breaker (3 failures, 60s cooldown, process-wide state), soft daily call budget, stub/real provider factory", "path": "src/tourism_backend/modules/route_builder/infrastructure/two_gis_routing.py"},
+      {"area": "Failure Handling/Retry", "claim": "FCM push (modules/notifications/application/fcm.py) is best-effort: never raises, never retries, logs and returns on failure, awaited inline in request path", "path": "src/tourism_backend/modules/notifications/application/fcm.py"},
+      {"area": "Config/Secrets/Env", "claim": "Settings is a single pydantic-settings class; vendor keys are SecretStr|None; validate_settings() raises RuntimeError fail-fast for missing-key-when-enabled or dangerous debug flags outside local/test", "path": "src/tourism_backend/config.py"},
+      {"area": "Security", "claim": "Rate limiting: OTP request 8/10min per IP and per phone (Redis fixed-window), OTP verify 20/10min, short issue lock (SET NX EX 15) dedupes concurrent issuance", "path": "src/tourism_backend/modules/identity/application/service.py"},
+      {"area": "Testing Strategy", "claim": "httpx.MockTransport used for external HTTP tests (test_two_gis_routing.py); hand-written in-memory fakes for storage/rate-limit logic (test_otp_challenge_storage.py); fcm.py omitted from --cov-fail-under=74 gate", "path": "tests/unit/test_two_gis_routing.py"}
+    ]
+  },
+  "driftLedger": [
+    {
+      "date": "2026-09-16",
+      "change": "Provider changed from SMSC.ru to SMS Aero API v2 by product-owner request.",
+      "impact": "HTTP Basic email/API-key auth, POST /v2/sms/send JSON contract, success=true + data.id validation, digit-only phone, SMSAERO_* configuration.",
+      "authoritativeSpec": "spec-smsc-otp-integration.md"
+    }
+  ],
+  "feedbackRounds": [],
+  "redTeamStatus": "completed",
+  "redTeamFindings": [
+    {"dimension": "Failure Modes", "severity": "critical", "title": "Retries after an ambiguous send timeout can cause a real duplicate SMS", "resolution": "resolved", "decisionId": "D18"},
+    {"dimension": "Contradictory Decisions", "severity": "major", "title": "D2's cited precedent for the poller loop doesn't actually exist in the codebase", "resolution": "resolved", "decisionId": "D17"},
+    {"dimension": "Contradictory Decisions", "severity": "major", "title": "D13 (process-wide circuit breaker) + D5 (no forced resend) can create a total OTP outage window with zero user recourse", "resolution": "resolved", "decisionId": "D19"},
+    {"dimension": "Failure Modes", "severity": "major", "title": "SMSC application-level errors returned inside a 2xx response may be misclassified as 'sent'", "resolution": "resolved", "decisionId": "D20"},
+    {"dimension": "Data Integrity", "severity": "major", "title": "D10's 'exactly one FK set' invariant has no proposed DB-level enforcement", "resolution": "resolved", "decisionId": "D21"},
+    {"dimension": "Scaling Cliffs", "severity": "major", "title": "D14's soft daily SMS budget inherits a safety assumption from 2GIS that doesn't hold for SMS spend", "resolution": "resolved", "decisionId": "D22"},
+    {"dimension": "Operational Concerns", "severity": "major", "title": "No monitoring/alerting decision for the first real production phone-auth flow", "resolution": "resolved", "decisionId": "D23"},
+    {"dimension": "Operational Concerns", "severity": "major", "title": "Admin-editable SMS template/sender ID (D12) is an unvalidated single point of total failure", "resolution": "resolved", "decisionId": "D24"},
+    {"dimension": "Failure Modes", "severity": "minor", "title": "Poller's sweep scope may miss challenges committed with no job ever created", "resolution": "resolved", "decisionId": "D25"},
+    {"dimension": "Failure Modes", "severity": "minor", "title": "No described row-claiming between immediate dispatch and poller sweep risks a double-send race", "resolution": "resolved", "decisionId": "D26"},
+    {"dimension": "Dependency Risks", "severity": "minor", "title": "Unverified phone-format compatibility between our E.164 storage and SMSC's expected input", "resolution": "resolved", "decisionId": "D27"},
+    {"dimension": "Contradictory Decisions", "severity": "minor", "title": "sms_provider's env-conditional default doesn't match any single existing config pattern", "resolution": "resolved", "decisionId": "D28"},
+    {"dimension": "Operational Concerns", "severity": "minor", "title": "The highest-leverage kill switch (sms_provider) is not hot-editable", "resolution": "resolved", "decisionId": "D29"},
+    {"dimension": "Wildcard", "severity": "minor", "title": "fcm.py's coverage-omission precedent doesn't fit the SMSC client's actual risk profile", "resolution": "resolved", "decisionId": "D30"}
+  ]
+}

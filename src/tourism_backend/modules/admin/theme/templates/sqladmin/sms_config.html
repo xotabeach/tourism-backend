@@ -1,0 +1,52 @@
+{% extends "sqladmin/layout.html" %}
+{% block content_header %}
+<div class="row align-items-center">
+  <div class="col">
+    <h2 class="page-title">SMS и OTP</h2>
+    <div class="page-pretitle">Провайдер можно отключить без перезапуска приложения</div>
+  </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="col-12 col-xl-8">
+  <div class="card">
+    <div class="card-body">
+      <form action="/admin/config/sms/save" method="POST">
+        <div class="mb-4">
+          <label class="form-label">Доставка кодов</label>
+          <label class="form-selectgroup-item d-flex align-items-center gap-2 mb-2">
+            <input type="radio" name="sms_provider" value="smsaero" class="form-selectgroup-input"
+              {% if provider == "smsaero" %}checked{% endif %}>
+            <span class="form-selectgroup-label flex-fill">SMS Aero — отправлять реальные SMS</span>
+          </label>
+          <label class="form-selectgroup-item d-flex align-items-center gap-2">
+            <input type="radio" name="sms_provider" value="stub" class="form-selectgroup-input"
+              {% if provider == "stub" %}checked{% endif %}>
+            <span class="form-selectgroup-label flex-fill">Отключено — только помечать задания выполненными</span>
+          </label>
+          <div class="text-secondary mt-2" style="font-size: 0.85rem;">
+            Значение окружения: {{ env_provider }}.
+            {% if not smsaero_configured %}⚠ Учётные данные SMS Aero не настроены.{% endif %}
+          </div>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="sms-sender">Имя отправителя</label>
+          <input id="sms-sender" class="form-control" type="text" name="sms_sender"
+            minlength="2" maxlength="64" required value="{{ sender }}">
+          <div class="form-hint">Имя должно быть заранее одобрено в кабинете SMS Aero.</div>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="sms-template">Шаблон сообщения</label>
+          <textarea id="sms-template" class="form-control" name="sms_template" rows="3"
+            minlength="2" maxlength="640" required>{{ template }}</textarea>
+          <div class="form-hint">Обязательно оставьте <code>{code}</code> — туда подставляется OTP.</div>
+        </div>
+
+        <button type="submit" class="btn btn-primary ct-btn-primary">Сохранить</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

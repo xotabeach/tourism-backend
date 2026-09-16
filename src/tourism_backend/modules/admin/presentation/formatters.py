@@ -93,6 +93,13 @@ _REPORT_TARGET_LABELS = {
     "place": ("Место", "ct-badge-chat"),
 }
 
+_SMS_DELIVERY_STATUS_LABELS = {
+    "pending": ("Ожидает", "ct-badge-route-pending"),
+    "sending": ("Отправляется", "ct-badge-awaiting"),
+    "sent": ("Принято шлюзом", "ct-badge-route-published"),
+    "failed": ("Ошибка", "ct-badge-route-rejected"),
+}
+
 _ALLOWED_CSS = frozenset(
     {
         "ct-badge-open",
@@ -209,6 +216,10 @@ def format_review_status(model: object, attribute: object) -> Markup:
 
 def format_report_status(model: object, attribute: object) -> Markup:
     return _badge(getattr(model, "status", None), _REPORT_STATUS_LABELS)
+
+
+def format_sms_delivery_status(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "status", None), _SMS_DELIVERY_STATUS_LABELS)
 
 
 def format_report_reason(model: object, attribute: object) -> Markup:

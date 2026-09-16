@@ -12,7 +12,12 @@ import pytest
 from tourism_backend.config import AIProvider, Settings
 from tourism_backend.modules.runtime_config.application.service import (
     AI_PROVIDER_KEY,
+    SMS_PROVIDER_KEY,
+    SMS_SENDER_KEY,
+    SMS_TEMPLATE_KEY,
     effective_ai_provider_settings,
+    effective_sms_settings,
+    validate_sms_template,
 )
 
 
@@ -73,3 +78,46 @@ async def test_db_failure_falls_back_to_the_static_default() -> None:
     result = await effective_ai_provider_settings(_ExplodingSession(), settings)  # type: ignore[arg-type]
 
     assert result is settings
+
+
+async def test_sms_runtime_overrides_are_resolved_together() -> None:
+    session = _FakeSession(
+        rows={
+            SMS_PROVIDER_KEY: _FakeSetting("smsaero"),
+            SMS_TEMPLATE_KEY: _FakeSetting("Код КрымТрип: {code}"),
+            SMS_SENDER_KEY: _FakeSetting("CrimeaTrip"),
+        }
+    )
+    result = await effective_sms_settings(session, Settings())  # type: ignore[arg-type]
+    assert result.provider == "smsaero"
+    assert result.template == "Код КрымТрип: {code}"
+    assert result.sender == "CrimeaTrip"
+
+
+async def test_invalid_sms_runtime_values_fall_back_safely() -> None:
+    settings = Settings()
+    session = _FakeSession(
+        rows={
+            SMS_PROVIDER_KEY: _FakeSetting("unknown"),
+            SMS_TEMPLATE_KEY: _FakeSetting("без кода"),
+            SMS_SENDER_KEY: _FakeSetting("x"),
+        }
+    )
+    result = await effective_sms_settings(session, settings)  # type: ignore[arg-type]
+    assert result.provider == settings.sms_provider
+    assert result.template == settings.sms_otp_template
+    assert result.sender == settings.sms_sender
+
+
+def test_sms_template_rejects_unknown_placeholder() -> None:
+    with pytest.raises(ValueError, match="только"):
+        validate_sms_template("{code}: {name}")
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["{code.__class__}", "{code!r}", "{code:>8}", "{code} {code}"],
+)
+def test_sms_template_rejects_extended_format_syntax(template: str) -> None:
+    with pytest.raises(ValueError, match="только"):
+        validate_sms_template(template)

@@ -31,6 +31,10 @@ from tourism_backend.modules.identity.application.schemas import (
     PhoneChangeVerifyIn,
     TokenPairOut,
 )
+from tourism_backend.modules.identity.application.sms_delivery import (
+    new_delivery_job,
+    schedule_delivery,
+)
 from tourism_backend.modules.identity.application.tokens import create_access_token
 from tourism_backend.modules.identity.infrastructure.models import (
     AuthOtpChallenge,
@@ -41,7 +45,7 @@ from tourism_backend.modules.identity.infrastructure.models import (
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.notifications.application import service as notifications_service
 
-_OTP_TTL = timedelta(minutes=10)
+_OTP_TTL = timedelta(minutes=5)
 _MAX_OTP_ATTEMPTS = 8
 _RATE_WINDOW_SEC = 600
 _RATE_REQUEST_LIMIT = 8
@@ -138,13 +142,14 @@ async def request_otp(
         # A concurrent request is already issuing a code for this phone.
         return
     try:
-        await _upsert_auth_otp_challenge(session, settings, payload)
+        await _upsert_auth_otp_challenge(session, redis, settings, payload)
     finally:
         await redis.delete(lock_key)
 
 
 async def _upsert_auth_otp_challenge(
     session: AsyncSession,
+    redis: Redis,
     settings: Settings,
     payload: OtpRequestIn,
 ) -> None:
@@ -165,9 +170,8 @@ async def _upsert_auth_otp_challenge(
         .limit(1)
     )
     challenge = result.scalar_one_or_none()
+    delivery_job = None
     if challenge is None:
-        # TODO: SMS provider — deliver `code` via the SMS gateway, then stop
-        # persisting debug_code (see AUTH_OTP_STORE_DEBUG_CODE).
         code = new_otp_code()
         challenge = AuthOtpChallenge(
             id=uuid4(),
@@ -181,6 +185,12 @@ async def _upsert_auth_otp_challenge(
             created_at=now,
         )
         session.add(challenge)
+        delivery_job = new_delivery_job(
+            phone_e164=payload.phone,
+            plaintext_code=code,
+            otp_challenge_id=challenge.id,
+        )
+        session.add(delivery_job)
     else:
         challenge.display_name = payload.display_name
     await session.execute(
@@ -193,6 +203,8 @@ async def _upsert_auth_otp_challenge(
         .values(consumed_at=now)
     )
     await session.commit()
+    if delivery_job is not None:
+        schedule_delivery(session, redis, settings, delivery_job.id)
     # Never log or return the OTP code.
 
 
@@ -573,13 +585,14 @@ async def request_phone_change(
     if not await _acquire_otp_issue_lock(redis, lock_key):
         return
     try:
-        await _upsert_phone_change_challenge(session, settings, user_id, payload)
+        await _upsert_phone_change_challenge(session, redis, settings, user_id, payload)
     finally:
         await redis.delete(lock_key)
 
 
 async def _upsert_phone_change_challenge(
     session: AsyncSession,
+    redis: Redis,
     settings: Settings,
     user_id: UUID,
     payload: PhoneChangeRequestIn,
@@ -597,9 +610,8 @@ async def _upsert_phone_change_challenge(
         .limit(1)
     )
     challenge = result.scalar_one_or_none()
+    delivery_job = None
     if challenge is None:
-        # TODO: SMS provider — deliver `code` via the SMS gateway, then stop
-        # persisting debug_code (see AUTH_OTP_STORE_DEBUG_CODE).
         code = new_otp_code()
         challenge = AuthPhoneChangeChallenge(
             id=uuid4(),
@@ -613,6 +625,12 @@ async def _upsert_phone_change_challenge(
             created_at=now,
         )
         session.add(challenge)
+        delivery_job = new_delivery_job(
+            phone_e164=payload.phone,
+            plaintext_code=code,
+            phone_change_challenge_id=challenge.id,
+        )
+        session.add(delivery_job)
     await session.execute(
         update(AuthPhoneChangeChallenge)
         .where(
@@ -624,6 +642,8 @@ async def _upsert_phone_change_challenge(
         .values(consumed_at=now)
     )
     await session.commit()
+    if delivery_job is not None:
+        schedule_delivery(session, redis, settings, delivery_job.id)
 
 
 async def verify_phone_change(

@@ -2,7 +2,7 @@
 
 `AUTH_OTP_ACCEPT_ANY` skips code verification and disables OTP rate limiting;
 `AUTH_OTP_STORE_DEBUG_CODE` keeps the code readable in the database. Both are
-local/test conveniences while no SMS provider exists, so the guard rails are:
+local/test conveniences, so the guard rails are:
 they never default on outside those environments, and startup refuses them.
 """
 
@@ -68,3 +68,30 @@ def test_generated_code_is_four_digits_and_verifies_only_against_itself() -> Non
     digest = digest_token(code)
     assert digest_matches(code, digest)
     assert not digest_matches("0000" if code != "0000" else "1111", digest)
+
+
+def test_smsaero_requires_email_and_secret() -> None:
+    with pytest.raises(RuntimeError, match="SMSAERO_EMAIL"):
+        validate_settings(Settings(sms_provider="smsaero"))
+    with pytest.raises(RuntimeError, match="SMSAERO_API_KEY"):
+        validate_settings(Settings(sms_provider="smsaero", smsaero_email="owner@example.com"))
+
+
+def test_smsaero_rejects_non_https_gateway() -> None:
+    settings = Settings(
+        sms_provider="smsaero",
+        smsaero_email="owner@example.com",
+        smsaero_api_key="secret",
+        smsaero_base_url="http://gate.smsaero.ru/v2",
+    )
+    with pytest.raises(RuntimeError, match="must use HTTPS"):
+        validate_settings(settings)
+
+
+def test_sms_template_must_only_contain_code_placeholder() -> None:
+    with pytest.raises(RuntimeError, match="must contain"):
+        validate_settings(Settings(sms_otp_template="Ваш код"))
+    with pytest.raises(RuntimeError, match="may only use"):
+        validate_settings(Settings(sms_otp_template="{code} {unknown}"))
+    with pytest.raises(RuntimeError, match="may only use"):
+        validate_settings(Settings(sms_otp_template="{code.__class__}"))

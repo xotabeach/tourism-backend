@@ -1,5 +1,6 @@
 from enum import StrEnum
 from functools import lru_cache
+from string import Formatter
 from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr
@@ -65,9 +66,22 @@ class Settings(BaseSettings):
     # None = auto (True for local only). Explicit True/False overrides.
     # Never allowed outside local/test — see validate_settings.
     auth_otp_accept_any: bool | None = None
-    # Keeps the generated OTP readable in the database while no SMS provider is
-    # connected. None = auto (True for local/test). Refused in staging/production.
+    # Keeps the generated OTP readable for local/test troubleshooting.
+    # None = auto (True for local/test). Refused in staging/production.
     auth_otp_store_debug_code: bool | None = None
+
+    # OTP delivery. ``stub`` acknowledges jobs without a network call and is
+    # deliberately the default for local/test and for a safe first deploy.
+    sms_provider: Literal["stub", "smsaero"] = "stub"
+    smsaero_email: str | None = None
+    smsaero_api_key: SecretStr | None = None
+    smsaero_base_url: str = "https://gate.smsaero.ru/v2"
+    smsaero_timeout_seconds: float = Field(default=10, ge=3, le=60)
+    sms_sender: str = Field(default="КРЫМТРИП", min_length=2, max_length=64)
+    sms_otp_template: str = Field(default="Код подтверждения: {code}", min_length=2, max_length=640)
+    sms_poll_interval_seconds: float = Field(default=20, ge=1, le=300)
+    sms_max_attempts: int = Field(default=3, ge=1, le=10)
+    sms_daily_soft_budget: int = Field(default=500, ge=1)
 
     # Phase 6.5 ops admin (SQLAdmin). Session secret is separate from JWT.
     admin_enabled: bool = True
@@ -253,6 +267,29 @@ def validate_settings(settings: Settings) -> None:
                 f"cleartext and is not allowed when app_env={settings.app_env.value!r}"
             )
             raise RuntimeError(msg)
+
+    try:
+        sms_fields = [
+            (field_name, format_spec, conversion)
+            for _literal, field_name, format_spec, conversion in Formatter().parse(
+                settings.sms_otp_template
+            )
+            if field_name is not None
+        ]
+    except ValueError as exc:
+        raise RuntimeError("SMS_OTP_TEMPLATE may only use the {code} placeholder") from exc
+    if not sms_fields:
+        raise RuntimeError("SMS_OTP_TEMPLATE must contain the {code} placeholder")
+    if sms_fields != [("code", "", None)]:
+        raise RuntimeError("SMS_OTP_TEMPLATE may only use the {code} placeholder")
+    if settings.sms_provider == "smsaero":
+        if not settings.smsaero_email or "@" not in settings.smsaero_email:
+            raise RuntimeError("SMSAERO_EMAIL is required when SMS_PROVIDER=smsaero")
+        key = settings.smsaero_api_key
+        if key is None or not key.get_secret_value().strip():
+            raise RuntimeError("SMSAERO_API_KEY is required when SMS_PROVIDER=smsaero")
+        if not settings.smsaero_base_url.startswith("https://"):
+            raise RuntimeError("SMSAERO_BASE_URL must use HTTPS")
 
     if settings.routing_provider == "2gis":
         key = settings.two_gis_http_api_key

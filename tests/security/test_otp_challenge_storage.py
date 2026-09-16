@@ -15,7 +15,7 @@ from tourism_backend.config import AppEnvironment, Settings
 from tourism_backend.modules.identity.application import service
 from tourism_backend.modules.identity.application.crypto import digest_matches
 from tourism_backend.modules.identity.application.schemas import OtpRequestIn
-from tourism_backend.modules.identity.infrastructure.models import AuthOtpChallenge
+from tourism_backend.modules.identity.infrastructure.models import AuthOtpChallenge, SmsDeliveryJob
 
 
 class _ScalarResult:
@@ -187,6 +187,11 @@ async def test_repeat_otp_request_reuses_the_live_code() -> None:
     assert len(active) == 1
     assert active[0].display_name == "Никита В."
     assert active[0].debug_code is not None
+    jobs = [row for row in session.added if isinstance(row, SmsDeliveryJob)]
+    assert len(jobs) == 1
+    assert jobs[0].otp_challenge_id == active[0].id
+    assert jobs[0].plaintext_code == active[0].debug_code
+    assert active[0].expires_at - active[0].created_at == service._OTP_TTL
 
 
 async def test_otp_request_skips_issue_while_lock_is_held() -> None:

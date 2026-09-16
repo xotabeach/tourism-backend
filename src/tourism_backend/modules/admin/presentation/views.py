@@ -59,6 +59,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_review_status,
     format_route_fk,
     format_route_publication_status,
+    format_sms_delivery_status,
     format_ticket_awaiting,
     format_ticket_kind,
     format_ticket_status,
@@ -90,6 +91,7 @@ from tourism_backend.modules.identity.infrastructure.models import (
     Achievement,
     AuthOtpChallenge,
     AuthPhoneChangeChallenge,
+    SmsDeliveryJob,
     TravelRank,
     User,
     UserAchievement,
@@ -130,8 +132,13 @@ from tourism_backend.modules.routes.application import review_service
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 from tourism_backend.modules.runtime_config.application.service import (
     AI_PROVIDER_KEY,
+    SMS_PROVIDER_KEY,
+    SMS_SENDER_KEY,
+    SMS_TEMPLATE_KEY,
     get_runtime_setting,
     set_runtime_setting,
+    validate_sms_sender,
+    validate_sms_template,
 )
 from tourism_backend.modules.runtime_config.infrastructure.models import CompanyDetails
 from tourism_backend.modules.subscriptions.application import service as travel_plus_service
@@ -2652,6 +2659,101 @@ class RuntimeConfigAdmin(BaseView):
         }
 
 
+class SmsConfigAdmin(BaseView):
+    """Hot SMS kill switch plus the validated OTP message presentation."""
+
+    name = "SMS и OTP"
+    category = ADMIN_APP_SETTINGS_CATEGORY
+    category_icon = ADMIN_APP_SETTINGS_ICON
+    icon = "fa-solid fa-comment-sms"
+    session_maker: ClassVar[Any]
+
+    def is_accessible(self, request: Request) -> bool:
+        return require_admin_role(request)
+
+    def is_visible(self, request: Request) -> bool:
+        return require_admin_role(request)
+
+    @expose("/config/sms", methods=["GET"], identity="config-sms")
+    async def show(self, request: Request) -> Response:
+        if not require_admin_role(request):
+            Flash.error(request, "Доступно только роли admin.")
+            return RedirectResponse(request.url_for("admin:index"), status_code=303)
+        settings: Settings = request.app.state.settings
+        async with self.session_maker(expire_on_commit=False) as session:
+            provider = await get_runtime_setting(session, SMS_PROVIDER_KEY)
+            template = await get_runtime_setting(session, SMS_TEMPLATE_KEY)
+            sender = await get_runtime_setting(session, SMS_SENDER_KEY)
+        return await self.templates.TemplateResponse(
+            request,
+            "sqladmin/sms_config.html",
+            context={
+                "provider": provider or settings.sms_provider,
+                "env_provider": settings.sms_provider,
+                "template": template or settings.sms_otp_template,
+                "sender": sender or settings.sms_sender,
+                "smsaero_configured": bool(
+                    settings.smsaero_email
+                    and settings.smsaero_api_key
+                    and settings.smsaero_api_key.get_secret_value().strip()
+                ),
+            },
+        )
+
+    @expose("/config/sms/save", methods=["POST"])
+    async def save(self, request: Request) -> Response:
+        redirect_url = request.url_for("admin:view-config-sms")
+        if not require_admin_role(request):
+            Flash.error(request, "Доступно только роли admin.")
+            return RedirectResponse(redirect_url, status_code=303)
+        settings: Settings = request.app.state.settings
+        form = await request.form()
+        provider = str(form.get("sms_provider") or "").strip()
+        if provider not in {"stub", "smsaero"}:
+            Flash.error(request, "Недопустимый SMS-провайдер.")
+            return RedirectResponse(redirect_url, status_code=303)
+        if provider == "smsaero" and not (
+            settings.smsaero_email
+            and settings.smsaero_api_key
+            and settings.smsaero_api_key.get_secret_value().strip()
+        ):
+            Flash.error(request, "Сначала задайте SMSAERO_EMAIL и SMSAERO_API_KEY.")
+            return RedirectResponse(redirect_url, status_code=303)
+        try:
+            template = validate_sms_template(str(form.get("sms_template") or ""))
+            sender = validate_sms_sender(str(form.get("sms_sender") or ""))
+        except ValueError as exc:
+            Flash.error(request, str(exc))
+            return RedirectResponse(redirect_url, status_code=303)
+
+        actor_id = session_principal_id(request)
+        async with self.session_maker(expire_on_commit=False) as session:
+            for key, value in (
+                (SMS_PROVIDER_KEY, provider),
+                (SMS_TEMPLATE_KEY, template),
+                (SMS_SENDER_KEY, sender),
+            ):
+                await set_runtime_setting(
+                    session,
+                    key=key,
+                    value=value,
+                    updated_by_principal_id=actor_id,
+                    commit=False,
+                )
+            await record_audit(
+                session,
+                actor_id=actor_id,
+                action="runtime_config.sms.update",
+                entity_type="runtime_setting",
+                entity_id=SMS_PROVIDER_KEY,
+                metadata={"provider": provider, "sender": sender},
+                ip=request.client.host if request.client else None,
+                commit=True,
+            )
+        Flash.success(request, "Настройки SMS сохранены и применятся к следующей отправке.")
+        return RedirectResponse(redirect_url, status_code=303)
+
+
 class MediaAttachmentAdmin(ModelView, model=MediaAttachment):
     category = "Медиа"
     category_icon = "fa-solid fa-photo-film"
@@ -3512,12 +3614,59 @@ def register_views(admin: Any, settings: Settings) -> None:
         can_delete = False
         page_size = 50
 
+    class SmsDeliveryJobAdmin(ModelView, model=SmsDeliveryJob):
+        category = "Пользователи"
+        category_icon = "fa-solid fa-user-group"
+        name = "SMS-доставка"
+        name_plural = "SMS-доставка"
+        icon = "fa-solid fa-comment-sms"
+        column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+        column_list = [
+            SmsDeliveryJob.phone_e164,
+            SmsDeliveryJob.status,
+            SmsDeliveryJob.attempts,
+            SmsDeliveryJob.provider_sms_id,
+            SmsDeliveryJob.last_error,
+            SmsDeliveryJob.created_at,
+            SmsDeliveryJob.updated_at,
+        ]
+        column_labels = {
+            SmsDeliveryJob.phone_e164: "Телефон",
+            SmsDeliveryJob.plaintext_code: "Код (только до завершения)",
+            SmsDeliveryJob.otp_challenge_id: "OTP",
+            SmsDeliveryJob.phone_change_challenge_id: "Смена телефона",
+            SmsDeliveryJob.status: "Статус",
+            SmsDeliveryJob.attempts: "Попытки",
+            SmsDeliveryJob.next_attempt_at: "Следующая попытка",
+            SmsDeliveryJob.provider_sms_id: "ID SMS Aero",
+            SmsDeliveryJob.last_error: "Последняя ошибка",
+            SmsDeliveryJob.created_at: "Создано",
+            SmsDeliveryJob.updated_at: "Обновлено",
+        }
+        column_formatters = {SmsDeliveryJob.status: format_sms_delivery_status}
+        column_searchable_list = [SmsDeliveryJob.phone_e164, SmsDeliveryJob.provider_sms_id]
+        column_sortable_list = [
+            SmsDeliveryJob.created_at,
+            SmsDeliveryJob.updated_at,
+            SmsDeliveryJob.status,
+        ]
+        column_default_sort = (SmsDeliveryJob.created_at, True)
+        column_filters = [
+            AllUniqueStringValuesFilter(SmsDeliveryJob.status, title="Статус"),
+            OperationColumnFilter(SmsDeliveryJob.phone_e164, title="Телефон"),
+        ]
+        can_create = False
+        can_edit = False
+        can_delete = False
+        page_size = 50
+
     admin.add_view(UserAdmin)
     admin.add_view(UserExpertStatusEventAdmin)
     admin.add_view(TravelPlusSubscriptionAdmin)
     admin.add_view(TravelRankAdmin)
     admin.add_view(OtpChallengeAdmin)
     admin.add_view(PhoneChangeChallengeAdmin)
+    admin.add_view(SmsDeliveryJobAdmin)
     admin.add_view(SupportTicketAdmin)
     admin.add_view(SupportMessageAdmin)
     admin.add_view(PlaceAdmin)
@@ -3550,6 +3699,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(SupportHelpRevisionAdmin)
     admin.add_view(SupportHelpIndexAdmin)
     admin.add_view(RuntimeConfigAdmin)
+    admin.add_view(SmsConfigAdmin)
     # add_base_view (unlike add_model_view) does not wire session_maker —
     # BaseView has no bound model for SQLAdmin to infer a session from. A
     # real sqladmin.Admin always has one; lightweight `register_views(fake,
@@ -3558,4 +3708,5 @@ def register_views(admin: Any, settings: Settings) -> None:
     session_maker = getattr(admin, "session_maker", None)
     if session_maker is not None:
         RuntimeConfigAdmin.session_maker = session_maker
+        SmsConfigAdmin.session_maker = session_maker
         SupportHelpIndexAdmin.session_maker = session_maker

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import mimetypes
 import os
@@ -40,9 +41,21 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         if settings.app_env not in {AppEnvironment.LOCAL, AppEnvironment.TEST}:
             raise
     await _warm_help_encoder(settings)
+    from tourism_backend.modules.identity.application.sms_delivery import (
+        poll_delivery_jobs,
+        stop_delivery_poller,
+        stop_immediate_deliveries,
+    )
+
+    sms_poller = asyncio.create_task(
+        poll_delivery_jobs(app.state.session_factory, app.state.redis, settings),
+        name="sms-delivery-poller",
+    )
     try:
         yield
     finally:
+        await stop_delivery_poller(sms_poller)
+        await stop_immediate_deliveries()
         await app.state.redis.aclose()
         await app.state.engine.dispose()
 
