@@ -100,6 +100,29 @@ _SMS_DELIVERY_STATUS_LABELS = {
     "failed": ("Ошибка", "ct-badge-route-rejected"),
 }
 
+_HOLD_STATUS_LABELS = {
+    "held": ("На проверке", "ct-badge-route-pending"),
+    "approved": ("Подтверждено", "ct-badge-route-published"),
+    "rejected": ("Отклонено", "ct-badge-route-rejected"),
+}
+
+_POINTS_STATUS_LABELS = {
+    "none": ("—", "ct-badge-closed"),
+    "awarded": ("Начислены", "ct-badge-route-published"),
+    "held": ("На проверке", "ct-badge-route-pending"),
+    "rejected": ("Отклонены", "ct-badge-route-rejected"),
+}
+
+_VIOLATION_KIND_LABELS = {
+    "too_fast": ("Слишком быстро", "ct-badge-route-pending"),
+    "ahead": ("Отметка впереди", "ct-badge-route-rejected"),
+}
+
+_VIOLATION_MODE_LABELS = {
+    "shadow": ("Наблюдение", "ct-badge-closed"),
+    "enforce": ("Боевой", "ct-badge-route-rejected"),
+}
+
 _ALLOWED_CSS = frozenset(
     {
         "ct-badge-open",
@@ -486,3 +509,34 @@ def format_masked_token(model: object, attribute: object) -> Markup:
         return Markup("—")
     tail = token[-6:] if len(token) > 6 else token
     return Markup("<code>…{}</code>").format(tail)
+
+
+def format_hold_status(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "status", None), _HOLD_STATUS_LABELS)
+
+
+def format_points_status(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "points_status", None), _POINTS_STATUS_LABELS)
+
+
+def format_violation_kind(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "kind", None), _VIOLATION_KIND_LABELS)
+
+
+def format_violation_mode(model: object, attribute: object) -> Markup:
+    return _badge(getattr(model, "mode", None), _VIOLATION_MODE_LABELS)
+
+
+def format_fraud_flag(model: object, attribute: object) -> Markup:
+    """Flagged / trusted as a badge; blocked-until is a plain timestamp column."""
+    key = getattr(attribute, "key", None) or getattr(attribute, "name", None)
+    if not isinstance(key, str):
+        return Markup("")
+    if bool(getattr(model, key, False)):
+        label, css = (
+            ("Доверенный", "ct-badge-route-published")
+            if key == "is_trusted"
+            else ("Отмечен", "ct-badge-route-rejected")
+        )
+        return Markup('<span class="ct-badge {}">{}</span>').format(css, label)
+    return Markup('<span class="text-secondary">—</span>')

@@ -13,6 +13,8 @@ from tourism_backend.modules.routes.application.schemas import (
 
 RouteExecutionStatus = Literal["active", "paused", "completed", "cancelled"]
 RouteExecutionEventAction = Literal["complete_stop", "complete", "cancel", "pause", "resume"]
+PointsStatus = Literal["none", "awarded", "held", "rejected"]
+PaceVerdictOut = Literal["ok", "too_fast", "ahead", "unknown", "skipped"]
 
 
 class RouteExecutionStartIn(BaseModel):
@@ -33,6 +35,22 @@ class RouteExecutionEventIn(BaseModel):
 
     client_event_id: UUID | None = None
     occurred_at: datetime | None = None
+
+
+class PositionIn(BaseModel):
+    """Optional position sent with a stop mark. Judged once, never stored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+    accuracy_m: float | None = Field(default=None, ge=0, le=100_000)
+
+
+class RouteExecutionStopMarkIn(RouteExecutionEventIn):
+    """Stop mark: the idempotency envelope plus an optional position."""
+
+    position: PositionIn | None = None
 
 
 class RouteExecutionSyncOut(BaseModel):
@@ -85,6 +103,22 @@ class RouteExecutionStopOut(BaseModel):
     lng: float | None
     is_optional: bool
     completed_at: datetime | None
+    # Expected leg from the previous stop; None for the first stop, for stops
+    # without coordinates and for runs that started before anti-fraud shipped.
+    leg_distance_meters: int | None = Field(default=None, ge=0)
+    leg_estimate_seconds: int | None = Field(default=None, ge=0)
+    leg_estimate_source: Literal["provider", "straight_line"] | None = None
+    # Client hint threshold: warn before sending a mark faster than this. Only
+    # present while anti-fraud is enforcing; None means "never warn".
+    pace_warn_below_seconds: int | None = Field(default=None, ge=0)
+
+
+class AntiFraudOut(BaseModel):
+    """Present only while enforcing; tells the client hints are meaningful."""
+
+    mode: Literal["enforce"] = "enforce"
+    gps_tolerance_m: int = Field(ge=0)
+    gps_min_accuracy_m: int = Field(ge=0)
 
 
 class RouteExecutionOut(BaseModel):
@@ -104,6 +138,15 @@ class RouteExecutionOut(BaseModel):
     stops: list[RouteExecutionStopOut]
     # Travel points granted for finishing this route (0 while it is active).
     awarded_points: int = Field(default=0, ge=0)
+    # none = not settled, awarded = credited, held = waiting for an operator,
+    # rejected = cancelled by an operator. ``points_reason`` says why a run
+    # earned less than the route is worth (route_cooldown, daily_cap).
+    points_status: PointsStatus = "none"
+    points_reason: str | None = None
+    held_points: int = Field(default=0, ge=0)
+    antifraud: AntiFraudOut | None = None
+    # Server's read of the mark that produced this response; None otherwise.
+    pace_verdict: PaceVerdictOut | None = None
     # Total time spent paused so far — lets a client report elapsed time net
     # of pauses without re-deriving it from the event ledger.
     paused_duration_seconds: int = Field(default=0, ge=0)

@@ -22,6 +22,9 @@ NotificationKind = Literal[
     "article_rejected",
     "article_comment",
     "article_about_your_route",
+    "antifraud_flagged",
+    "antifraud_blocked",
+    "antifraud_points_decision",
 ]
 NotificationTargetType = Literal[
     "route",

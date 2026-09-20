@@ -27,6 +27,13 @@ from tourism_backend.modules.admin.infrastructure.models import (
     AdminPrincipal,
     AdminRoleBinding,
 )
+from tourism_backend.modules.admin.presentation.antifraud_admin import (
+    AntiFraudConfigAdmin,
+    RoutePaceViolationAdmin,
+    RoutePointsHoldAdmin,
+    UserFraudStateAdmin,
+    apply_user_fraud_action,
+)
 from tourism_backend.modules.admin.presentation.auth import (
     require_admin_role,
     session_principal_id,
@@ -51,6 +58,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_message_author,
     format_place_fk,
     format_place_publication_status,
+    format_points_status,
     format_report_reason,
     format_report_status,
     format_report_target_type,
@@ -459,6 +467,30 @@ class UserAdmin(ModelView, model=User):
         return RedirectResponse(
             str(request.url_for("admin:list", identity=self.identity)),
             status_code=303,
+        )
+
+    @action(
+        name="antifraud_block_24h",
+        label="Анти-фрод: заблокировать на 24 часа",
+        confirmation_message="Запретить выбранным пользователям запуск маршрутов на 24 часа?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def antifraud_block_24h(self, request: Request) -> Response:
+        return await apply_user_fraud_action(
+            request, self.session_maker, kind="block_24h", identity=self.identity
+        )
+
+    @action(
+        name="antifraud_trust",
+        label="Анти-фрод: сделать доверенным",
+        confirmation_message="Исключить выбранных пользователей из проверки темпа?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def antifraud_trust(self, request: Request) -> Response:
+        return await apply_user_fraud_action(
+            request, self.session_maker, kind="trust", identity=self.identity
         )
 
     @action(
@@ -2103,10 +2135,14 @@ class RouteExecutionAdmin(ModelView, model=RouteExecution):
         RouteExecution.route_name,
         RouteExecution.status,
         RouteExecution.awarded_points,
+        RouteExecution.points_status,
         RouteExecution.started_at,
         RouteExecution.completed_at,
     ]
     column_labels = {
+        RouteExecution.points_status: "Очки",
+        RouteExecution.points_reason: "Причина статуса очков",
+        RouteExecution.computed_points: "Рассчитано тп",
         RouteExecution.user_id: "Пользователь",
         RouteExecution.route_id: "Маршрут",
         RouteExecution.route_name: "Название маршрута",
@@ -2119,6 +2155,7 @@ class RouteExecutionAdmin(ModelView, model=RouteExecution):
     column_formatters = {
         RouteExecution.user_id: format_user_fk,
         RouteExecution.route_id: format_route_fk,
+        RouteExecution.points_status: format_points_status,
     }
     column_sortable_list = [RouteExecution.started_at, RouteExecution.status]
     column_default_sort = (RouteExecution.started_at, True)
@@ -3700,6 +3737,10 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(SupportHelpIndexAdmin)
     admin.add_view(RuntimeConfigAdmin)
     admin.add_view(SmsConfigAdmin)
+    admin.add_view(RoutePointsHoldAdmin)
+    admin.add_view(UserFraudStateAdmin)
+    admin.add_view(RoutePaceViolationAdmin)
+    admin.add_view(AntiFraudConfigAdmin)
     # add_base_view (unlike add_model_view) does not wire session_maker —
     # BaseView has no bound model for SQLAdmin to infer a session from. A
     # real sqladmin.Admin always has one; lightweight `register_views(fake,
@@ -3709,4 +3750,5 @@ def register_views(admin: Any, settings: Settings) -> None:
     if session_maker is not None:
         RuntimeConfigAdmin.session_maker = session_maker
         SmsConfigAdmin.session_maker = session_maker
+        AntiFraudConfigAdmin.session_maker = session_maker
         SupportHelpIndexAdmin.session_maker = session_maker

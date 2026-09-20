@@ -124,6 +124,11 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "status IN ('active', 'paused', 'completed', 'cancelled')",
             name="status",
         ),
+        CheckConstraint(
+            "points_status IN ('none', 'awarded', 'held', 'rejected')",
+            name="points_status",
+        ),
+        CheckConstraint("computed_points >= 0", name="computed_points_non_negative"),
         Index("ix_route_executions_user_started", "user_id", "started_at"),
         Index(
             "uq_route_executions_one_active_per_user",
@@ -175,6 +180,27 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default=0,
         server_default="0",
     )
+    # What the run earned after cooldown and daily-cap limits, whether or not
+    # it was credited. ``awarded_points`` stays "credited to the balance" so
+    # every existing reader keeps its meaning; a held run has computed > 0 and
+    # awarded == 0. The daily cap sums this column.
+    computed_points: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    # none = not settled yet (or nothing earned), awarded = credited,
+    # held = waiting for an operator, rejected = cancelled by an operator.
+    points_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="none",
+        server_default="none",
+    )
+    # Why the run earned less than the route is worth: route_cooldown,
+    # daily_cap or None.
+    points_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class RouteExecutionStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -210,6 +236,20 @@ class RouteExecutionStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_optional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Expected leg from the previous stop, computed once when the run starts
+    # (the routing snapshot is append-only and holds no per-leg data). NULL
+    # for the first stop, for stops without coordinates and for runs that
+    # started before anti-fraud shipped.
+    leg_distance_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    leg_estimate_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    leg_estimate_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The mark came so soon after the previous one that it earns no stop points.
+    mark_below_floor: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
 
 
 class RouteExecutionEvent(Base, UUIDPrimaryKeyMixin):
@@ -263,3 +303,133 @@ class RouteExecutionEvent(Base, UUIDPrimaryKeyMixin):
     effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class RoutePaceViolation(Base, UUIDPrimaryKeyMixin):
+    """One suspicious stop mark. Retained 90 days, then purged.
+
+    ``mode`` records whether it was observed in shadow or enforced, so a
+    shadow period yields real "would have been flagged" data. ``counted`` is
+    false for the follow-up marks of a batch, which score once.
+    """
+
+    __tablename__ = "route_pace_violations"
+    __table_args__ = (
+        CheckConstraint("kind IN ('too_fast', 'ahead')", name="kind"),
+        CheckConstraint("mode IN ('shadow', 'enforce')", name="mode"),
+        CheckConstraint("timing_source IN ('server', 'device')", name="timing_source"),
+        CheckConstraint(
+            "gps_verdict IS NULL OR gps_verdict IN ('at', 'behind', 'ahead', 'unknown')",
+            name="gps_verdict",
+        ),
+        Index("ix_route_pace_violations_user_occurred", "user_id", "occurred_at"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    execution_id: Mapped[UUID] = mapped_column(
+        ForeignKey("route_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stop_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("route_execution_stops.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    estimate_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actual_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gps_verdict: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Distance to the marked stop rounded to 50 m. Raw coordinates are never
+    # stored or logged.
+    gps_distance_bucket_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    timing_source: Mapped[str] = mapped_column(String(8), nullable=False)
+    offline_sync: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    counted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    mode: Mapped[str] = mapped_column(String(8), nullable=False)
+    # When the mark really happened (effective time), which is what the
+    # flag/block windows are measured on; ``created_at`` is when we saw it.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UserFraudState(Base):
+    """Per-user anti-fraud state; no row means "normal"."""
+
+    __tablename__ = "user_fraud_state"
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    is_flagged: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    flagged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ladder_level: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    last_offence_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # Violations older than this no longer count (set on a block or an admin reset).
+    counters_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_trusted: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RoutePointsHold(Base, UUIDPrimaryKeyMixin):
+    """Points of one run waiting for an operator (one row per execution)."""
+
+    __tablename__ = "route_points_holds"
+    __table_args__ = (
+        UniqueConstraint("execution_id", name="uq_route_points_holds_execution_id"),
+        CheckConstraint("status IN ('held', 'approved', 'rejected')", name="status"),
+        CheckConstraint("reason IN ('flag_retro', 'flag_forward')", name="reason"),
+        CheckConstraint("amount >= 0", name="amount_non_negative"),
+        CheckConstraint("deducted_points >= 0", name="deducted_non_negative"),
+        Index("ix_route_points_holds_status_created", "status", "created_at"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    execution_id: Mapped[UUID] = mapped_column(
+        ForeignKey("route_executions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # What the run is worth, and how much was actually taken back from an
+    # already-credited balance (never more than the balance held).
+    amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    deducted_points: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="held")
+    reason: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("admin_principals.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)

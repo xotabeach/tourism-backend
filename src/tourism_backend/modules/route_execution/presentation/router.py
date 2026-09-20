@@ -11,6 +11,7 @@ from tourism_backend.modules.route_execution.application.schemas import (
     RouteExecutionListOut,
     RouteExecutionOut,
     RouteExecutionStartIn,
+    RouteExecutionStopMarkIn,
 )
 
 router = APIRouter(prefix="/route-executions", tags=["route-executions"])
@@ -71,7 +72,7 @@ async def complete_route_execution_stop(
     stop_id: UUID,
     session: DbSession,
     user_id: CurrentUserId,
-    payload: RouteExecutionEventIn | None = None,
+    payload: RouteExecutionStopMarkIn | None = None,
 ) -> RouteExecutionOut:
     return await service.complete_stop(
         session,

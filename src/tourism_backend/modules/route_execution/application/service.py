@@ -1,7 +1,7 @@
 """Route execution state machine and ownership rules."""
 
 from datetime import UTC, datetime
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from geoalchemy2 import Geometry
@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from tourism_backend.api.errors import AppError
-from tourism_backend.modules.identity.application.travel_points import award_travel_points
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.infrastructure.models import Place, RoadEvent
@@ -22,6 +21,18 @@ from tourism_backend.modules.route_builder.application.route_quality import (
     active_road_event_blockers,
 )
 from tourism_backend.modules.route_builder.application.routing import normalize_transport_mode
+from tourism_backend.modules.route_execution.application import antifraud_service
+from tourism_backend.modules.route_execution.application.antifraud_logic import (
+    GpsReading,
+    StopPoint,
+    build_leg_estimates,
+    pace_warn_below_seconds,
+    provider_legs_from_metadata,
+)
+from tourism_backend.modules.route_execution.application.antifraud_settings import (
+    AntiFraudSettings,
+    load_settings,
+)
 from tourism_backend.modules.route_execution.application.offline_sync import (
     EventAction,
     ResolvedEventTime,
@@ -37,10 +48,14 @@ from tourism_backend.modules.route_execution.application.routing_snapshot import
     routing_snapshot_out,
 )
 from tourism_backend.modules.route_execution.application.schemas import (
+    AntiFraudOut,
+    PaceVerdictOut,
+    PointsStatus,
     RouteExecutionEventIn,
     RouteExecutionListOut,
     RouteExecutionOut,
     RouteExecutionStatus,
+    RouteExecutionStopMarkIn,
     RouteExecutionStopOut,
     RouteExecutionSyncOut,
 )
@@ -95,6 +110,7 @@ async def _execution_out(
     session: AsyncSession,
     execution: RouteExecution,
     sync: RouteExecutionSyncOut | None = None,
+    pace_verdict: PaceVerdictOut | None = None,
 ) -> RouteExecutionOut:
     stops = list(
         (
@@ -109,6 +125,12 @@ async def _execution_out(
     required = [stop for stop in stops if not stop.is_optional]
     completed_required = sum(stop.completed_at is not None for stop in required)
     routing = await routing_snapshot_out(session, execution.routing_snapshot_id)
+    antifraud_settings = await load_settings(session)
+    hints_enabled = False
+    if antifraud_settings.enforcing:
+        state = await antifraud_service.get_state(session, execution.user_id)
+        hints_enabled = state is None or not state.is_trusted
+    first_mark = completed == 0
     return RouteExecutionOut(
         id=execution.id,
         route_id=execution.route_id,
@@ -134,10 +156,39 @@ async def _execution_out(
                 lng=stop.lng,
                 is_optional=stop.is_optional,
                 completed_at=stop.completed_at,
+                leg_distance_meters=stop.leg_distance_meters,
+                leg_estimate_seconds=stop.leg_estimate_seconds,
+                leg_estimate_source=cast(
+                    Literal["provider", "straight_line"] | None,
+                    stop.leg_estimate_source,
+                ),
+                pace_warn_below_seconds=(
+                    pace_warn_below_seconds(
+                        estimate_seconds=stop.leg_estimate_seconds,
+                        is_first_mark=first_mark,
+                        rules=antifraud_settings.pace,
+                    )
+                    if hints_enabled and stop.completed_at is None
+                    else None
+                ),
             )
             for stop in stops
         ],
         awarded_points=int(execution.awarded_points or 0),
+        points_status=cast(PointsStatus, execution.points_status),
+        points_reason=execution.points_reason,
+        held_points=(
+            int(execution.computed_points or 0) if execution.points_status == "held" else 0
+        ),
+        antifraud=(
+            AntiFraudOut(
+                gps_tolerance_m=antifraud_settings.gps.tolerance_meters,
+                gps_min_accuracy_m=antifraud_settings.gps.min_accuracy_meters,
+            )
+            if hints_enabled
+            else None
+        ),
+        pace_verdict=pace_verdict,
         paused_duration_seconds=int(execution.paused_duration_seconds or 0),
         sync=sync,
         created_at=execution.created_at,
@@ -202,6 +253,7 @@ async def _commit_event(
     applied: bool,
     stop_id: UUID | None = None,
     client_event_id: UUID | None = None,
+    pace_verdict: PaceVerdictOut | None = None,
 ) -> RouteExecutionOut:
     event = RouteExecutionEvent(
         id=uuid4(),
@@ -232,7 +284,12 @@ async def _commit_event(
         if replayed is None:
             raise
         return replayed
-    return await _execution_out(session, execution, _sync_out(event, replayed=False))
+    return await _execution_out(
+        session,
+        execution,
+        _sync_out(event, replayed=False),
+        pace_verdict,
+    )
 
 
 async def _latest_stop_completion(
@@ -276,6 +333,14 @@ async def start_execution(
             status_code=409,
             details={"execution_id": str(active.id)},
         )
+
+    antifraud_settings = await load_settings(session)
+    await antifraud_service.assert_start_allowed(
+        session,
+        user_id=user_id,
+        settings=antifraud_settings,
+        now=datetime.now(UTC),
+    )
 
     route = await session.scalar(
         select(Route)
@@ -374,6 +439,14 @@ async def start_execution(
         )
         .limit(1)
     )
+    leg_estimates = build_leg_estimates(
+        [StopPoint(route_stop.position, lat, lng) for route_stop, _place, lng, lat in rows],
+        transport_mode=route.transport_mode,
+        provider_legs=provider_legs_from_metadata(
+            routing_metadata if isinstance(routing_metadata, dict) else None,
+            stop_count=len(rows),
+        ),
+    )
     now = datetime.now(UTC)
     execution = RouteExecution(
         id=uuid4(),
@@ -402,10 +475,13 @@ async def start_execution(
                 lng=float(lng) if lng is not None else None,
                 is_optional=route_stop.is_optional,
                 completed_at=None,
+                leg_distance_meters=leg.distance_meters if leg else None,
+                leg_estimate_seconds=leg.duration_seconds if leg else None,
+                leg_estimate_source=leg.source if leg else None,
                 created_at=now,
                 updated_at=now,
             )
-            for route_stop, place, lng, lat in rows
+            for (route_stop, place, lng, lat), leg in zip(rows, leg_estimates, strict=True)
         ]
     )
     await session.commit()
@@ -481,7 +557,7 @@ async def complete_stop(
     user_id: UUID,
     execution_id: UUID,
     stop_id: UUID,
-    event: RouteExecutionEventIn | None = None,
+    event: RouteExecutionStopMarkIn | None = None,
 ) -> RouteExecutionOut:
     now = datetime.now(UTC)
     client_event_id = event.client_event_id if event is not None else None
@@ -495,6 +571,9 @@ async def complete_stop(
         if replayed is not None:
             return replayed
 
+    # One user's marks are judged one at a time: violation counts, flags and
+    # points must not race with a parallel mark or an offline sync batch.
+    await antifraud_service.lock_user(session, user_id)
     execution = await _owned_execution(
         session,
         user_id=user_id,
@@ -531,11 +610,27 @@ async def complete_stop(
         not_before=execution.started_at,
     )
     applied = stop.completed_at is None
+    assessment = antifraud_service.MarkAssessment()
     if applied:
         stop.completed_at = resolved.effective
         stop.updated_at = now
         execution.updated_at = now
-    return await _commit_event(
+        position = event.position if event is not None else None
+        assessment = await antifraud_service.assess_stop_mark(
+            session,
+            execution=execution,
+            stop=stop,
+            effective_at=resolved.effective,
+            reported_at=resolved.reported,
+            position=(
+                GpsReading(lat=position.lat, lng=position.lng, accuracy_m=position.accuracy_m)
+                if position is not None
+                else None
+            ),
+            settings=await load_settings(session),
+            now=now,
+        )
+    out = await _commit_event(
         session,
         execution=execution,
         action="complete_stop",
@@ -544,7 +639,10 @@ async def complete_stop(
         applied=applied,
         stop_id=stop.id,
         client_event_id=client_event_id,
+        pace_verdict=assessment.pace_verdict if applied else None,
     )
+    await antifraud_service.deliver_pushes(session, assessment.pushes)
+    return out
 
 
 async def complete_execution(
@@ -566,6 +664,7 @@ async def complete_execution(
         if replayed is not None:
             return replayed
 
+    user = await antifraud_service.lock_user(session, user_id)
     execution = await _owned_execution(
         session,
         user_id=user_id,
@@ -613,7 +712,13 @@ async def complete_execution(
     execution.status = "completed"
     execution.completed_at = resolved.effective
     execution.updated_at = now
-    await _award_completion_points(session, execution=execution, user_id=user_id)
+    await _award_completion_points(
+        session,
+        execution=execution,
+        user=user,
+        settings=await load_settings(session),
+        now=now,
+    )
     return await _commit_event(
         session,
         execution=execution,
@@ -629,33 +734,34 @@ async def _award_completion_points(
     session: AsyncSession,
     *,
     execution: RouteExecution,
-    user_id: UUID,
+    user: User,
+    settings: AntiFraudSettings,
+    now: datetime,
 ) -> None:
     """Grant travel points once, sized by what the route actually demanded.
 
     Reads the immutable snapshot captured at start, so editing the route
-    afterwards cannot change an already-earned reward. ``awarded_points`` is
-    the replay guard: a repeated complete finds it non-zero and pays nothing.
+    afterwards cannot change an already-earned reward. Cooldown, the daily cap
+    and a flag hold are applied by ``antifraud_service.settle_completion_points``.
+    ``points_status`` is the replay guard: a settled run is never paid twice.
     """
 
-    if execution.awarded_points:
-        return
-    user = await session.get(User, user_id)
-    if user is None:
+    if execution.points_status != "none" or execution.awarded_points:
         return
 
-    completed_required = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(RouteExecutionStop)
-            .where(
-                RouteExecutionStop.execution_id == execution.id,
-                RouteExecutionStop.is_optional.is_(False),
-                RouteExecutionStop.completed_at.is_not(None),
-            )
+    required_done = (
+        select(func.count())
+        .select_from(RouteExecutionStop)
+        .where(
+            RouteExecutionStop.execution_id == execution.id,
+            RouteExecutionStop.is_optional.is_(False),
+            RouteExecutionStop.completed_at.is_not(None),
         )
-        or 0
     )
+    if settings.enforcing:
+        # A mark that followed the previous one too closely earns no stop points.
+        required_done = required_done.where(RouteExecutionStop.mark_below_floor.is_(False))
+    completed_required = int(await session.scalar(required_done) or 0)
     snapshot = (
         await session.get(RouteRoutingSnapshot, execution.routing_snapshot_id)
         if execution.routing_snapshot_id is not None
@@ -677,7 +783,14 @@ async def _award_completion_points(
             difficulty=difficulty,
         )
     )
-    execution.awarded_points = await award_travel_points(session, user=user, points=points)
+    await antifraud_service.settle_completion_points(
+        session,
+        execution=execution,
+        user=user,
+        points=points,
+        settings=settings,
+        now=now,
+    )
 
 
 async def cancel_execution(

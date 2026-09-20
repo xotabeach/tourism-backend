@@ -1,5 +1,6 @@
 import logging
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
@@ -324,6 +325,35 @@ async def create_support_reply_notification(
         body=_clip(body, 180),
         target_type="support_ticket",
         target_id=ticket_id,
+    )
+    session.add(notification)
+    return notification
+
+
+AntiFraudKind = Literal["antifraud_flagged", "antifraud_blocked", "antifraud_points_decision"]
+
+
+async def create_antifraud_notification(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    kind: AntiFraudKind,
+    title: str,
+    body: str,
+) -> Notification:
+    """Inbox row for a flag, block or points decision (one per state change).
+
+    ``target_type`` stays NULL: the inbox row has nothing to deep-link to. The
+    push carries ``target_type="inbox"`` instead, which every client version
+    routes to the inbox.
+    """
+    notification = _build_notification(
+        user_id=user_id,
+        kind=kind,
+        title=title,
+        body=body,
+        target_type=None,
+        target_id=None,
     )
     session.add(notification)
     return notification

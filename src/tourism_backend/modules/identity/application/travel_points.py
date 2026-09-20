@@ -94,3 +94,19 @@ async def award_travel_points(session: AsyncSession, *, user: User, points: int)
     user.travel_points += points
     await _sync_rank(session, user)
     return points
+
+
+async def adjust_travel_points(session: AsyncSession, *, user: User, delta: int) -> int:
+    """Change the balance by ``delta`` (may be negative) and re-sync the rank.
+
+    The balance never goes below zero; the delta that was really applied is
+    returned so a caller that takes points back (an anti-fraud hold) can
+    record exactly how much it removed and give back no more than that.
+    """
+    if delta == 0:
+        return 0
+    new_total = max(0, user.travel_points + delta)
+    applied = new_total - user.travel_points
+    user.travel_points = new_total
+    await _sync_rank(session, user)
+    return applied
