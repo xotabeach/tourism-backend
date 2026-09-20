@@ -34,12 +34,29 @@ RouteQualityStatus = Literal[
 
 class UserRouteDraftIn(BaseModel):
     route_id: UUID | None = None
+    # Generated on the device when the local draft is created. A save without a
+    # route_id that repeats a key already used by this author updates that draft
+    # instead of creating another (a lost response must not cause duplicates).
+    client_draft_id: str | None = Field(default=None, min_length=8, max_length=36)
+    # The server's updated_at the author last saw. If the draft was changed
+    # since (another device), the save is refused with 409 draft_conflict.
+    expected_updated_at: datetime | None = None
     name: str = Field(min_length=1, max_length=30)
     description: str = Field(default="", max_length=500)
     place_ids: list[UUID] = Field(min_length=2, max_length=22)
     filters: list[str] = Field(default_factory=list, max_length=20)
     pace: Literal["calm", "moderate", "active"] = "calm"
     difficulty: int = Field(default=3, ge=1, le=5)
+
+    @field_validator("client_draft_id")
+    @classmethod
+    def clean_client_draft_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not all(char.isalnum() or char == "-" for char in cleaned):
+            raise ValueError("Invalid client draft id")
+        return cleaned
 
     @field_validator("name")
     @classmethod

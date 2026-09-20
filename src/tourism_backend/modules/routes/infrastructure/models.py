@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -48,6 +49,17 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
         CheckConstraint(
             "publication_status IN ('draft', 'pending_review', 'published', 'rejected', 'deleted')",
             name="publication_status",
+        ),
+        # One device-generated key per author's draft: a retry after a lost
+        # response finds the draft it already created instead of making another.
+        Index(
+            "uq_routes_owner_client_draft",
+            "owner_user_id",
+            "client_draft_id",
+            unique=True,
+            postgresql_where=text(
+                "client_draft_id IS NOT NULL AND publication_status <> 'deleted'"
+            ),
         ),
         Index(
             "ix_routes_moderation_queue",
@@ -97,6 +109,7 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     )
     price_min_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
     price_max_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    client_draft_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class RouteStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):

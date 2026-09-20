@@ -608,3 +608,198 @@ async def test_resaving_unchanged_points_does_not_route_again(
         after_move, geometry_after_move = await _routing_state()
         assert after_move["place_ids"] == moved_ids
         assert geometry_after_move != geometry
+
+
+async def _two_place_ids(client: AsyncClient) -> list[str]:
+    places = await client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 3})
+    return [item["id"] for item in places.json()["items"][:2]]
+
+
+def _draft_payload(place_ids: list[str], **extra: Any) -> dict[str, Any]:
+    return {
+        "name": "Черновик с ключом",
+        "description": "",
+        "place_ids": place_ids,
+        "filters": [],
+        "pace": "calm",
+        "difficulty": 3,
+        **extra,
+    }
+
+
+async def _delete_drafts(app: Any, *route_ids: str) -> None:
+    engine = create_async_engine(DATABASE_URL)
+    async with engine.begin() as conn:
+        for route_id in route_ids:
+            await conn.execute(text("DELETE FROM routes WHERE id = :id"), {"id": route_id})
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_retried_save_with_the_same_client_key_does_not_duplicate(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    client, app = publication_context
+    tokens = await _login(client, f"+7911{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    place_ids = await _two_place_ids(client)
+    key = str(uuid4())
+    first = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json=_draft_payload(place_ids, client_draft_id=key),
+    )
+    assert first.status_code == 200, first.text
+    # The response was "lost": the client retries without ever knowing the id.
+    retry = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json=_draft_payload(place_ids, client_draft_id=key, name="Правка после потери ответа"),
+    )
+    assert retry.status_code == 200, retry.text
+    try:
+        assert retry.json()["id"] == first.json()["id"]
+        engine = create_async_engine(DATABASE_URL)
+        async with engine.connect() as conn:
+            count = (
+                await conn.execute(
+                    text("SELECT count(*) FROM routes WHERE client_draft_id = :k"), {"k": key}
+                )
+            ).scalar()
+            name = (
+                await conn.execute(
+                    text("SELECT name FROM routes WHERE client_draft_id = :k"), {"k": key}
+                )
+            ).scalar()
+        await engine.dispose()
+        assert count == 1
+        assert name == "Правка после потери ответа"
+    finally:
+        await _delete_drafts(app, first.json()["id"])
+
+
+@pytest.mark.asyncio
+async def test_the_same_client_key_of_another_author_makes_a_separate_draft(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    client, app = publication_context
+    one = await _login(client, f"+7912{uuid4().int % 10_000_000:07d}")
+    two = await _login(client, f"+7913{uuid4().int % 10_000_000:07d}")
+    place_ids = await _two_place_ids(client)
+    key = str(uuid4())
+    first = await client.post(
+        "/api/v1/routes/drafts",
+        headers={"Authorization": f"Bearer {one['access_token']}"},
+        json=_draft_payload(place_ids, client_draft_id=key),
+    )
+    second = await client.post(
+        "/api/v1/routes/drafts",
+        headers={"Authorization": f"Bearer {two['access_token']}"},
+        json=_draft_payload(place_ids, client_draft_id=key),
+    )
+    try:
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["id"] != second.json()["id"]
+    finally:
+        await _delete_drafts(app, first.json()["id"], second.json()["id"])
+
+
+@pytest.mark.asyncio
+async def test_saving_over_a_newer_server_draft_is_refused_with_a_conflict(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    client, app = publication_context
+    tokens = await _login(client, f"+7914{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    place_ids = await _two_place_ids(client)
+    first = await client.post(
+        "/api/v1/routes/drafts", headers=headers, json=_draft_payload(place_ids)
+    )
+    route_id = first.json()["id"]
+    seen = first.json()["updated_at"]
+    try:
+        # Another device saves later.
+        newer = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json=_draft_payload(place_ids, route_id=route_id, name="С другого устройства"),
+        )
+        assert newer.status_code == 200, newer.text
+
+        stale = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json=_draft_payload(
+                place_ids, route_id=route_id, name="Устаревшая копия", expected_updated_at=seen
+            ),
+        )
+        assert stale.status_code == 409, stale.text
+        error = stale.json()["error"]
+        assert error["code"] == "draft_conflict"
+        assert error["details"]["updated_at"]
+
+        # Nothing was overwritten, and a save from the current version succeeds.
+        current = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json=_draft_payload(
+                place_ids,
+                route_id=route_id,
+                name="Актуальная версия",
+                expected_updated_at=newer.json()["updated_at"],
+            ),
+        )
+        assert current.status_code == 200, current.text
+    finally:
+        await _delete_drafts(app, route_id)
+
+
+@pytest.mark.asyncio
+async def test_uploading_photos_does_not_make_the_clients_copy_stale(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """The client saves, uploads its photos, then saves again with the receipt's time."""
+    client, app = publication_context
+    tokens = await _login(client, f"+7915{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    place_ids = await _two_place_ids(client)
+    saved = await client.post(
+        "/api/v1/routes/drafts", headers=headers, json=_draft_payload(place_ids)
+    )
+    route_id = saved.json()["id"]
+    try:
+        upload = await client.post(
+            f"/api/v1/routes/drafts/{route_id}/media",
+            headers=headers,
+            data={"position": "0"},
+            files={"file": ("p.png", _png_bytes(), "image/png")},
+        )
+        assert upload.status_code == 200, upload.text
+        assert upload.json()["id"]
+        again = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json=_draft_payload(
+                place_ids, route_id=route_id, expected_updated_at=saved.json()["updated_at"]
+            ),
+        )
+        assert again.status_code == 200, again.text
+    finally:
+        await _delete_drafts(app, route_id)
+
+
+@pytest.mark.asyncio
+async def test_a_bad_client_draft_id_is_rejected(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    client, _app = publication_context
+    tokens = await _login(client, f"+7916{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    place_ids = await _two_place_ids(client)
+    bad = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json=_draft_payload(place_ids, client_draft_id="x'; DROP TABLE routes;--"),
+    )
+    assert bad.status_code == 422

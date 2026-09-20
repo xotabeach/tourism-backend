@@ -3,7 +3,7 @@ import json
 import logging
 import math
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from typing import cast as type_cast
 from uuid import UUID, uuid4
@@ -12,6 +12,7 @@ from geoalchemy2 import Geometry, WKTElement
 from geoalchemy2.functions import ST_X, ST_Y, ST_AsGeoJSON
 from redis.asyncio import Redis
 from sqlalchemy import Select, cast, delete, exists, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Exists
 
@@ -853,6 +854,32 @@ async def get_user_route_for_edit(
     )
 
 
+_DRAFT_CLOCK_TOLERANCE = timedelta(milliseconds=5)
+
+
+def _reject_stale_draft_save(route: Route, expected_updated_at: datetime | None) -> None:
+    """Refuse to overwrite a draft that changed after the caller last saw it.
+
+    Compared with a few milliseconds of slack: the client echoes the timestamp
+    the server sent, and it may lose sub-millisecond digits on the way.
+    """
+
+    if expected_updated_at is None:
+        return
+    seen = (
+        expected_updated_at
+        if expected_updated_at.tzinfo is not None
+        else expected_updated_at.replace(tzinfo=UTC)
+    )
+    if route.updated_at > seen + _DRAFT_CLOCK_TOLERANCE:
+        raise AppError(
+            code="draft_conflict",
+            message="The draft was changed on another device",
+            status_code=409,
+            details={"updated_at": route.updated_at.isoformat()},
+        )
+
+
 async def save_user_route_draft(
     session: AsyncSession,
     *,
@@ -886,9 +913,20 @@ async def save_user_route_draft(
         )
 
     now = datetime.now(UTC)
-    if payload.route_id is None:
+    route_key = payload.route_id
+    if route_key is None and payload.client_draft_id is not None:
+        # A retry after a lost response: reuse the draft this key already made.
+        route_key = await session.scalar(
+            select(Route.id).where(
+                Route.owner_user_id == owner_user_id,
+                Route.client_draft_id == payload.client_draft_id,
+                Route.publication_status != "deleted",
+            )
+        )
+    if route_key is None:
         route_id = uuid4()
         route = Route(
+            client_draft_id=payload.client_draft_id,
             id=route_id,
             region_id=next(iter(region_ids)),
             owner_user_id=owner_user_id,
@@ -903,14 +941,25 @@ async def save_user_route_draft(
             updated_at=now,
         )
         session.add(route)
-        await session.flush()
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            # Two saves with the same key raced; the other one wins and the
+            # caller retries, finding the draft it created.
+            await session.rollback()
+            raise AppError(
+                code="draft_busy",
+                message="The draft is being saved, try again",
+                status_code=409,
+            ) from exc
         previous_status = "draft"
     else:
         route = await _owned_editable_route(
             session,
-            route_id=payload.route_id,
+            route_id=route_key,
             owner_user_id=owner_user_id,
         )
+        _reject_stale_draft_save(route, payload.expected_updated_at)
         previous_status = route.publication_status
         await session.execute(delete(RouteStop).where(RouteStop.route_id == route.id))
 
