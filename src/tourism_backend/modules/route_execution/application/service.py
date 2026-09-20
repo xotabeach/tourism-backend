@@ -184,6 +184,8 @@ async def _execution_out(
             AntiFraudOut(
                 gps_tolerance_m=antifraud_settings.gps.tolerance_meters,
                 gps_min_accuracy_m=antifraud_settings.gps.min_accuracy_meters,
+                route_cooldown_days=antifraud_settings.route_points_cooldown_days,
+                daily_points_cap=antifraud_settings.daily_points_cap,
             )
             if hints_enabled
             else None

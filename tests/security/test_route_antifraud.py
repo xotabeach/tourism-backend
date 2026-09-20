@@ -281,6 +281,8 @@ async def test_enforce_exposes_client_hints_after_the_first_mark(
         "mode": "enforce",
         "gps_tolerance_m": 150,
         "gps_min_accuracy_m": 100,
+        "route_cooldown_days": 14,
+        "daily_points_cap": 600,
     }
     # The first mark is never evaluated, so nothing to warn about yet.
     assert all(stop["pace_warn_below_seconds"] is None for stop in execution["stops"])

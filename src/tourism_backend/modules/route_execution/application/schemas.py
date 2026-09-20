@@ -119,6 +119,9 @@ class AntiFraudOut(BaseModel):
     mode: Literal["enforce"] = "enforce"
     gps_tolerance_m: int = Field(ge=0)
     gps_min_accuracy_m: int = Field(ge=0)
+    # The limits a client quotes when it explains why points were withheld.
+    route_cooldown_days: int = Field(default=0, ge=0)
+    daily_points_cap: int = Field(default=0, ge=0)
 
 
 class RouteExecutionOut(BaseModel):
