@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     admin_bootstrap_login: str | None = None
     admin_bootstrap_password: str | None = None
 
+    # Anonymous APK download counter. The salt only feeds a 30-minute dedupe
+    # hash in Redis; set a real one in the environment outside local.
+    apk_stats_enabled: bool = True
+    apk_stats_salt: str = "local-apk-stats-salt-dev-only"
+
     # FCM HTTP v1 (optional). Leave empty → in-app only, no system push.
     fcm_service_account_json: str | None = None
     fcm_service_account_file: str | None = None

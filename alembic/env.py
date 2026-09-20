@@ -6,6 +6,7 @@ from sqlalchemy import engine_from_config, pool
 from tourism_backend.config import get_settings
 from tourism_backend.db.base import Base
 from tourism_backend.modules.admin.infrastructure import models as admin_models
+from tourism_backend.modules.app_stats.infrastructure import models as app_stats_models
 from tourism_backend.modules.content.infrastructure import models as content_models
 from tourism_backend.modules.favorites.infrastructure import models as favorites_models
 from tourism_backend.modules.geography.infrastructure import models as geography_models
@@ -48,6 +49,7 @@ config.set_main_option("sqlalchemy.url", settings.database_url_sync)
 
 # Ensure model modules are imported for metadata discovery.
 _ = (
+    app_stats_models,
     geography_models,
     places_models,
     recommendations_models,

@@ -76,6 +76,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_user_fk,
     format_user_id_peek,
 )
+from tourism_backend.modules.admin.presentation.stats_admin import StatsAdmin
 from tourism_backend.modules.content.application import article_comment_service, article_service
 from tourism_backend.modules.content.infrastructure.models import (
     Article,
@@ -3741,6 +3742,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(UserFraudStateAdmin)
     admin.add_view(RoutePaceViolationAdmin)
     admin.add_view(AntiFraudConfigAdmin)
+    admin.add_view(StatsAdmin)
     # add_base_view (unlike add_model_view) does not wire session_maker —
     # BaseView has no bound model for SQLAdmin to infer a session from. A
     # real sqladmin.Admin always has one; lightweight `register_views(fake,
@@ -3751,4 +3753,5 @@ def register_views(admin: Any, settings: Settings) -> None:
         RuntimeConfigAdmin.session_maker = session_maker
         SmsConfigAdmin.session_maker = session_maker
         AntiFraudConfigAdmin.session_maker = session_maker
+        StatsAdmin.session_maker = session_maker
         SupportHelpIndexAdmin.session_maker = session_maker

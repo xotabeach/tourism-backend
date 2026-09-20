@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings
+from tourism_backend.modules.app_stats.application.app_versions import record_app_version
 from tourism_backend.modules.identity.application.tokens import decode_access_token
 
 _bearer = HTTPBearer(auto_error=False)
@@ -54,13 +55,15 @@ async def get_current_user_id(
         )
     settings = get_settings_dep(request)
     try:
-        return decode_access_token(credentials.credentials, settings=settings)
+        user_id = decode_access_token(credentials.credentials, settings=settings)
     except (jwt.PyJWTError, ValueError, TypeError):
         raise AppError(
             code="unauthorized",
             message="Authentication required",
             status_code=401,
         ) from None
+    await record_app_version(request, user_id)
+    return user_id
 
 
 async def get_optional_current_user_id(

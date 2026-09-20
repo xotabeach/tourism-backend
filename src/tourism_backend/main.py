@@ -122,6 +122,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     mount_admin(app, session_factory=session_factory, settings=resolved_settings)
     # Caddy terminates TLS; without this SQLAdmin emits http:// links (mixed
     # content → unstyled UI) and login POSTs break CSRF after http→https redirect.
+    from tourism_backend.modules.app_stats.application.apk_downloads import (
+        ApkDownloadCounterMiddleware,
+    )
+
+    # Added before ProxyHeadersMiddleware so it sits inside it and sees the
+    # real client address.
+    app.add_middleware(ApkDownloadCounterMiddleware, media_dir=_MEDIA_DIR)
     if resolved_settings.app_env is not AppEnvironment.LOCAL:
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
     return app

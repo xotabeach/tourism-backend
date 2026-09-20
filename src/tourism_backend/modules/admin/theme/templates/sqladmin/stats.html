@@ -1,0 +1,92 @@
+{% extends "sqladmin/layout.html" %}
+{% block content_header %}
+<div class="row align-items-center">
+  <div class="col">
+    <h2 class="page-title">Статистика</h2>
+    <div class="page-pretitle">Скачивания APK и доля версий приложения. Сутки — по Москве.</div>
+  </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="col-12 col-xl-10">
+  <form method="GET" class="row g-2 mb-3 align-items-end">
+    <div class="col-auto">
+      <label class="form-label" for="st-days">Период</label>
+      <select id="st-days" class="form-select" name="days">
+        {% for p in periods %}
+        <option value="{{ p }}" {% if p == report.days %}selected{% endif %}>{{ p }} дн.</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-auto">
+      <label class="form-label" for="st-build">Новая версия — с номера сборки</label>
+      <input id="st-build" class="form-control" type="number" min="1" name="from_build" value="{{ report.new_from_build }}">
+    </div>
+    <div class="col-auto"><button class="btn btn-primary ct-btn-primary" type="submit">Показать</button></div>
+  </form>
+
+  <div class="card mb-3">
+    <div class="card-header"><h3 class="card-title">Скачивания APK · всего {{ report.downloads_total }}</h3></div>
+    <div class="card-body">
+      <div class="row">
+        <div class="col-md-6">
+          <div class="text-secondary mb-1">По источникам</div>
+          {% for source, n in report.downloads_by_source %}
+          <div>{{ "лендинг" if source == "landing" else "прямая ссылка" }}: <strong>{{ n }}</strong></div>
+          {% else %}<div class="text-secondary">Пока нет данных</div>{% endfor %}
+        </div>
+        <div class="col-md-6">
+          <div class="text-secondary mb-1">По версиям APK</div>
+          {% for version, n in report.downloads_by_version %}
+          <div>{{ version }}: <strong>{{ n }}</strong></div>
+          {% else %}<div class="text-secondary">Пока нет данных</div>{% endfor %}
+        </div>
+      </div>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-vcenter card-table">
+        <thead><tr><th>День</th><th>Скачиваний</th><th style="width:60%"></th></tr></thead>
+        <tbody>
+          {% for day, n in report.downloads_by_day|reverse %}
+          <tr>
+            <td>{{ day.strftime("%d.%m.%Y") }}</td>
+            <td>{{ n }}</td>
+            <td><div style="background:#206bc4;height:10px;border-radius:3px;width:{{ (n * 100 // report.max_day_downloads) if report.max_day_downloads else 0 }}%"></div></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">Активные пользователи по версиям{% if report.share_day %} · {{ report.share_day.strftime("%d.%m.%Y") }}{% endif %}</h3>
+    </div>
+    <div class="card-body">
+      <div class="text-secondary mb-2">
+        Пользователи без заголовка версии считаются на старой версии («unknown») и входят в знаменатель.
+        Один пользователь на двух версиях учтён в обеих.
+      </div>
+      {% for version, build, n in report.users_by_version %}
+      <div>{{ version }}{% if build %} (сборка {{ build }}){% endif %}: <strong>{{ n }}</strong></div>
+      {% else %}<div class="text-secondary">Пока нет данных</div>{% endfor %}
+    </div>
+    <div class="table-responsive">
+      <table class="table table-vcenter card-table">
+        <thead><tr><th>День</th><th>Активных</th><th>На сборке ≥ {{ report.new_from_build }}</th><th>Доля</th></tr></thead>
+        <tbody>
+          {% for row in report.share_series|reverse %}
+          <tr>
+            <td>{{ row.day.strftime("%d.%m.%Y") }}</td>
+            <td>{{ row.total }}</td>
+            <td>{{ row.fresh }}</td>
+            <td>{{ row.percent }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
