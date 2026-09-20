@@ -183,7 +183,10 @@ backend-publish:
   script:
     # BuildKit with a registry cache: the dependency layers (torch, the
     # embedding model) are reused instead of rebuilt in a fresh dind daemon.
-    - docker buildx create --use --driver docker-container
+    # With TLS to dind, buildx refuses to build a builder from the environment;
+    # it needs a named context that carries the TLS settings.
+    - docker context create tls-environment
+    - docker buildx create --use --driver docker-container tls-environment
     - |
       TAGS="--tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
       # Floating env tips: gamma -> :stage, main -> :production
