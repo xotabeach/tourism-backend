@@ -10,15 +10,16 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 
+# Dependencies first, source later: the heavy layers below (torch wheels, the
+# embedding model download) depend only on pyproject.toml/uv.lock, so an
+# ordinary code change reuses them from the build cache instead of
+# re-downloading ~1 GB on every pipeline.
 COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
-COPY alembic ./alembic
-COPY alembic.ini ./
 
 # --extra rag: real local RAG embedder (sentence-transformers/torch, pinned
 # to the CPU-only wheel index in pyproject.toml — see [tool.uv.sources]).
 # Inert until RAG_ENABLED=true, but the image needs the package either way.
-RUN uv sync --frozen --no-dev --no-editable --extra rag
+RUN uv sync --frozen --no-dev --no-install-project --extra rag
 
 # Pre-download the embedding model at build time. The production container's
 # filesystem is read-only, so sentence-transformers can't fetch/cache weights
@@ -30,6 +31,13 @@ ENV HF_HOME=/app/.cache/huggingface
 RUN .venv/bin/python -c \
     "from sentence_transformers import SentenceTransformer; SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')"
 
+# Only now bring in the project itself; this layer is small and the only one
+# that changes on a normal commit.
+COPY src ./src
+COPY alembic ./alembic
+COPY alembic.ini ./
+RUN uv sync --frozen --no-dev --no-editable --extra rag
+
 FROM python:3.13-slim-bookworm AS runtime
 
 # Debian security updates published after the base image was cut. The image
@@ -38,6 +46,9 @@ FROM python:3.13-slim-bookworm AS runtime
 # day an advisory lands — as it did on 2026-09-15 for libpcre2 (CVE-2026-86145,
 # CVE-2026-89161), both already fixed in Debian. Upgrading is the actual fix;
 # the alternative is waiting for someone else to rebuild the base image.
+# CI passes the ISO week, so this layer (and the security fixes it pulls in)
+# is refreshed weekly instead of being frozen inside the build cache.
+ARG SECURITY_REFRESH=none
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*

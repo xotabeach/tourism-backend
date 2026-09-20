@@ -52,9 +52,17 @@ backend-publish-manual:
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
-    - docker build --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" --tag "$CI_REGISTRY_IMAGE:production" .
-    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-    - docker push "$CI_REGISTRY_IMAGE:production"
+    # BuildKit with a registry cache: the dependency layers (torch, the
+    # embedding model) are reused instead of rebuilt in a fresh dind daemon.
+    - docker buildx create --use --driver docker-container
+    - >
+      docker buildx build --pull
+      --cache-from type=registry,ref=$CI_REGISTRY_IMAGE:buildcache
+      --cache-to type=registry,ref=$CI_REGISTRY_IMAGE:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+      --build-arg SECURITY_REFRESH=$(date +%G-%V)
+      --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+      --tag "$CI_REGISTRY_IMAGE:production"
+      --push .
   rules:
     - if: '$CI_PIPELINE_MODE == "full"'
       when: never

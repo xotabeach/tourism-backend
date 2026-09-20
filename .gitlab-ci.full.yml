@@ -181,19 +181,19 @@ backend-publish:
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
-    - docker build --pull --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
-    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-    # Floating env tips: gamma → :stage, main → :production
+    # BuildKit with a registry cache: the dependency layers (torch, the
+    # embedding model) are reused instead of rebuilt in a fresh dind daemon.
+    - docker buildx create --use --driver docker-container
     - |
-      if [ "$CI_COMMIT_BRANCH" = "gamma" ]; then
-        docker tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:stage"
-        docker push "$CI_REGISTRY_IMAGE:stage"
-      fi
-    - |
-      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
-        docker tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:production"
-        docker push "$CI_REGISTRY_IMAGE:production"
-      fi
+      TAGS="--tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+      # Floating env tips: gamma -> :stage, main -> :production
+      if [ "$CI_COMMIT_BRANCH" = "gamma" ]; then TAGS="$TAGS --tag $CI_REGISTRY_IMAGE:stage"; fi
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then TAGS="$TAGS --tag $CI_REGISTRY_IMAGE:production"; fi
+      docker buildx build --pull \
+        --cache-from type=registry,ref=$CI_REGISTRY_IMAGE:buildcache \
+        --cache-to type=registry,ref=$CI_REGISTRY_IMAGE:buildcache,mode=max,image-manifest=true,oci-mediatypes=true \
+        --build-arg SECURITY_REFRESH=$(date +%G-%V) \
+        $TAGS --push .
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_BRANCH == "gamma"'
