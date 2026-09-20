@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -55,3 +56,17 @@ class NotificationListOut(BaseModel):
 
     items: list[NotificationOut]
     unread_count: int = Field(ge=0)
+
+
+class NotificationIdsIn(BaseModel):
+    """A batch of the person's own notifications to delete (swipes queued for undo)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class NotificationDeleteOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    deleted: int = Field(ge=0)

@@ -18,9 +18,7 @@ def upgrade() -> None:
         "routes",
         ["owner_user_id", "client_draft_id"],
         unique=True,
-        postgresql_where=sa.text(
-            "client_draft_id IS NOT NULL AND publication_status <> 'deleted'"
-        ),
+        postgresql_where=sa.text("client_draft_id IS NOT NULL AND publication_status <> 'deleted'"),
     )
 
 

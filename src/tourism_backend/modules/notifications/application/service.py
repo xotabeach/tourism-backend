@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -516,3 +516,76 @@ async def mark_all_notifications_read(
     await session.commit()
     updated = getattr(result, "rowcount", 0) or 0
     return {"updated": int(updated)}
+
+
+async def delete_notification(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    notification_id: UUID,
+) -> None:
+    """Delete one of the person's own notifications.
+
+    One statement filtered by owner: somebody else's id and an id that never
+    existed are indistinguishable, and deleting twice is not an error.
+    """
+
+    await session.execute(
+        delete(Notification).where(
+            Notification.id == notification_id,
+            Notification.user_id == user_id,
+        )
+    )
+    await session.commit()
+
+
+async def delete_notifications(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    ids: list[UUID],
+) -> int:
+    result = await session.execute(
+        delete(Notification).where(
+            Notification.id.in_(ids),
+            Notification.user_id == user_id,
+        )
+    )
+    await session.commit()
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+async def clear_notifications(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    scope: Literal["read", "all"],
+    before: datetime,
+    dry_run: bool = False,
+) -> int:
+    """Delete (or just count) the person's notifications no newer than ``before``.
+
+    ``before`` is the newest notification the client had loaded, so anything
+    that arrived after the list was fetched - a fresh anti-fraud notice, say -
+    is never removed unseen. Older ones the screen never showed (it loads 50)
+    are removed: that is what "clear all" means.
+    """
+
+    conditions = [Notification.user_id == user_id, Notification.created_at <= before]
+    if scope == "read":
+        conditions.append(Notification.is_read.is_(True))
+    if dry_run:
+        counted = await session.scalar(
+            select(func.count()).select_from(Notification).where(*conditions)
+        )
+        return int(counted or 0)
+    result = await session.execute(delete(Notification).where(*conditions))
+    await session.commit()
+    deleted = int(getattr(result, "rowcount", 0) or 0)
+    logger.info(
+        "notifications_bulk_delete user=%s scope=%s deleted=%d",
+        user_id,
+        scope,
+        deleted,
+    )
+    return deleted

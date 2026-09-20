@@ -41,6 +41,8 @@ class Notification(Base, UUIDPrimaryKeyMixin):
             name="target_type",
         ),
         Index("ix_notifications_inbox", "user_id", "is_read", "created_at"),
+        # The retention purge scans by age across every user.
+        Index("ix_notifications_created_at", "created_at"),
     )
 
     user_id: Mapped[UUID] = mapped_column(
