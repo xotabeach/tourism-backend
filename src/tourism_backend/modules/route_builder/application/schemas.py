@@ -66,6 +66,19 @@ class RouteMatchParamsIn(BaseModel):
     avoid_crowds: bool | None = None
     trip_start_date: date | None = None
     region_slug: str = Field(default="crimea", min_length=1, max_length=128)
+    # Values with a form default (duration, pace) the person really chose. A
+    # client that does not send it is treated as having chosen everything.
+    explicit_fields: list[str] | None = Field(default=None, max_length=4)
+
+    @field_validator("explicit_fields")
+    @classmethod
+    def _known_explicit_fields(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        allowed = {"duration", "pace"}
+        if any(item not in allowed for item in value):
+            raise ValueError("Unknown explicit field")
+        return list(dict.fromkeys(value))
 
     @field_validator(
         "city",
@@ -134,6 +147,12 @@ class RouteMatchHitOut(BaseModel):
     band: Literal["ideal", "close"]
     reasons: list[str] = Field(default_factory=list, max_length=8)
     locality_label: str | None = Field(default=None, max_length=120)
+    # Rounded down to 5 (100 only for a complete match); None when the chat has
+    # too few confirmed parameters to promise anything.
+    match_percent: int | None = Field(default=None, ge=0, le=100)
+    # Most important first; the first one is what a card shows.
+    mismatches: list[str] = Field(default_factory=list, max_length=6)
+    partial_data: bool = False
 
 
 GenerateChannel = Literal["form", "chat"]
@@ -149,8 +168,13 @@ class QuotaSnapshotOut(BaseModel):
 
 class RouteMatchOut(BaseModel):
     strategy: MatchStrategy
+    # Kept for installed app versions: routes without violations, at most 3+3.
     ideal: list[RouteMatchHitOut]
     close: list[RouteMatchHitOut]
+    # The full ordered list (best first, up to 8) that current clients use.
+    hits: list[RouteMatchHitOut] = Field(default_factory=list, max_length=8)
+    requested_signals: int = Field(default=0, ge=0)
+    formula_version: int = Field(default=1, ge=1)
     offer_generate: bool
     ai_rerank_eligible: bool = False
     ai_rerank_applied: bool = False
@@ -227,6 +251,10 @@ class CatalogRouteItemOut(BaseModel):
     difficulty_label: str | None = Field(default=None, max_length=40)
     stops_count: int = 0
     duration_minutes: int = 0
+    # Snapshot at the time of showing; absent on older messages (spec 06, D17).
+    match_percent: int | None = Field(default=None, ge=0, le=100)
+    main_mismatch: str | None = Field(default=None, max_length=120)
+    formula_version: int | None = Field(default=None, ge=1)
 
 
 class CatalogMatchBlockOut(BaseModel):

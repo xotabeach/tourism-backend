@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -12,10 +14,26 @@ from tourism_backend.modules.route_builder.application.schemas import (
     TripType,
 )
 
+# Bump when the meaning of the score changes; stored with chat snapshots.
+MATCH_FORMULA_VERSION = 2
+
 IDEAL_THRESHOLD = 0.55
+# Lowest exact score that is shown at all (spec 06, D3).
+MIN_MATCH_SCORE = 0.30
+MAX_HITS = 8
+# Old app versions only know two arrays of at most 3 routes each and start
+# them at 35%; they keep receiving exactly that shape (D15).
 CLOSE_THRESHOLD = 0.35
 MAX_IDEAL = 3
 MAX_CLOSE = 3
+
+# Ceilings that keep the percent honest (D12, D15, D16).
+PARTIAL_DATA_CAP = 0.5
+PENALTY_CAP = 0.45
+# Known signals must cover this share of the requested weight, else "partial".
+MIN_KNOWN_SHARE = 0.5
+# The chat shows a percent only once this many parameters are confirmed (D7).
+MIN_CHAT_SIGNALS = 3
 
 _DURATION_RANGES: dict[DurationOption, tuple[int, int]] = {
     "d1_2": (180, 1_440),
@@ -136,6 +154,16 @@ class ScoredMatch:
     candidate: RouteMatchCandidate
     score: float
     reasons: tuple[str, ...]
+    # Most important first; the first one is what a card shows.
+    mismatches: tuple[str, ...] = ()
+    # Known signals covered too little of what was asked, or safety data is missing.
+    partial_data: bool = False
+    # Transport/paid penalty or unknown safety data: not for old clients' arrays.
+    has_violation: bool = False
+    # Every requested signal was known and matched completely.
+    full_match: bool = False
+    requested_signals: int = 0
+    excluded: bool = False
 
 
 def _haystack(candidate: RouteMatchCandidate) -> str:
@@ -217,9 +245,22 @@ def _interests_score(
         if by_category or by_text:
             hits += 1
             matched.append(interest)
-    ratio = hits / len(interests)
     reason = f"интересы: {', '.join(matched)}" if matched else None
-    return ratio, reason
+    return _interest_score(hits, len(interests)), reason
+
+
+def _interest_score(hits: int, chosen: int) -> float:
+    """Saturating in the number of hits, judged against what was asked.
+
+    Raw saturation is 1 hit ~55%, 2 ~80%, 3+ ~90%. It is normalised to the
+    number of interests chosen, capped at three, so that matching everything
+    that was asked is 100% and choosing many interests never dilutes the score.
+    """
+
+    if hits <= 0 or chosen <= 0:
+        return 0.0
+    ceiling = 1.0 - math.exp(-0.8 * min(chosen, 3))
+    return min(1.0, (1.0 - math.exp(-0.8 * hits)) / ceiling)
 
 
 def _trip_type_score(
@@ -301,36 +342,14 @@ def _season_score(season: str | None, seasonality: tuple[str, ...]) -> tuple[flo
     return 0.2, None
 
 
-def _party_flags_score(
-    params: RouteMatchParamsIn,
-    candidate: RouteMatchCandidate,
-) -> tuple[float, str | None]:
-    score = 0.5
-    reasons: list[str] = []
-    if params.with_children is True:
-        if candidate.suitable_for_children is True:
-            score = 1.0
-            reasons.append("можно с детьми")
-        elif candidate.suitable_for_children is False:
-            score = 0.1
-    if params.with_pets is True:
-        if candidate.pets_allowed is True:
-            score = max(score, 0.9)
-            reasons.append("можно с питомцами")
-        elif candidate.pets_allowed is False:
-            score = min(score, 0.15)
-    if params.people >= 6 and candidate.stops_count >= 4:
-        score = min(1.0, score + 0.1)
-    reason = ", ".join(reasons) if reasons else None
-    return score, reason
-
-
 def _preference_score(
     preferences: UserPreferenceSignals | None,
     candidate: RouteMatchCandidate,
-) -> tuple[float, str | None]:
+) -> tuple[float, str | None] | None:
+    """None when the profile says nothing that applies to this route."""
+
     if preferences is None:
-        return 0.5, None
+        return None
     parts: list[float] = []
     reasons: list[str] = []
     if preferences.categories:
@@ -367,8 +386,99 @@ def _preference_score(
             else 0.5
         )
     if not parts:
-        return 0.5, None
+        return None
     return sum(parts) / len(parts), ", ".join(dict.fromkeys(reasons)) or None
+
+
+@dataclass(frozen=True, slots=True)
+class _Part:
+    """One weighted signal. Unknown or unrequested signals never enter the score."""
+
+    weight: float
+    score: float
+    reason: str | None = None
+    requested: bool = True
+    known: bool = True
+    mismatch: str | None = None
+    # Lower = more important when a card shows only one mismatch.
+    rank: int = 99
+
+
+_START_FIELDS = frozenset({"city", "start_query", "start_locality_id", "start_place_id"})
+
+
+def _explicit(
+    field: str,
+    confirmed_fields: Sequence[str] | None,
+    explicit_fields: Sequence[str] | None,
+) -> bool:
+    """Whether a value with a form default was actually chosen by the person.
+
+    Chat tells us via ``confirmed_fields``; an updated form via
+    ``explicit_fields``. An older client sends neither, so everything it
+    sent counts as asked (the previous behaviour).
+    """
+
+    if confirmed_fields is not None:
+        return field in confirmed_fields
+    if explicit_fields is not None:
+        return field in explicit_fields
+    return True
+
+
+def _location_requested(
+    params: RouteMatchParamsIn,
+    confirmed_fields: Sequence[str] | None,
+) -> bool:
+    if params.search_area:
+        return (
+            confirmed_fields is None
+            or "search_area" in confirmed_fields
+            or "city" in confirmed_fields
+        )
+    start = params.effective_start_query
+    if not start or start.casefold() == "крым":
+        return False
+    return confirmed_fields is None or bool(_START_FIELDS & set(confirmed_fields))
+
+
+def requested_signal_count(
+    params: RouteMatchParamsIn,
+    *,
+    confirmed_fields: Sequence[str] | None = None,
+    explicit_fields: Sequence[str] | None = None,
+) -> int:
+    """How many parameters the person actually asked for (candidate independent)."""
+
+    flags = (
+        _location_requested(params, confirmed_fields),
+        bool(params.preferred_localities),
+        _explicit("duration", confirmed_fields, explicit_fields),
+        bool(params.interests),
+        params.trip_type is not None,
+        _explicit("pace", confirmed_fields, explicit_fields),
+        params.transport_mode is not None,
+        bool(params.season),
+        params.with_children is True,
+        params.with_pets is True,
+        params.avoid_crowds is True,
+        params.budget_amount is not None,
+        params.paid_ok is False,
+    )
+    return sum(flags)
+
+
+def _excluded(
+    candidate: RouteMatchCandidate, reason: str, mismatch: str, signals: int
+) -> ScoredMatch:
+    return ScoredMatch(
+        candidate=candidate,
+        score=0,
+        reasons=(reason,),
+        mismatches=(mismatch,),
+        requested_signals=signals,
+        excluded=True,
+    )
 
 
 def score_candidate(
@@ -377,21 +487,21 @@ def score_candidate(
     preferences: UserPreferenceSignals | None = None,
     *,
     confirmed_fields: list[str] | None = None,
+    explicit_fields: list[str] | None = None,
 ) -> ScoredMatch:
-    if (
-        (params.with_children is True and candidate.suitable_for_children is False)
-        or (params.with_pets is True and candidate.pets_allowed is False)
-        or (params.paid_ok is False and (candidate.price_min_amount or 0) > 0)
-        or (
-            params.transport_mode not in {None, "mixed"}
-            and _normalize_transport(candidate.transport_mode) is not None
-            and _normalize_transport(candidate.transport_mode) != params.transport_mode
-        )
-    ):
-        return ScoredMatch(candidate=candidate, score=0, reasons=("не подходит по ограничениям",))
+    signals = requested_signal_count(
+        params, confirmed_fields=confirmed_fields, explicit_fields=explicit_fields
+    )
+    # Safety is the one thing that stays a hard exclusion (D2).
+    if params.with_children is True and candidate.suitable_for_children is False:
+        return _excluded(candidate, "не подходит по ограничениям", "не подходит для детей", signals)
+    if params.with_pets is True and candidate.pets_allowed is False:
+        return _excluded(candidate, "не подходит по ограничениям", "нельзя с питомцами", signals)
+
     text = _haystack(candidate)
-    parts: list[tuple[float, float, str | None]] = []
-    # (weight, score, reason)
+    parts: list[_Part] = []
+
+    # --- start / area
     c_score, c_reason = _location_score(params.effective_start_query, candidate)
     scope_text = " ".join(candidate.locality_names).casefold()
     if params.search_area:
@@ -414,11 +524,19 @@ def score_candidate(
             locations
             and not bounds
             and not any(name.casefold() in scope_text for name in locations)
-        ):
-            return ScoredMatch(candidate=candidate, score=0, reasons=("вне выбранного района",))
-        if bounds and not inside_bounds:
-            return ScoredMatch(candidate=candidate, score=0, reasons=("вне выбранного района",))
+        ) or (bounds and not inside_bounds):
+            return _excluded(candidate, "вне выбранного района", "вне выбранного района", signals)
         c_score, c_reason = 1.0, f"район поиска: {params.search_area}"
+    if _location_requested(params, confirmed_fields):
+        parts.append(
+            _Part(
+                0.32,
+                c_score,
+                c_reason,
+                mismatch="старт не совпал" if c_score < 0.3 else None,
+                rank=2,
+            )
+        )
     if params.preferred_localities:
         has_preferred = any(
             name.casefold() in scope_text
@@ -426,70 +544,247 @@ def score_candidate(
             for name in params.preferred_localities
         )
         parts.append(
-            (
+            _Part(
                 0.22,
                 1.0 if has_preferred else 0.05,
                 "есть места из ваших пожеланий" if has_preferred else None,
+                mismatch=None if has_preferred else "нет мест из ваших пожеланий",
+                rank=6,
             )
         )
-    parts.append((0.32, c_score, c_reason))
-    d_score, d_reason = _duration_score(params.duration, candidate.estimated_duration_minutes)
-    if confirmed_fields is None or "duration" in confirmed_fields:
-        parts.append((0.18, d_score, d_reason))
-    i_score, i_reason = _interests_score(params.interests, text, candidate.category_slugs)
-    parts.append((0.2, i_score, i_reason))
-    t_score, t_reason = _trip_type_score(params.trip_type, text, candidate.category_slugs)
-    parts.append((0.12, t_score, t_reason))
-    p_score, p_reason = _pace_score(params.pace, candidate.difficulty)
-    if confirmed_fields is None or "pace" in confirmed_fields:
-        parts.append((0.08, p_score, p_reason))
-    tr_score, tr_reason = _transport_score(params.transport_mode, candidate.transport_mode)
-    parts.append((0.05, tr_score, tr_reason))
-    s_score, s_reason = _season_score(params.season, candidate.seasonality)
-    parts.append((0.03, s_score, s_reason))
-    f_score, f_reason = _party_flags_score(params, candidate)
-    parts.append((0.02, f_score, f_reason))
-    if params.avoid_crowds:
-        crowd = {"low": 1.0, "medium": 0.5, "high": 0.0}.get(candidate.typical_crowding, 0.5)
-        parts.append((0.12, crowd, "обычно мало людей" if crowd == 1 else None))
-    if params.budget_amount is not None and candidate.price_min_amount is not None:
-        days = max(1, ((candidate.estimated_duration_minutes or 0) + 479) // 480)
-        affordable = candidate.price_min_amount <= params.budget_amount * days
+
+    # --- duration and pace: only when the person really chose them
+    if _explicit("duration", confirmed_fields, explicit_fields):
+        d_score, d_reason = _duration_score(params.duration, candidate.estimated_duration_minutes)
+        known = bool(
+            candidate.estimated_duration_minutes and candidate.estimated_duration_minutes > 0
+        )
         parts.append(
-            (
+            _Part(
+                0.18,
+                d_score,
+                d_reason,
+                known=known,
+                mismatch="дольше, чем вы планировали" if known and d_score < 0.7 else None,
+                rank=5,
+            )
+        )
+    if params.interests:
+        i_score, i_reason = _interests_score(params.interests, text, candidate.category_slugs)
+        no_hits = i_reason is None
+        parts.append(
+            _Part(
+                0.2,
+                i_score,
+                i_reason,
+                # No categories and no text hit: absence of data, not of a match.
+                known=bool(candidate.category_slugs) or not no_hits,
+                mismatch="нет совпадений по интересам" if no_hits else None,
+                rank=7,
+            )
+        )
+    if params.trip_type is not None:
+        t_score, t_reason = _trip_type_score(params.trip_type, text, candidate.category_slugs)
+        parts.append(
+            _Part(
+                0.12,
+                t_score,
+                t_reason,
+                known=bool(candidate.category_slugs),
+                mismatch="не похоже на выбранный тип поездки" if t_score < 0.5 else None,
+                rank=8,
+            )
+        )
+    if _explicit("pace", confirmed_fields, explicit_fields):
+        p_score, p_reason = _pace_score(params.pace, candidate.difficulty)
+        parts.append(
+            _Part(
+                0.08,
+                p_score,
+                p_reason,
+                known=bool(candidate.difficulty),
+                mismatch="другой темп" if candidate.difficulty and p_score < 0.5 else None,
+                rank=9,
+            )
+        )
+
+    # --- transport: a mismatch is a penalty, not an exclusion (D2)
+    transport_violation = False
+    if params.transport_mode is not None:
+        tr_score, tr_reason = _transport_score(params.transport_mode, candidate.transport_mode)
+        actual = _normalize_transport(candidate.transport_mode)
+        requested_mode = _normalize_transport(params.transport_mode)
+        transport_violation = (
+            actual is not None and requested_mode != "mixed" and actual != requested_mode
+        )
+        parts.append(
+            _Part(
+                0.05,
+                tr_score,
+                tr_reason,
+                known=actual is not None,
+                mismatch="другой вид транспорта" if transport_violation else None,
+                rank=3,
+            )
+        )
+    if params.season:
+        s_score, s_reason = _season_score(params.season, candidate.seasonality)
+        parts.append(
+            _Part(
+                0.03,
+                s_score,
+                s_reason,
+                known=bool(candidate.seasonality),
+                mismatch="не для выбранного сезона"
+                if candidate.seasonality and s_score < 0.5
+                else None,
+                rank=12,
+            )
+        )
+
+    # --- party flags: False is excluded above; None means we simply do not know
+    safety_unknown = False
+    unknown_notes: list[str] = []
+    if params.with_children is True:
+        if candidate.suitable_for_children is True:
+            parts.append(_Part(0.02, 1.0, "можно с детьми", rank=1))
+        else:
+            safety_unknown = True
+            unknown_notes.append("нет данных о пригодности для детей")
+            parts.append(_Part(0.02, 0.5, known=False, rank=1))
+    if params.with_pets is True:
+        if candidate.pets_allowed is True:
+            parts.append(_Part(0.02, 0.9, "можно с питомцами", rank=1))
+        else:
+            safety_unknown = True
+            unknown_notes.append("нет данных о том, можно ли с питомцами")
+            parts.append(_Part(0.02, 0.5, known=False, rank=1))
+
+    if params.avoid_crowds is True:
+        crowd_value = {"low": 1.0, "medium": 0.5, "high": 0.0}.get(candidate.typical_crowding)
+        parts.append(
+            _Part(
+                0.12,
+                crowd_value if crowd_value is not None else 0.5,
+                "обычно мало людей" if crowd_value == 1 else None,
+                known=crowd_value is not None,
+                mismatch="обычно много людей" if crowd_value == 0.0 else None,
+                rank=11,
+            )
+        )
+    if params.budget_amount is not None:
+        known = candidate.price_min_amount is not None
+        affordable = False
+        if known:
+            days = max(1, ((candidate.estimated_duration_minutes or 0) + 479) // 480)
+            affordable = (candidate.price_min_amount or 0) <= params.budget_amount * days
+        parts.append(
+            _Part(
                 0.12,
                 1.0 if affordable else 0.0,
                 "известная стоимость укладывается в бюджет" if affordable else None,
+                known=known,
+                mismatch="может выйти дороже бюджета" if known and not affordable else None,
+                rank=10,
             )
         )
-    pref_score, pref_reason = _preference_score(preferences, candidate)
-    # Profile preferences are useful for cold-start personalization, but must
-    # never overpower the current query.  The cap keeps a single preference
-    # from turning the feed into a one-topic filter bubble.
-    parts.append((0.08, pref_score, pref_reason))
 
-    total_w = sum(w for w, _, _ in parts)
-    score = sum(w * s for w, s, _ in parts) / total_w
-    reasons = [r for _, _, r in parts if r]
-    # Soft penalty if city almost unmatched
-    if c_score < 0.3:
-        score *= 0.55
+    paid_violation = params.paid_ok is False and (candidate.price_min_amount or 0) > 0
+
+    # --- profile preferences: a soft extra signal, never "requested"
+    preference = _preference_score(preferences, candidate)
+    if preference is not None:
+        parts.append(_Part(0.08, preference[0], preference[1], requested=False, rank=99))
+
+    requested_weight = sum(part.weight for part in parts if part.requested)
+    known_requested = sum(part.weight for part in parts if part.requested and part.known)
+    scoring = [part for part in parts if part.known]
+    total_weight = sum(part.weight for part in scoring)
+    partial = safety_unknown or (
+        requested_weight > 0 and known_requested / requested_weight < MIN_KNOWN_SHARE
+    )
+    if total_weight <= 0:
+        # Nothing known to judge by: a neutral value that never looks like a match.
+        score = PARTIAL_DATA_CAP
+        partial = True
+    else:
+        score = sum(part.weight * part.score for part in scoring) / total_weight
+
+    violation = transport_violation or paid_violation or safety_unknown
+    full_match = (
+        not partial
+        and not violation
+        and known_requested == requested_weight
+        and all(part.score >= 0.999 for part in parts if part.requested)
+        and requested_weight > 0
+    )
+    if partial:
+        score = min(score, PARTIAL_DATA_CAP)
+    if transport_violation or paid_violation:
+        score = min(score, PENALTY_CAP)
+
+    mismatches: list[tuple[int, str]] = [
+        (part.rank, part.mismatch) for part in parts if part.mismatch
+    ]
+    mismatches.extend((1, note) for note in unknown_notes)
+    if paid_violation:
+        mismatches.append((4, "есть платные места"))
+    mismatches.sort(key=lambda item: item[0])
+    reasons = [part.reason for part in parts if part.reason]
     return ScoredMatch(
         candidate=candidate,
         score=round(min(1.0, max(0.0, score)), 4),
         reasons=tuple(reasons[:6]),
+        mismatches=tuple(dict.fromkeys(text for _, text in mismatches))[:6],
+        partial_data=partial,
+        has_violation=violation,
+        full_match=full_match,
+        requested_signals=signals,
     )
 
 
-def partition_scored(
+def match_percent(scored: ScoredMatch) -> int:
+    """Shown percent: rounded down to 5, 100 only for a complete match (D9)."""
+
+    percent = int(scored.score * 100) // 5 * 5
+    if scored.full_match:
+        return 100
+    return min(95, percent)
+
+
+def band_of(scored: ScoredMatch) -> str:
+    return "ideal" if scored.score >= IDEAL_THRESHOLD else "close"
+
+
+def select_hits(
     scored: list[ScoredMatch],
-) -> tuple[list[ScoredMatch], list[ScoredMatch], bool]:
-    ordered = sorted(scored, key=lambda item: (-item.score, item.candidate.name))
-    ideal = [item for item in ordered if item.score >= IDEAL_THRESHOLD][:MAX_IDEAL]
-    close = [
-        item
-        for item in ordered
-        if CLOSE_THRESHOLD <= item.score < IDEAL_THRESHOLD and item not in ideal
-    ][:MAX_CLOSE]
-    offer_generate = len(ideal) == 0
-    return ideal, close, offer_generate
+    *,
+    tiebreak: Callable[[ScoredMatch], tuple[float, str]] | None = None,
+) -> tuple[list[ScoredMatch], bool]:
+    """One list by exact score (best first), floor and cap applied (D3, D18).
+
+    ``tiebreak`` orders equal scores (rating first, then name). Returns the
+    hits and whether to offer generating a route: no hit reaches "ideal".
+    """
+
+    def key(item: ScoredMatch) -> tuple[float, float, str]:
+        rating, name = tiebreak(item) if tiebreak else (0.0, item.candidate.name)
+        return (-item.score, -rating, name)
+
+    eligible = [item for item in scored if not item.excluded and item.score >= MIN_MATCH_SCORE]
+    hits = sorted(eligible, key=key)[:MAX_HITS]
+    offer_generate = not any(item.score >= IDEAL_THRESHOLD for item in hits)
+    return hits, offer_generate
+
+
+def legacy_bands(hits: list[ScoredMatch]) -> tuple[list[ScoredMatch], list[ScoredMatch]]:
+    """The two short arrays installed app versions expect (D15).
+
+    Only routes without a violation: those clients cannot show why a route
+    with the wrong transport is listed as "close".
+    """
+
+    clean = [item for item in hits if not item.has_violation]
+    ideal = [item for item in clean if item.score >= IDEAL_THRESHOLD][:MAX_IDEAL]
+    close = [item for item in clean if CLOSE_THRESHOLD <= item.score < IDEAL_THRESHOLD][:MAX_CLOSE]
+    return ideal, close

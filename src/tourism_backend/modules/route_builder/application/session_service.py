@@ -1473,15 +1473,38 @@ def _compose_assistant_blocks(
     return blocks
 
 
+def _route_rating(route: object) -> float | None:
+    value = getattr(route, "rating_average", None)
+    return float(value) if isinstance(value, int | float) and 0 <= value <= 5 else None
+
+
+def _hit_percent(hit: object) -> int | None:
+    value = getattr(hit, "match_percent", None)
+    return value if isinstance(value, int) else None
+
+
+def _main_mismatch(hit: object) -> str | None:
+    """The one mismatch a card shows; only when a percent is shown with it."""
+
+    if _hit_percent(hit) is None:
+        return None
+    mismatches = getattr(hit, "mismatches", None) or []
+    return str(mismatches[0])[:120] if mismatches else None
+
+
 def _catalog_match_block(
     matched: object, *, locality_label: str | None = None
 ) -> CatalogMatchBlockOut | None:
     """Build screen-2 carousel from algorithmic match hits (ideal then close)."""
-    ideal = getattr(matched, "ideal", None) or []
-    close = getattr(matched, "close", None) or []
-    hits = list(ideal)[:5]
-    if len(hits) < 5:
-        hits.extend(list(close)[: 5 - len(hits)])
+    # The ordered list current backends send; an older shape (or a test double)
+    # only has the two bands.
+    ordered = list(getattr(matched, "hits", None) or [])
+    if not ordered:
+        ordered = list(getattr(matched, "ideal", None) or []) + list(
+            getattr(matched, "close", None) or []
+        )
+    hits = ordered[:5]
+    formula_version = getattr(matched, "formula_version", None)
     if not hits:
         return None
     routes: list[CatalogRouteItemOut] = []
@@ -1522,7 +1545,7 @@ def _catalog_match_block(
                 route_id=str(route.id),
                 title=str(route.name)[:120],
                 cover_url=getattr(route, "cover_image_url", None),
-                rating=None,
+                rating=_route_rating(route),
                 distance_km=distance_km,
                 locality_label=(
                     str(getattr(hit, "locality_label", ""))[:120]
@@ -1536,6 +1559,9 @@ def _catalog_match_block(
                 difficulty_label=difficulty_label,
                 stops_count=int(getattr(route, "stops_count", 0) or 0),
                 duration_minutes=int(getattr(route, "estimated_duration_minutes", 0) or 0),
+                match_percent=_hit_percent(hit),
+                main_mismatch=_main_mismatch(hit),
+                formula_version=(formula_version if _hit_percent(hit) is not None else None),
             )
         )
     if not routes:
@@ -1613,7 +1639,7 @@ async def _catalog_discovery_context(
     # Exclusions rotate a sufficiently rich catalogue. Once the relevant
     # pool is exhausted, cycle it instead of falsely telling the user that no
     # matching route exists at all.
-    if excluded and not matched.ideal and not matched.close:
+    if excluded and not getattr(matched, "hits", None) and not matched.ideal and not matched.close:
         matched = await match_service.match_routes(
             session,
             user_id=user_id,

@@ -147,3 +147,61 @@ async def test_match_returns_ranked_bands(live_client: AsyncClient) -> None:
         assert hit["band"] in {"ideal", "close"}
         assert hit["route"]["name"]
         assert "<script>" not in hit["route"]["name"]
+
+
+@pytest.mark.asyncio
+async def test_match_returns_percent_hits_and_old_client_arrays(
+    live_client: AsyncClient,
+) -> None:
+    phone = f"+7906{uuid4().int % 10_000_000:07d}"
+    tokens = await _login(live_client, phone)
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    response = await live_client.post(
+        "/api/v1/route-builder/match",
+        headers=headers,
+        json={
+            "city": "Ялта",
+            "interests": ["Пляж", "Природа"],
+            "transport_mode": "walk",
+            "explicit_fields": ["duration"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["formula_version"] == 2
+    assert len(body["hits"]) <= 8
+    scores = [hit["score"] for hit in body["hits"]]
+    assert scores == sorted(scores, reverse=True)
+    for hit in body["hits"]:
+        assert hit["score"] >= 0.30
+        assert hit["match_percent"] % 5 == 0
+        assert 30 <= hit["match_percent"] <= 100
+        assert isinstance(hit["mismatches"], list)
+        assert isinstance(hit["partial_data"], bool)
+    # Installed app versions keep their two short arrays, without penalised routes.
+    assert len(body["ideal"]) <= 3
+    assert len(body["close"]) <= 3
+    for hit in body["ideal"] + body["close"]:
+        assert "другой вид транспорта" not in hit["mismatches"]
+    ideal_ids = {hit["route"]["id"] for hit in body["hits"] if hit["band"] == "ideal"}
+    assert {hit["route"]["id"] for hit in body["ideal"]} <= ideal_ids
+    assert body["offer_generate"] == (not ideal_ids)
+
+
+@pytest.mark.asyncio
+async def test_match_rejects_unknown_explicit_fields(live_client: AsyncClient) -> None:
+    phone = f"+7906{uuid4().int % 10_000_000:07d}"
+    tokens = await _login(live_client, phone)
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    bad = await live_client.post(
+        "/api/v1/route-builder/match",
+        headers=headers,
+        json={"city": "Ялта", "explicit_fields": ["role"]},
+    )
+    assert bad.status_code == 422
+    ok = await live_client.post(
+        "/api/v1/route-builder/match",
+        headers=headers,
+        json={"city": "Ялта", "explicit_fields": []},
+    )
+    assert ok.status_code == 200

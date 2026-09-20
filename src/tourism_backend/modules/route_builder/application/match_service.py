@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from uuid import UUID
 
@@ -21,16 +22,25 @@ from tourism_backend.modules.route_builder.application.schemas import (
     RouteMatchParamsIn,
 )
 from tourism_backend.modules.route_builder.application.scoring import (
+    MATCH_FORMULA_VERSION,
+    MIN_CHAT_SIGNALS,
     RouteMatchCandidate,
+    ScoredMatch,
     UserPreferenceSignals,
-    partition_scored,
+    band_of,
+    legacy_bands,
+    match_percent,
+    requested_signal_count,
     score_candidate,
+    select_hits,
 )
 from tourism_backend.modules.routes.application import service as routes_service
 from tourism_backend.modules.routes.application.schemas import RouteListItemOut
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 from tourism_backend.modules.subscriptions.application import service as travel_plus
 from tourism_backend.modules.subscriptions.application.entitlements import policy_for_user
+
+logger = logging.getLogger(__name__)
 
 
 async def match_routes(
@@ -78,36 +88,51 @@ async def match_routes(
             }
         )
     scored = [
-        score_candidate(params, candidate, preferences, confirmed_fields=confirmed_fields)
+        score_candidate(
+            params,
+            candidate,
+            preferences,
+            confirmed_fields=confirmed_fields,
+            explicit_fields=params.explicit_fields,
+        )
         for candidate in candidates
     ]
-    ideal_scored, close_scored, offer_generate = partition_scored(scored)
+    signals = requested_signal_count(
+        params, confirmed_fields=confirmed_fields, explicit_fields=params.explicit_fields
+    )
+    # The chat only promises a percent once enough was confirmed (D7).
+    show_percent = confirmed_fields is None or signals >= MIN_CHAT_SIGNALS
 
-    route_ids = [item.candidate.route_id for item in ideal_scored + close_scored]
+    # Equal scores: better rated first, then by name (D18).
+    rating_by_route = await _ratings_for(session, [item.candidate.route_id for item in scored])
+
+    def tiebreak(item: ScoredMatch) -> tuple[float, str]:
+        return rating_by_route.get(item.candidate.route_id, 0.0), item.candidate.name
+
+    hit_scored, offer_generate = select_hits(scored, tiebreak=tiebreak)
+    legacy_ideal, legacy_close = legacy_bands(hit_scored)
+
+    route_ids = [item.candidate.route_id for item in hit_scored]
     items_by_id = await _list_items_by_ids(session, route_ids)
 
-    ideal = [
-        RouteMatchHitOut(
+    def to_hit(item: ScoredMatch) -> RouteMatchHitOut:
+        return RouteMatchHitOut(
             route=items_by_id[item.candidate.route_id],
             score=item.score,
-            band="ideal",
+            band=band_of(item),  # type: ignore[arg-type]
             reasons=list(item.reasons),
             locality_label=_locality_label(item.candidate.locality_names),
+            match_percent=match_percent(item) if show_percent else None,
+            mismatches=list(item.mismatches),
+            partial_data=item.partial_data,
         )
-        for item in ideal_scored
-        if item.candidate.route_id in items_by_id
-    ]
-    close = [
-        RouteMatchHitOut(
-            route=items_by_id[item.candidate.route_id],
-            score=item.score,
-            band="close",
-            reasons=list(item.reasons),
-            locality_label=_locality_label(item.candidate.locality_names),
-        )
-        for item in close_scored
-        if item.candidate.route_id in items_by_id
-    ]
+
+    hits = [to_hit(item) for item in hit_scored if item.candidate.route_id in items_by_id]
+    ideal = [to_hit(item) for item in legacy_ideal if item.candidate.route_id in items_by_id]
+    close = [to_hit(item) for item in legacy_close if item.candidate.route_id in items_by_id]
+    _log_outcome(
+        hit_scored, signals=signals, empty=not hits, confirmed=confirmed_fields is not None
+    )
 
     ai_rerank_eligible = bool(ai_planning_enabled and policy.ai_chat_enabled)
     snap = await quota_snapshot(session, user_id=user_id, policy=policy)
@@ -116,6 +141,9 @@ async def match_routes(
         strategy="algorithmic",
         ideal=ideal,
         close=close,
+        hits=hits,
+        requested_signals=signals,
+        formula_version=MATCH_FORMULA_VERSION,
         offer_generate=offer_generate,
         ai_rerank_eligible=ai_rerank_eligible,
         ai_rerank_applied=False,
@@ -123,6 +151,29 @@ async def match_routes(
         params_echo=params,
         quota=snap,
     )
+
+
+def _log_outcome(hits: list[ScoredMatch], *, signals: int, empty: bool, confirmed: bool) -> None:
+    """One line per match: enough to see the spread of percents and empty results."""
+
+    best = hits[0] if hits else None
+    logger.info(
+        "route_match formula=%d channel=%s signals=%d hits=%d best=%s partial=%s empty=%s",
+        MATCH_FORMULA_VERSION,
+        "chat" if confirmed else "form",
+        signals,
+        len(hits),
+        f"{best.score:.2f}" if best else "-",
+        best.partial_data if best else "-",
+        empty,
+    )
+
+
+async def _ratings_for(session: AsyncSession, route_ids: list[UUID]) -> dict[UUID, float]:
+    if not route_ids:
+        return {}
+    ratings = await routes_service.route_ratings(session, route_ids)
+    return {route_id: float(average) for route_id, (average, _count) in ratings.items() if average}
 
 
 def _locality_label(names: tuple[str, ...]) -> str | None:
@@ -250,6 +301,7 @@ async def _list_items_by_ids(
     counts = await routes_service._stops_count_map(session, route_ids)  # noqa: SLF001
     covers = await routes_service._cover_urls_for_routes(session, route_ids)  # noqa: SLF001
     authors = await routes_service._author_fields_for_routes(session, ordered)  # noqa: SLF001
+    ratings = await routes_service.route_ratings(session, route_ids)
     items: dict[UUID, RouteListItemOut] = {}
     for route in ordered:
         owner_id, label, avatar, is_expert, rank_title = authors[route.id]
@@ -262,6 +314,7 @@ async def _list_items_by_ids(
             author_avatar_url=avatar,
             author_is_expert=is_expert,
             author_rank_title=rank_title,
+            rating=ratings.get(route.id, (None, 0)),
         )
     return items
 
