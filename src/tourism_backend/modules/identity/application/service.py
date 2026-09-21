@@ -489,6 +489,8 @@ async def patch_preferences(
         raise AppError(code="unauthorized", message="Authentication required", status_code=401)
     user.preferred_categories = payload.preferred_categories
     user.preferred_difficulty = payload.preferred_difficulty
+    user.preferred_duration = payload.preferred_duration
+    user.preferred_transport = payload.preferred_transport
     user.travels_with_kids = payload.travels_with_kids
     user.travels_with_pets = payload.travels_with_pets
     user.preferences_updated_at = datetime.now(UTC)
@@ -534,6 +536,8 @@ async def _me_out(session: AsyncSession, user: User) -> MeOut:
         advanced_filters_enabled=policy.advanced_filters_enabled,
         preferred_categories=list(user.preferred_categories or []),
         preferred_difficulty=user.preferred_difficulty,
+        preferred_duration=user.preferred_duration,
+        preferred_transport=user.preferred_transport,
         travels_with_kids=user.travels_with_kids,
         travels_with_pets=user.travels_with_pets,
         preferences_updated_at=updated.isoformat() if updated is not None else None,

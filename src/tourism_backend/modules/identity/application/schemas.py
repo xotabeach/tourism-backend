@@ -11,6 +11,8 @@ from tourism_backend.modules.identity.application.display_name import (
 from tourism_backend.modules.identity.infrastructure.models import PREFERENCE_CATEGORIES
 
 PreferenceDifficulty = Literal["easy", "moderate", "hard"]
+PreferenceDuration = Literal["d1_2", "d3_5", "d6_7", "d7plus"]
+PreferenceTransport = Literal["car"]
 
 _PHONE_RE = re.compile(r"^\+7\d{10}$")
 
@@ -149,6 +151,8 @@ class MeOut(BaseModel):
     advanced_filters_enabled: bool = False
     preferred_categories: list[str] = Field(default_factory=list)
     preferred_difficulty: str | None = None
+    preferred_duration: str | None = None
+    preferred_transport: str | None = None
     travels_with_kids: bool = False
     travels_with_pets: bool = False
     preferences_updated_at: str | None = None
@@ -188,10 +192,19 @@ class MePatchIn(BaseModel):
 class MePreferencesIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    preferred_categories: list[str] = Field(default_factory=list, max_length=4)
+    preferred_categories: list[str] = Field(default_factory=list, max_length=6)
     preferred_difficulty: PreferenceDifficulty | None = None
+    preferred_duration: PreferenceDuration | None = None
+    # «На транспорте» sits in the same single choice as the difficulty.
+    preferred_transport: PreferenceTransport | None = None
     travels_with_kids: bool = False
     travels_with_pets: bool = False
+
+    @model_validator(mode="after")
+    def _transport_or_difficulty(self) -> "MePreferencesIn":
+        if self.preferred_transport is not None and self.preferred_difficulty is not None:
+            raise ValueError("choose either a difficulty or «on transport», not both")
+        return self
 
     @field_validator("preferred_categories")
     @classmethod

@@ -281,16 +281,19 @@ async def test_patch_preferences(live_client: AsyncClient) -> None:
         "/api/v1/me/preferences",
         headers=headers,
         json={
-            "preferred_categories": ["Море", "Горы"],
+            "preferred_categories": ["Природа", "Смотровые"],
             "preferred_difficulty": "moderate",
+            "preferred_duration": "d3_5",
             "travels_with_kids": True,
             "travels_with_pets": False,
         },
     )
     assert patched.status_code == 200, patched.text
     body = patched.json()
-    assert body["preferred_categories"] == ["Море", "Горы"]
+    assert body["preferred_categories"] == ["Природа", "Смотровые"]
     assert body["preferred_difficulty"] == "moderate"
+    assert body["preferred_duration"] == "d3_5"
+    assert body["preferred_transport"] is None
     assert body["travels_with_kids"] is True
     assert body["travels_with_pets"] is False
     assert body["preferences_updated_at"] is not None
@@ -301,6 +304,30 @@ async def test_patch_preferences(live_client: AsyncClient) -> None:
         json={"preferred_categories": ["Не категория"]},
     )
     assert invalid.status_code == 422
+
+    # The first quiz's words are no longer accepted.
+    legacy = await live_client.patch(
+        "/api/v1/me/preferences",
+        headers=headers,
+        json={"preferred_categories": ["Море"]},
+    )
+    assert legacy.status_code == 422
+
+    # «На транспорте» replaces a difficulty, it does not go with one.
+    on_transport = await live_client.patch(
+        "/api/v1/me/preferences",
+        headers=headers,
+        json={"preferred_transport": "car"},
+    )
+    assert on_transport.status_code == 200, on_transport.text
+    assert on_transport.json()["preferred_transport"] == "car"
+    assert on_transport.json()["preferred_difficulty"] is None
+    both = await live_client.patch(
+        "/api/v1/me/preferences",
+        headers=headers,
+        json={"preferred_transport": "car", "preferred_difficulty": "easy"},
+    )
+    assert both.status_code == 422
 
     unauth = await live_client.patch(
         "/api/v1/me/preferences",

@@ -418,7 +418,8 @@ async def test_save_preferences_action_persists_to_profile(live_client: AsyncCli
     after = await live_client.get("/api/v1/me", headers=headers)
     assert after.status_code == 200, after.text
     body = after.json()
-    assert body["preferred_categories"] == ["горы"]
+    # The chat's «горы» is stored in the profile's own words.
+    assert body["preferred_categories"] == ["Смотровые"]
     assert body["preferred_difficulty"] == "hard"
     assert body["travels_with_pets"] is False
 
