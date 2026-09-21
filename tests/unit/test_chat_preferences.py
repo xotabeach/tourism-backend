@@ -17,6 +17,7 @@ def _user(**overrides: object) -> User:
     defaults: dict[str, object] = {
         "preferred_categories": None,
         "preferred_difficulty": None,
+        "preferred_duration": None,
         "travels_with_kids": False,
         "travels_with_pets": False,
         "preferences_updated_at": None,
@@ -49,7 +50,8 @@ def test_confirmed_interests_and_pace_are_written() -> None:
         confirmed_fields=["interests", "pace"],
     )
 
-    assert user.preferred_categories == ["горы", "история"]
+    # Chat interest words are folded into the profile quiz vocabulary.
+    assert user.preferred_categories == ["Смотровые", "История"]
     assert user.preferred_difficulty == "hard"
     assert user.preferences_updated_at is not None
     assert "интересы" in changed
@@ -97,3 +99,30 @@ def test_unconfirmed_form_draft_is_never_written() -> None:
     assert user.preferred_categories is None
     assert user.travels_with_pets is False
     assert changed == ["предпочитаемый темп"]
+
+
+def test_chat_interests_without_a_profile_word_are_dropped() -> None:
+    user = _user()
+
+    changed = apply_chat_preferences(
+        user,
+        constraints={"interests": ["Экстрим", "Пляж", "Лес", "Лошади"]},
+        confirmed_fields=["interests"],
+    )
+
+    # Пляж and Лес both mean Природа; Экстрим and Лошади have no profile word.
+    assert user.preferred_categories == ["Природа"]
+    assert "интересы" in changed
+
+
+def test_confirmed_duration_is_written() -> None:
+    user = _user()
+
+    changed = apply_chat_preferences(
+        user,
+        constraints={"duration": "d3_5"},
+        confirmed_fields=["duration"],
+    )
+
+    assert user.preferred_duration == "d3_5"
+    assert "длительность маршрута" in changed

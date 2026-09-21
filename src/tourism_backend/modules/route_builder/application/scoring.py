@@ -94,6 +94,10 @@ INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
     "спорт": frozenset({"trail", "mountain"}),
     "лошади": frozenset({"trail", "nature"}),
     "романтика": frozenset({"palace", "viewpoint", "beach", "park"}),
+    # Profile quiz vocabulary (FRONTEND-21).
+    "гастрономия": frozenset({"winery"}),
+    "смотровые": frozenset({"viewpoint"}),
+    "семейное": frozenset({"park", "beach", "museum", "nature"}),
 }
 
 TRIP_TYPE_CATEGORIES: dict[TripType, frozenset[str]] = {

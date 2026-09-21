@@ -1790,6 +1790,14 @@ def _persisted_preferences_prior(user: User) -> dict[str, Any]:
         prior["interests"] = list(user.preferred_categories)[:6]
     if user.preferred_difficulty:
         prior["pace_hint"] = user.preferred_difficulty
+    # Newer profile fields; read defensively so partial user objects
+    # (tests, older call sites) keep working.
+    duration = getattr(user, "preferred_duration", None)
+    if duration:
+        prior["duration"] = duration
+    transport = getattr(user, "preferred_transport", None)
+    if transport:
+        prior["transport_mode"] = transport
     if user.travels_with_kids:
         prior["with_children"] = True
     if user.travels_with_pets:
