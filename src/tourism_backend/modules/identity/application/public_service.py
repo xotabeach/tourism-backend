@@ -363,6 +363,77 @@ async def list_profile_subscriptions(
     return PublicUserListOut(items=items, total=total)
 
 
+async def list_profile_followers(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    viewer_id: UUID | None,
+    q: str | None = None,
+    limit: int = 100,
+) -> PublicUserListOut:
+    """Who follows [user_id], newest first; `q` narrows by display name."""
+    if await session.get(User, user_id) is None:
+        raise AppError(code="user_not_found", message="User not found", status_code=404)
+    filters = [ProfileLike.liked_user_id == user_id]
+    cleaned = (q or "").strip()
+    if cleaned:
+        filters.append(User.display_name.ilike(f"%{cleaned}%"))
+    total = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(ProfileLike)
+            .join(User, ProfileLike.liker_id == User.id)
+            .where(*filters)
+        )
+        or 0
+    )
+    users = list(
+        (
+            await session.scalars(
+                select(User)
+                .join(ProfileLike, ProfileLike.liker_id == User.id)
+                .where(*filters)
+                .order_by(ProfileLike.created_at.desc(), User.id)
+                .limit(limit)
+            )
+        ).all()
+    )
+    ids = [user.id for user in users]
+    avatars = await media_service.resolve_urls(
+        session, entity_type="user", entity_ids=ids, role="avatar"
+    )
+    covers = await media_service.resolve_urls(
+        session, entity_type="user", entity_ids=ids, role="cover"
+    )
+    counts = await _follow_counts(session, ids)
+    liked: set[UUID] = set()
+    if viewer_id is not None and ids:
+        liked = set(
+            (
+                await session.scalars(
+                    select(ProfileLike.liked_user_id).where(
+                        ProfileLike.liker_id == viewer_id,
+                        ProfileLike.liked_user_id.in_(ids),
+                    )
+                )
+            ).all()
+        )
+    items = [
+        await _public_user(
+            session,
+            user,
+            avatar_url=avatars.get(user.id),
+            cover_url=covers.get(user.id),
+            liked_by_me=user.id in liked,
+            followers_count=counts.get(user.id, (0, 0))[0],
+            following_count=counts.get(user.id, (0, 0))[1],
+        )
+        for user in users
+    ]
+    await session.commit()
+    return PublicUserListOut(items=items, total=total)
+
+
 async def get_public_user(
     session: AsyncSession,
     user_id: UUID,

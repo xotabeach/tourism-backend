@@ -407,6 +407,45 @@ async def test_profile_subscriptions_return_liked_users_without_pii(
 
 
 @pytest.mark.asyncio
+async def test_profile_followers_are_public_searchable_and_without_pii(
+    live_client: AsyncClient,
+) -> None:
+    marker = uuid4().hex[:6]
+    target = await _login(
+        live_client, phone=f"+7907{uuid4().int % 10_000_000:07d}", name=f"Цель {marker}"
+    )
+    target_headers = {"Authorization": f"Bearer {target['access_token']}"}
+    target_id = (await live_client.get("/api/v1/me", headers=target_headers)).json()["id"]
+    names = [f"Анна {marker}", f"Борис {marker}"]
+    for name in names:
+        follower = await _login(
+            live_client, phone=f"+7908{uuid4().int % 10_000_000:07d}", name=name
+        )
+        liked = await live_client.put(
+            f"/api/v1/users/{target_id}/like",
+            headers={"Authorization": f"Bearer {follower['access_token']}"},
+        )
+        assert liked.status_code == 204, liked.text
+
+    # Readable without an account, like the follower count itself.
+    everyone = await live_client.get(f"/api/v1/users/{target_id}/followers")
+    assert everyone.status_code == 200, everyone.text
+    body = everyone.json()
+    assert body["total"] == 2
+    # Newest first.
+    assert [item["display_name"] for item in body["items"]] == list(reversed(names))
+    assert "phone" not in str(body).lower()
+    assert all(item["liked_by_me"] is False for item in body["items"])
+
+    narrowed = await live_client.get(f"/api/v1/users/{target_id}/followers", params={"q": "анна"})
+    assert [item["display_name"] for item in narrowed.json()["items"]] == [names[0]]
+    assert narrowed.json()["total"] == 1
+
+    missing = await live_client.get(f"/api/v1/users/{uuid4()}/followers")
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_routes_catalog_includes_owner_fields_when_present(
     live_client: AsyncClient,
 ) -> None:
