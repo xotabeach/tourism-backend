@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from tourism_backend.api.errors import register_exception_handlers
+from tourism_backend.api.observability import SlowRequestLogMiddleware, watch_event_loop_lag
 from tourism_backend.api.router import api_router
 from tourism_backend.config import AppEnvironment, Settings, get_settings
 from tourism_backend.db.redis import create_redis_client
@@ -51,9 +52,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         poll_delivery_jobs(app.state.session_factory, app.state.redis, settings),
         name="sms-delivery-poller",
     )
+    loop_watch = asyncio.create_task(watch_event_loop_lag(), name="event-loop-lag")
     try:
         yield
     finally:
+        loop_watch.cancel()
         await stop_delivery_poller(sms_poller)
         await stop_immediate_deliveries()
         await app.state.redis.aclose()
@@ -129,6 +132,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Added before ProxyHeadersMiddleware so it sits inside it and sees the
     # real client address.
     app.add_middleware(ApkDownloadCounterMiddleware, media_dir=_MEDIA_DIR)
+    app.add_middleware(SlowRequestLogMiddleware)
     if resolved_settings.app_env is not AppEnvironment.LOCAL:
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
     return app
