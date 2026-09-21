@@ -31,12 +31,11 @@ ENV HF_HOME=/app/.cache/huggingface
 RUN .venv/bin/python -c \
     "from sentence_transformers import SentenceTransformer; SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')"
 
-# Only now bring in the project itself; this layer is small and the only one
-# that changes on a normal commit.
-COPY src ./src
-COPY alembic ./alembic
-COPY alembic.ini ./
-RUN uv sync --frozen --no-dev --no-editable --extra rag
+# The project itself is deliberately NOT installed into this venv. Installing
+# it here changed the venv on every commit, and the runtime stage copies the
+# whole venv (torch, the embedding model) as one ~2 GB layer, so every commit
+# re-uploaded that layer to the registry and the publish job started dying on
+# the upload. The runtime stage runs the code from /app/src via PYTHONPATH.
 
 FROM python:3.13-slim-bookworm AS runtime
 
@@ -66,18 +65,22 @@ RUN useradd --create-home --uid 10001 appuser
 WORKDIR /app
 
 ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/app/.cache/huggingface \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
+# Heavy, dependency-only layers first: they only change with uv.lock.
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder --chown=appuser:appuser /app/.cache /app/.cache
-COPY --from=builder /app/src /app/src
-COPY --from=builder /app/alembic /app/alembic
-COPY --from=builder /app/alembic.ini /app/alembic.ini
-COPY --from=builder /app/pyproject.toml /app/pyproject.toml
-COPY --from=builder /app/README.md /app/README.md
+
+# Our code: small layers that change on a normal commit. Compiled here
+# because the runtime filesystem is read-only and cannot cache bytecode.
+COPY src ./src
+COPY alembic ./alembic
+COPY alembic.ini pyproject.toml README.md ./
+RUN python -m compileall -q /app/src
 COPY --chown=appuser:appuser scripts ./scripts
 COPY --chown=appuser:appuser data ./data
 
