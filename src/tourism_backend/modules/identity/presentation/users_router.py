@@ -1,5 +1,6 @@
 """Public profile read APIs + authenticated profile likes."""
 
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query, status
@@ -44,6 +45,20 @@ async def list_profile_subscriptions(
         session,
         user_id=user_id,
         limit=limit,
+    )
+
+
+@router.get("/users/{user_id}/followers", response_model=PublicUserListOut)
+async def list_profile_followers(
+    session: DbSession,
+    user_id: UUID,
+    viewer_id: OptionalCurrentUserId,
+    q: Annotated[str | None, Query(max_length=60)] = None,
+    limit: int = Query(default=100, ge=1, le=100),
+) -> PublicUserListOut:
+    """Public, like the follower count on the profile itself."""
+    return await public_service.list_profile_followers(
+        session, user_id=user_id, viewer_id=viewer_id, q=q, limit=limit
     )
 
 
