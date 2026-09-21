@@ -9,6 +9,7 @@ file" ordering so the database stays authoritative if the unlink fails.
 
 from datetime import UTC, datetime, timedelta
 from math import ceil
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, update
@@ -450,6 +451,21 @@ async def _replace_blocks(
     )
 
 
+def _feed_order(sort: str) -> tuple[Any, ...]:
+    """Feed order; the article id breaks ties so pages never overlap."""
+    if sort == "oldest":
+        return (Article.published_at.asc(), Article.id)
+    if sort == "popular":
+        # Likes are a deliberate signal, views only a tiebreaker between them.
+        return (
+            Article.like_count.desc(),
+            Article.view_count.desc(),
+            Article.published_at.desc(),
+            Article.id,
+        )
+    return (Article.published_at.desc(), Article.id)
+
+
 async def list_published_articles(
     session: AsyncSession,
     *,
@@ -458,6 +474,7 @@ async def list_published_articles(
     author_user_id: UUID | None = None,
     viewer_user_id: UUID | None = None,
     q: str | None = None,
+    sort: str = "newest",
     limit: int = 20,
     offset: int = 0,
 ) -> ArticleListOut:
@@ -489,7 +506,7 @@ async def list_published_articles(
             await session.scalars(
                 select(Article)
                 .where(*filters)
-                .order_by(Article.published_at.desc(), Article.id)
+                .order_by(*_feed_order(sort))
                 .limit(limit)
                 .offset(offset)
             )

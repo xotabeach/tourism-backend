@@ -5,7 +5,7 @@ article's subject is a query filter, not a path segment, so there is no
 reason to mount the same handlers twice.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, File, Query, UploadFile, status
@@ -39,6 +39,7 @@ async def list_articles(
     related_place_id: Annotated[UUID | None, Query()] = None,
     author_user_id: Annotated[UUID | None, Query()] = None,
     q: Annotated[str | None, Query(max_length=120)] = None,
+    sort: Annotated[Literal["newest", "oldest", "popular"], Query()] = "newest",
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ArticleListOut:
@@ -50,6 +51,7 @@ async def list_articles(
         author_user_id=author_user_id,
         viewer_user_id=viewer_user_id,
         q=q,
+        sort=sort,
         limit=limit,
         offset=offset,
     )

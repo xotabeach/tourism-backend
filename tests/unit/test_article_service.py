@@ -1018,3 +1018,41 @@ async def test_articles_are_searchable_by_title_and_tag(
     # An empty query is not a filter — it lists everything, as before.
     unfiltered = await article_service.list_published_articles(session, viewer_user_id=None)
     assert {matching.id, other.id} <= {item.id for item in unfiltered.items}
+
+
+@pytest.mark.asyncio
+async def test_feed_can_be_sorted_newest_oldest_and_popular(
+    session: AsyncSession, author: User
+) -> None:
+    ids = []
+    for title in ("Первая", "Вторая", "Третья"):
+        created = await article_service.create_article_draft(
+            session, author_user_id=author.id, payload=_payload(title=title)
+        )
+        await _publish(session, UUID(created.id))
+        ids.append(UUID(created.id))
+    base = datetime.now(UTC) - timedelta(days=3)
+    for day, article_id in enumerate(ids):
+        row = await session.get(Article, article_id)
+        assert row is not None
+        row.published_at = base + timedelta(days=day)
+    # The oldest is the most liked; views only break a like tie.
+    likes = {ids[0]: 5, ids[1]: 1, ids[2]: 1}
+    views = {ids[0]: 0, ids[1]: 10, ids[2]: 3}
+    for article_id in ids:
+        row = await session.get(Article, article_id)
+        assert row is not None
+        row.like_count = likes[article_id]
+        row.view_count = views[article_id]
+    await session.commit()
+
+    async def order(sort: str) -> list[str]:
+        feed = await article_service.list_published_articles(
+            session, author_user_id=author.id, sort=sort
+        )
+        return [item.id for item in feed.items]
+
+    as_str = [str(i) for i in ids]
+    assert await order("newest") == [as_str[2], as_str[1], as_str[0]]
+    assert await order("oldest") == as_str
+    assert await order("popular") == [as_str[0], as_str[1], as_str[2]]
