@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import os
@@ -75,7 +76,8 @@ def _prepare_image(raw: bytes) -> tuple[bytes, int, int]:
                 output,
                 format="WEBP",
                 quality=90,
-                method=6,
+                # method=6 took about twice as long for the same size.
+                method=4,
                 lossless=prepared.mode == "RGBA",
             )
             return output.getvalue(), prepared.width, prepared.height
@@ -118,7 +120,9 @@ async def save_route_media(upload: UploadFile, *, route_id: UUID) -> SavedRouteM
     width: int | None = None
     height: int | None = None
     if content_type.startswith("image/"):
-        payload, width, height = _prepare_image(raw)
+        # Decoding and re-encoding a phone photo is CPU work of a second or
+        # more; on the event loop it stalled every other request meanwhile.
+        payload, width, height = await asyncio.to_thread(_prepare_image, raw)
         extension = "webp"
         stored_content_type = "image/webp"
         kind: Literal["image", "video"] = "image"
@@ -135,7 +139,9 @@ async def save_route_media(upload: UploadFile, *, route_id: UUID) -> SavedRouteM
         stored_content_type = "video/mp4" if extension == "mp4" else "video/webm"
         kind = "video"
 
-    storage_key, public_path = _save(payload, route_id=route_id, extension=extension)
+    storage_key, public_path = await asyncio.to_thread(
+        _save, payload, route_id=route_id, extension=extension
+    )
     return SavedRouteMedia(
         storage_key=storage_key,
         public_path=public_path,
