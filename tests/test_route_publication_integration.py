@@ -323,26 +323,49 @@ async def test_withdraw_route_from_pending_and_published(
             await session.commit()
 
 
+_SEA_DISTANCE_SQL = text(
+    """
+    SELECT p.id,
+           EXISTS (
+               SELECT 1 FROM place_categories pc
+               JOIN categories c ON c.id = pc.category_id
+               WHERE pc.place_id = p.id AND c.slug = 'beach'
+           )
+           OR EXISTS (
+               SELECT 1 FROM route_terrain_features f
+               WHERE f.kind = 'coastline' AND ST_DWithin(f.geometry, p.location, 400)
+           ) AS by_sea
+    FROM places p WHERE p.id = ANY(:ids)
+    """
+)
+
+
 @pytest.mark.asyncio
-async def test_sea_filter_marks_the_route_as_seaside(
+async def test_sea_tag_follows_the_stops(
     publication_context: tuple[AsyncClient, Any],
 ) -> None:
-    """The «Море» publish filter is the route's sea tag (BACKEND-19)."""
+    """«Море» comes from the stops, not from the author (BACKEND-19)."""
     client, app = publication_context
     tokens = await _login(client, f"+7913{uuid4().int % 10_000_000:07d}")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
     places = await client.get(
         "/api/v1/places",
-        params={"region_slug": "crimea", "limit": 2},
+        params={"region_slug": "crimea", "limit": 100},
     )
-    place_ids = [item["id"] for item in places.json()["items"][:2]]
-    assert len(place_ids) == 2
+    ids = [UUID(item["id"]) for item in places.json()["items"]]
+    async with app.state.session_factory() as session:
+        rows = (await session.execute(_SEA_DISTANCE_SQL, {"ids": ids})).all()
+    by_sea = [str(row.id) for row in rows if row.by_sea]
+    inland = [str(row.id) for row in rows if not row.by_sea]
+    if not by_sea or len(inland) < 2:
+        pytest.skip("Seed data has no sea and inland places to compare")
 
     draft = {
         "name": "Маршрут у моря",
         "description": "",
-        "place_ids": place_ids,
-        "filters": ["Природа"],
+        "place_ids": [by_sea[0], inland[0]],
+        # The author's «Море» word no longer decides anything.
+        "filters": [],
         "pace": "calm",
         "difficulty": 2,
     }
@@ -351,16 +374,21 @@ async def test_sea_filter_marks_the_route_as_seaside(
     route_id = saved.json()["id"]
     try:
         mine = await client.get(f"/api/v1/routes/mine/{route_id}", headers=headers)
-        assert mine.json()["is_seaside"] is False
+        assert mine.json()["is_seaside"] is True
 
         resaved = await client.post(
             "/api/v1/routes/drafts",
             headers=headers,
-            json={**draft, "route_id": route_id, "filters": ["Природа", "Море"]},
+            json={
+                **draft,
+                "route_id": route_id,
+                "place_ids": inland[:2],
+                "filters": ["Море"],
+            },
         )
         assert resaved.status_code == 200, resaved.text
         mine = await client.get(f"/api/v1/routes/mine/{route_id}", headers=headers)
-        assert mine.json()["is_seaside"] is True
+        assert mine.json()["is_seaside"] is False
     finally:
         async with app.state.session_factory() as session:
             route = await session.get(Route, UUID(route_id))

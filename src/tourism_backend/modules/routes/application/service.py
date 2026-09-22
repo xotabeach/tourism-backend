@@ -59,10 +59,8 @@ from tourism_backend.modules.routes.application.schemas import (
     UserRouteEditablePlaceOut,
     UserRouteMediaOut,
 )
+from tourism_backend.modules.routes.application.seaside import is_seaside as stops_are_seaside
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
-
-# Publish filter that marks a user route as a sea route (BACKEND-19).
-SEASIDE_TAG = "Море"
 
 _PUBLIC_CATALOG = (
     or_(Route.source == "editorial", Route.source == "user_created"),
@@ -985,7 +983,6 @@ async def save_user_route_draft(
     route.difficulty = _difficulty_name(payload.difficulty)
     route.transport_mode = "walking"
     route.suitable_for_children = "С детьми" in payload.filters
-    route.is_seaside = SEASIDE_TAG in payload.filters
     accessibility: dict[str, Any] = {
         "travel_pace": payload.pace,
         "filters": payload.filters,
@@ -1011,6 +1008,9 @@ async def save_user_route_draft(
     if unchanged:
         accessibility["routing"] = previous_routing
     else:
+        # The «Море» tag follows the stops (BACKEND-19); an editor's fix in
+        # the admin holds until the author changes the stops again.
+        route.is_seaside = await stops_are_seaside(session, payload.place_ids)
         routed = await _route_geometry_for_places(
             session,
             places=places,
