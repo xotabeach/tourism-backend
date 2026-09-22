@@ -383,3 +383,75 @@ async def test_route_execution_is_owner_scoped_and_cancel_is_idempotent(
 async def test_route_execution_requires_auth(live_client: AsyncClient) -> None:
     response = await live_client.get("/api/v1/route-executions")
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_only_the_latest_mark_can_be_taken_back(live_client: AsyncClient) -> None:
+    """FRONTEND-36: unmark the last marked stop while the run is in progress."""
+    tokens = await _login(live_client, f"+7914{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    listed = await live_client.get("/api/v1/routes", params={"limit": 20})
+    route_id = next(item["id"] for item in listed.json()["items"] if item["stops_count"] >= 2)
+
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    assert started.status_code == 201, started.text
+    execution_id = started.json()["id"]
+    first, second = started.json()["stops"][:2]
+    base = f"/api/v1/route-executions/{execution_id}/stops"
+    try:
+        for stop in (first, second):
+            marked = await live_client.put(f"{base}/{stop['id']}/complete", headers=headers)
+            assert marked.status_code == 200, marked.text
+
+        engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+        count_sql = text("SELECT count(*) FROM route_pace_violations WHERE execution_id = :id")
+        async with engine.connect() as conn:
+            violations_before = await conn.scalar(count_sql, {"id": execution_id})
+
+        # Not the latest mark: refused.
+        earlier = await live_client.delete(f"{base}/{first['id']}/complete", headers=headers)
+        assert earlier.status_code == 409, earlier.text
+        assert earlier.json()["error"]["code"] == "route_execution_stop_not_last"
+
+        event = {"client_event_id": str(uuid4())}
+        undone = await live_client.request(
+            "DELETE", f"{base}/{second['id']}/complete", json=event, headers=headers
+        )
+        assert undone.status_code == 200, undone.text
+        body = undone.json()
+        assert body["completed_stops"] == 1
+        assert next(s for s in body["stops"] if s["id"] == second["id"])["completed_at"] is None
+
+        # A retried request with the same event, or a second unmark, changes nothing.
+        replay = await live_client.request(
+            "DELETE", f"{base}/{second['id']}/complete", json=event, headers=headers
+        )
+        assert replay.status_code == 200
+        assert replay.json()["completed_stops"] == 1
+        again = await live_client.delete(f"{base}/{second['id']}/complete", headers=headers)
+        assert again.status_code == 200
+        assert again.json()["completed_stops"] == 1
+
+        # The first stop is now the latest mark and can be taken back too.
+        first_undone = await live_client.delete(f"{base}/{first['id']}/complete", headers=headers)
+        assert first_undone.status_code == 200, first_undone.text
+        assert first_undone.json()["completed_stops"] == 0
+
+        async with engine.connect() as conn:
+            assert await conn.scalar(count_sql, {"id": execution_id}) == violations_before
+        await engine.dispose()
+
+        # A finished run cannot be unmarked.
+        remarked = await live_client.put(f"{base}/{first['id']}/complete", headers=headers)
+        assert remarked.status_code == 200
+        cancelled = await live_client.post(
+            f"/api/v1/route-executions/{execution_id}/cancel", headers=headers
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        late = await live_client.delete(f"{base}/{first['id']}/complete", headers=headers)
+        assert late.status_code == 409
+        assert late.json()["error"]["code"] == "route_execution_not_active"
+    finally:
+        await live_client.post(f"/api/v1/route-executions/{execution_id}/cancel", headers=headers)

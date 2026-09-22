@@ -12,7 +12,9 @@ from tourism_backend.modules.routes.application.schemas import (
 )
 
 RouteExecutionStatus = Literal["active", "paused", "completed", "cancelled"]
-RouteExecutionEventAction = Literal["complete_stop", "complete", "cancel", "pause", "resume"]
+RouteExecutionEventAction = Literal[
+    "complete_stop", "uncomplete_stop", "complete", "cancel", "pause", "resume"
+]
 PointsStatus = Literal["none", "awarded", "held", "rejected"]
 PaceVerdictOut = Literal["ok", "too_fast", "ahead", "unknown", "skipped"]
 
