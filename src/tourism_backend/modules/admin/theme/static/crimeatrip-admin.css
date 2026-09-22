@@ -262,7 +262,27 @@ body.ct-login {
 }
 
 .page-pretitle {
+  /* Tabler's default is uppercase + letter-spacing, meant for a short
+     kicker label above the title. Every page here instead puts a full
+     descriptive sentence there (BACKEND-4: "ИЗМЕНЕНИЯ ПРИМЕНЯЮТСЯ СРАЗУ,
+     БЕЗ ПЕРЕЗАПУСКА…"), which reads far worse in caps. */
   color: var(--ct-ink-soft);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* A placeholder (the field's default value, shown when empty) needs to read
+   as different from typed content but still clearly legible against the
+   control's own flat-gray background — not fade to the same near-invisible
+   grey a disabled field would use (BACKEND-4). */
+.form-control::placeholder {
+  color: var(--ct-ink-soft);
+  opacity: 1;
+}
+
+.form-control:disabled,
+.form-control[readonly] {
+  opacity: 0.6;
 }
 
 .card {
