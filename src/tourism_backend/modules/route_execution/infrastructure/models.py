@@ -265,7 +265,8 @@ class RouteExecutionEvent(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "route_execution_events"
     __table_args__ = (
         CheckConstraint(
-            "action IN ('complete_stop', 'complete', 'cancel', 'pause', 'resume')",
+            "action IN ('complete_stop', 'uncomplete_stop', 'complete', 'cancel', 'pause', "
+            "'resume')",
             name="action",
         ),
         UniqueConstraint(

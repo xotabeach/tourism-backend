@@ -647,6 +647,92 @@ async def complete_stop(
     return out
 
 
+async def uncomplete_stop(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    execution_id: UUID,
+    stop_id: UUID,
+    event: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    """Take back the latest mark of a run in progress (FRONTEND-36).
+
+    Only the most recent mark can be undone, so legs and pace keep following
+    the order the stops were really reached in. The anti-fraud record of the
+    undone mark stays in the journal: marking, unmarking and marking again
+    must not wash a violation out. A repeated mark is judged afresh.
+    """
+    now = datetime.now(UTC)
+    client_event_id = event.client_event_id if event is not None else None
+    if client_event_id is not None:
+        replayed = await _replayed_out(
+            session,
+            user_id=user_id,
+            execution_id=execution_id,
+            client_event_id=client_event_id,
+        )
+        if replayed is not None:
+            return replayed
+
+    await antifraud_service.lock_user(session, user_id)
+    execution = await _owned_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        for_update=True,
+    )
+    stop = await session.scalar(
+        select(RouteExecutionStop).where(
+            RouteExecutionStop.id == stop_id,
+            RouteExecutionStop.execution_id == execution.id,
+        )
+    )
+    if stop is None:
+        raise AppError(
+            code="route_execution_stop_not_found",
+            message="Route execution stop not found",
+            status_code=404,
+        )
+    if stop.completed_at is None:
+        # Already unmarked (a retried request): nothing left to undo.
+        return await _execution_out(session, execution)
+    if execution.status not in {"active", "paused"}:
+        raise AppError(
+            code="route_execution_not_active",
+            message="Route execution is not active",
+            status_code=409,
+            details=terminal_conflict_details(execution.status),
+        )
+    last_stop_at = await _latest_stop_completion(session, execution_id=execution.id)
+    if last_stop_at is not None and stop.completed_at < last_stop_at:
+        raise AppError(
+            code="route_execution_stop_not_last",
+            message="Only the latest marked stop can be unmarked",
+            status_code=409,
+            details={"retryable": False},
+        )
+
+    resolved = resolve_event_time(
+        event.occurred_at if event is not None else None,
+        now=now,
+        not_before=stop.completed_at,
+    )
+    stop.completed_at = None
+    stop.mark_below_floor = False
+    stop.updated_at = now
+    execution.updated_at = now
+    return await _commit_event(
+        session,
+        execution=execution,
+        action="uncomplete_stop",
+        resolved=resolved,
+        now=now,
+        applied=True,
+        stop_id=stop.id,
+        client_event_id=client_event_id,
+    )
+
+
 async def complete_execution(
     session: AsyncSession,
     *,

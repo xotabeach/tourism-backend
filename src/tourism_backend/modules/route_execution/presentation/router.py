@@ -83,6 +83,23 @@ async def complete_route_execution_stop(
     )
 
 
+@router.delete("/{execution_id}/stops/{stop_id}/complete", response_model=RouteExecutionOut)
+async def uncomplete_route_execution_stop(
+    execution_id: UUID,
+    stop_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    return await service.uncomplete_stop(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        stop_id=stop_id,
+        event=payload,
+    )
+
+
 @router.post("/{execution_id}/complete", response_model=RouteExecutionOut)
 async def complete_route_execution(
     execution_id: UUID,
