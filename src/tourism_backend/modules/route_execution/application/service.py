@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 from geoalchemy2 import Geometry
 from geoalchemy2.functions import ST_X, ST_Y
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, exists, func, or_, select
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,7 +65,7 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecutionStop,
     RouteRoutingSnapshot,
 )
-from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
+from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
 
 _PUBLIC_ROUTE = and_(
     Route.source.in_(("editorial", "user_created")),
@@ -131,6 +131,36 @@ async def _execution_out(
         state = await antifraud_service.get_state(session, execution.user_id)
         hints_enabled = state is None or not state.is_trusted
     first_mark = completed == 0
+    last_resume = await session.scalar(
+        select(func.max(RouteExecutionEvent.effective_at)).where(
+            RouteExecutionEvent.execution_id == execution.id,
+            RouteExecutionEvent.action == "resume",
+            RouteExecutionEvent.applied.is_(True),
+        )
+    )
+    last_activity = max(
+        moment
+        for moment in (
+            execution.started_at,
+            last_resume,
+            *(stop.completed_at for stop in stops),
+        )
+        if moment is not None
+    )
+    my_review_exists = False
+    if execution.status == "completed" and execution.route_id is not None:
+        my_review_exists = bool(
+            await session.scalar(
+                select(
+                    exists().where(
+                        RouteReview.route_id == execution.route_id,
+                        RouteReview.author_user_id == execution.user_id,
+                        RouteReview.reply_to_review_id.is_(None),
+                        RouteReview.status != "deleted",
+                    )
+                )
+            )
+        )
     return RouteExecutionOut(
         id=execution.id,
         route_id=execution.route_id,
@@ -192,6 +222,9 @@ async def _execution_out(
         ),
         pace_verdict=pace_verdict,
         paused_duration_seconds=int(execution.paused_duration_seconds or 0),
+        paused_at=execution.paused_at if execution.status == "paused" else None,
+        last_activity_at=last_activity,
+        my_review_exists=my_review_exists,
         sync=sync,
         created_at=execution.created_at,
         updated_at=execution.updated_at,

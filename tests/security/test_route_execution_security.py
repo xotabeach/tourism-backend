@@ -455,3 +455,64 @@ async def test_only_the_latest_mark_can_be_taken_back(live_client: AsyncClient) 
         assert late.json()["error"]["code"] == "route_execution_not_active"
     finally:
         await live_client.post(f"/api/v1/route-executions/{execution_id}/cancel", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_run_reports_pause_start_last_activity_and_own_review(
+    live_client: AsyncClient,
+) -> None:
+    """FRONTEND-34: what the home card needs to draw a run."""
+    tokens = await _login(live_client, f"+7915{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    me = (await live_client.get("/api/v1/me", headers=headers)).json()
+    listed = await live_client.get("/api/v1/routes", params={"limit": 20})
+    route_id = next(item["id"] for item in listed.json()["items"] if item["stops_count"] >= 1)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    assert started.status_code == 201, started.text
+    run = started.json()
+    base = f"/api/v1/route-executions/{run['id']}"
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        assert run["paused_at"] is None
+        assert run["last_activity_at"] == run["started_at"]
+        assert run["my_review_exists"] is False
+
+        paused = (await live_client.post(f"{base}/pause", headers=headers)).json()
+        assert paused["paused_at"] is not None
+        # A pause is not activity: «давно не отмечали» counts from the start.
+        assert paused["last_activity_at"] == run["started_at"]
+
+        resumed = (await live_client.post(f"{base}/resume", headers=headers)).json()
+        assert resumed["paused_at"] is None
+        assert resumed["last_activity_at"] > run["started_at"]
+
+        for stop in run["stops"]:
+            marked = await live_client.put(f"{base}/stops/{stop['id']}/complete", headers=headers)
+            assert marked.status_code == 200, marked.text
+        last_mark = max(stop["completed_at"] for stop in marked.json()["stops"])
+        assert marked.json()["last_activity_at"] == last_mark
+
+        done = await live_client.post(f"{base}/complete", headers=headers)
+        assert done.status_code == 200, done.text
+        assert done.json()["my_review_exists"] is False
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO route_reviews (id, route_id, author_user_id, body, rating,"
+                    " status, created_at, updated_at) VALUES (:id, :route, :user, 'ok', 5,"
+                    " 'pending_review', now(), now())"
+                ),
+                {"id": str(uuid4()), "route": route_id, "user": me["id"]},
+            )
+        again = await live_client.get(base, headers=headers)
+        assert again.json()["my_review_exists"] is True
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM route_reviews WHERE author_user_id = :user"),
+                {"user": me["id"]},
+            )
+        await engine.dispose()

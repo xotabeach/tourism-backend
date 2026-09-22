@@ -155,6 +155,15 @@ class RouteExecutionOut(BaseModel):
     # Total time spent paused so far — lets a client report elapsed time net
     # of pauses without re-deriving it from the event ledger.
     paused_duration_seconds: int = Field(default=0, ge=0)
+    # Start of the current pause, so a paused run's timer can stand still
+    # (the pause only enters paused_duration_seconds on resume). FRONTEND-34.
+    paused_at: datetime | None = None
+    # Latest of start, a stop mark and a resume: what «давно не отмечали
+    # точки» is measured from. FRONTEND-34.
+    last_activity_at: datetime | None = None
+    # A finished run whose route this person already reviewed: the home card
+    # does not ask for a review then. FRONTEND-34.
+    my_review_exists: bool = False
     sync: RouteExecutionSyncOut | None = None
     created_at: datetime
     updated_at: datetime
