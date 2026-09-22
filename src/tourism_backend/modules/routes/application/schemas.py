@@ -243,6 +243,7 @@ class RouteListItemOut(BaseModel):
     is_round_trip: bool
     suitable_for_children: bool | None
     pets_allowed: bool | None
+    is_seaside: bool = False
     seasonality: list[str] | None
     stops_count: int
     author_label: str | None

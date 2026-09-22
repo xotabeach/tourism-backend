@@ -408,3 +408,22 @@ def test_interest_score_is_judged_against_what_was_asked() -> None:
     assert _interest_score(0, 4) == 0.0
     assert _interest_score(2, 2) == 1.0
     assert _interest_score(1, 2) < _interest_score(2, 2)
+
+
+def test_sea_tag_answers_the_sea_interest_without_text_or_beach() -> None:
+    """BACKEND-19: an editor's «Море» tag is enough for «Море» and «Пляж»."""
+    textless = {
+        "name": "Маршрут",
+        "short_description": None,
+        "description": None,
+        "place_names": ("Объект 1", "Объект 2"),
+        "locality_names": ("Ялта",),
+        "category_slugs": frozenset({"museum"}),
+    }
+    for interest in ("Море", "Пляж"):
+        params = RouteMatchParamsIn(city="Ялта", duration="d1_2", interests=[interest])
+        tagged = score_candidate(params, _candidate(**textless, is_seaside=True))
+        untagged = score_candidate(params, _candidate(**textless))
+        assert tagged.score > untagged.score
+        assert "нет совпадений по интересам" not in tagged.mismatches
+        assert "нет совпадений по интересам" in untagged.mismatches

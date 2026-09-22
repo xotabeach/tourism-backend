@@ -61,6 +61,9 @@ from tourism_backend.modules.routes.application.schemas import (
 )
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
 
+# Publish filter that marks a user route as a sea route (BACKEND-19).
+SEASIDE_TAG = "Море"
+
 _PUBLIC_CATALOG = (
     or_(Route.source == "editorial", Route.source == "user_created"),
     Route.visibility == "public",
@@ -266,6 +269,7 @@ def _to_list_item(
         is_round_trip=route.is_round_trip,
         suitable_for_children=route.suitable_for_children,
         pets_allowed=route.pets_allowed,
+        is_seaside=route.is_seaside,
         seasonality=route.seasonality,
         stops_count=stops_count,
         author_label=author_label if author_label is not None else route.author_label,
@@ -412,6 +416,7 @@ async def list_routes(
     q: str | None,
     source: RouteSource | None,
     sort: RouteCatalogSort,
+    seaside: bool | None = None,
     limit: int,
     offset: int,
 ) -> RouteListOut:
@@ -433,6 +438,8 @@ async def list_routes(
         stmt = stmt.where(Route.name.ilike(pattern))
     if source:
         stmt = stmt.where(Route.source == source)
+    if seaside is not None:
+        stmt = stmt.where(Route.is_seaside.is_(seaside))
 
     return await _list_from_stmt(session, stmt, limit=limit, offset=offset, sort=sort)
 
@@ -978,6 +985,7 @@ async def save_user_route_draft(
     route.difficulty = _difficulty_name(payload.difficulty)
     route.transport_mode = "walking"
     route.suitable_for_children = "С детьми" in payload.filters
+    route.is_seaside = SEASIDE_TAG in payload.filters
     accessibility: dict[str, Any] = {
         "travel_pace": payload.pace,
         "filters": payload.filters,

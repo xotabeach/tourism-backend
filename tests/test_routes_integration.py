@@ -105,6 +105,14 @@ async def test_routes_filters_and_unpublished_not_found(live_app: object) -> Non
         assert filtered.status_code == 200
         assert filtered.json()["total"] >= 1
 
+        for seaside in (True, False):
+            by_sea = await client.get(
+                "/api/v1/routes",
+                params={"seaside": str(seaside).lower(), "limit": 100},
+            )
+            assert by_sea.status_code == 200
+            assert all(item["is_seaside"] is seaside for item in by_sea.json()["items"])
+
         missing = await client.get(f"/api/v1/routes/{uuid4()}")
         assert missing.status_code == 404
         assert missing.json()["error"]["code"] == "route_not_found"

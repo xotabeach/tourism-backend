@@ -324,6 +324,52 @@ async def test_withdraw_route_from_pending_and_published(
 
 
 @pytest.mark.asyncio
+async def test_sea_filter_marks_the_route_as_seaside(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """The «Море» publish filter is the route's sea tag (BACKEND-19)."""
+    client, app = publication_context
+    tokens = await _login(client, f"+7913{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    places = await client.get(
+        "/api/v1/places",
+        params={"region_slug": "crimea", "limit": 2},
+    )
+    place_ids = [item["id"] for item in places.json()["items"][:2]]
+    assert len(place_ids) == 2
+
+    draft = {
+        "name": "Маршрут у моря",
+        "description": "",
+        "place_ids": place_ids,
+        "filters": ["Природа"],
+        "pace": "calm",
+        "difficulty": 2,
+    }
+    saved = await client.post("/api/v1/routes/drafts", headers=headers, json=draft)
+    assert saved.status_code == 200, saved.text
+    route_id = saved.json()["id"]
+    try:
+        mine = await client.get(f"/api/v1/routes/mine/{route_id}", headers=headers)
+        assert mine.json()["is_seaside"] is False
+
+        resaved = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**draft, "route_id": route_id, "filters": ["Природа", "Море"]},
+        )
+        assert resaved.status_code == 200, resaved.text
+        mine = await client.get(f"/api/v1/routes/mine/{route_id}", headers=headers)
+        assert mine.json()["is_seaside"] is True
+    finally:
+        async with app.state.session_factory() as session:
+            route = await session.get(Route, UUID(route_id))
+            if route is not None:
+                await session.delete(route)
+            await session.commit()
+
+
+@pytest.mark.asyncio
 async def test_route_is_editable_from_another_device_and_requeues_when_live(
     publication_context: tuple[AsyncClient, Any],
 ) -> None:
