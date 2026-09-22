@@ -9,7 +9,11 @@ from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 from sqladmin import BaseView, ModelView, action, expose
-from sqladmin.filters import AllUniqueStringValuesFilter, OperationColumnFilter
+from sqladmin.filters import (
+    AllUniqueStringValuesFilter,
+    BooleanFilter,
+    OperationColumnFilter,
+)
 from sqladmin.flash import Flash
 from sqlalchemy import select
 from starlette.requests import Request
@@ -1374,6 +1378,7 @@ class RouteAdmin(ModelView, model=Route):
         Route.source,
         Route.visibility,
         Route.difficulty,
+        Route.is_seaside,
         Route.updated_at,
         Route.created_at,
     ]
@@ -1393,6 +1398,7 @@ class RouteAdmin(ModelView, model=Route):
         Route.distance_meters: "Расстояние, м",
         Route.suitable_for_children: "Подходит детям",
         Route.pets_allowed: "Можно с животными",
+        Route.is_seaside: "Море",
         Route.updated_at: "Обновлён",
         Route.created_at: "Создан",
     }
@@ -1416,6 +1422,7 @@ class RouteAdmin(ModelView, model=Route):
         AllUniqueStringValuesFilter(Route.publication_status),
         AllUniqueStringValuesFilter(Route.source),
         AllUniqueStringValuesFilter(Route.visibility),
+        BooleanFilter(Route.is_seaside, title="Море"),
         OperationColumnFilter(Route.owner_user_id, title="ID автора"),
     ]
     form_columns = [
@@ -1428,6 +1435,7 @@ class RouteAdmin(ModelView, model=Route):
         Route.transport_mode,
         Route.suitable_for_children,
         Route.pets_allowed,
+        Route.is_seaside,
     ]
     can_create = False
     can_edit = True

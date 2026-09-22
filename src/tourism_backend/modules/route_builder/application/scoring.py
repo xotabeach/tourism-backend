@@ -110,6 +110,10 @@ TRIP_TYPE_CATEGORIES: dict[TripType, frozenset[str]] = {
 }
 
 
+# Interests the route's «Море» tag answers on its own (BACKEND-19).
+SEASIDE_INTERESTS = frozenset({"море", "пляж"})
+
+
 def categories_for_interest(interest: str) -> frozenset[str]:
     return INTEREST_CATEGORIES.get(interest.casefold().strip(), frozenset())
 
@@ -135,6 +139,8 @@ class RouteMatchCandidate:
     category_slugs: frozenset[str] = frozenset()
     typical_crowding: str = "unknown"
     price_min_amount: int | None = None
+    # Editor's «Море» tag (BACKEND-19).
+    is_seaside: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,8 +236,10 @@ def _interests_score(
     interests: list[str],
     text: str,
     categories: frozenset[str] = frozenset(),
+    *,
+    seaside: bool = False,
 ) -> tuple[float, str | None]:
-    """Category match first, free-text keywords as fallback.
+    """Tag and category match first, free-text keywords as fallback.
 
     Text alone yields false negatives on imported places (description is
     filled for ~0.1% of them), so an interest counts as hit when either the
@@ -243,7 +251,8 @@ def _interests_score(
     matched: list[str] = []
     for interest in interests:
         key = interest.casefold()
-        by_category = bool(categories & categories_for_interest(key))
+        by_tag = seaside and key in SEASIDE_INTERESTS
+        by_category = by_tag or bool(categories & categories_for_interest(key))
         stems = _INTEREST_KEYWORDS.get(key, (key,))
         by_text = _keyword_hits(text, stems) > 0 or key in text
         if by_category or by_text:
@@ -574,7 +583,12 @@ def score_candidate(
             )
         )
     if params.interests:
-        i_score, i_reason = _interests_score(params.interests, text, candidate.category_slugs)
+        i_score, i_reason = _interests_score(
+            params.interests,
+            text,
+            candidate.category_slugs,
+            seaside=candidate.is_seaside,
+        )
         no_hits = i_reason is None
         parts.append(
             _Part(
@@ -582,7 +596,7 @@ def score_candidate(
                 i_score,
                 i_reason,
                 # No categories and no text hit: absence of data, not of a match.
-                known=bool(candidate.category_slugs) or not no_hits,
+                known=bool(candidate.category_slugs) or candidate.is_seaside or not no_hits,
                 mismatch="нет совпадений по интересам" if no_hits else None,
                 rank=7,
             )

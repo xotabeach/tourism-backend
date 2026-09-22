@@ -250,6 +250,7 @@ async def get_routes(
     q: str | None = Query(default=None, max_length=200),
     source: RouteSource | None = None,
     sort: RouteCatalogSort = "default",
+    seaside: bool | None = None,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=10_000),
 ) -> RouteListOut:
@@ -262,6 +263,7 @@ async def get_routes(
         q=q,
         source=source,
         sort=sort,
+        seaside=seaside,
         limit=limit,
         offset=offset,
     )

@@ -98,6 +98,12 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     is_round_trip: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     suitable_for_children: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     pets_allowed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # The «Море» tag (BACKEND-19): a stop on a beach or by the shore. Worked
+    # out from the stops (routes/application/seaside.py), an editor can fix
+    # it in the admin.
+    is_seaside: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     accessibility: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     geometry = mapped_column(Geography(geometry_type="LINESTRING", srid=4326), nullable=True)
     author_label: Mapped[str | None] = mapped_column(String(255), nullable=True)

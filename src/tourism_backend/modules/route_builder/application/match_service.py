@@ -274,6 +274,7 @@ async def _load_candidates(
                 category_slugs=frozenset(categories_by_route.get(route.id, frozenset())),
                 typical_crowding=route.typical_crowding,
                 price_min_amount=route.price_min_amount,
+                is_seaside=route.is_seaside,
             )
         )
     return out

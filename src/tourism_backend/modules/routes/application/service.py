@@ -59,6 +59,7 @@ from tourism_backend.modules.routes.application.schemas import (
     UserRouteEditablePlaceOut,
     UserRouteMediaOut,
 )
+from tourism_backend.modules.routes.application.seaside import is_seaside as stops_are_seaside
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
 
 _PUBLIC_CATALOG = (
@@ -266,6 +267,7 @@ def _to_list_item(
         is_round_trip=route.is_round_trip,
         suitable_for_children=route.suitable_for_children,
         pets_allowed=route.pets_allowed,
+        is_seaside=route.is_seaside,
         seasonality=route.seasonality,
         stops_count=stops_count,
         author_label=author_label if author_label is not None else route.author_label,
@@ -412,6 +414,7 @@ async def list_routes(
     q: str | None,
     source: RouteSource | None,
     sort: RouteCatalogSort,
+    seaside: bool | None = None,
     limit: int,
     offset: int,
 ) -> RouteListOut:
@@ -433,6 +436,8 @@ async def list_routes(
         stmt = stmt.where(Route.name.ilike(pattern))
     if source:
         stmt = stmt.where(Route.source == source)
+    if seaside is not None:
+        stmt = stmt.where(Route.is_seaside.is_(seaside))
 
     return await _list_from_stmt(session, stmt, limit=limit, offset=offset, sort=sort)
 
@@ -1003,6 +1008,9 @@ async def save_user_route_draft(
     if unchanged:
         accessibility["routing"] = previous_routing
     else:
+        # The «Море» tag follows the stops (BACKEND-19); an editor's fix in
+        # the admin holds until the author changes the stops again.
+        route.is_seaside = await stops_are_seaside(session, payload.place_ids)
         routed = await _route_geometry_for_places(
             session,
             places=places,
