@@ -57,8 +57,16 @@ ANTIFRAUD_ICON = "fa-solid fa-shield-halved"
 _USER_ACTIONS = ("lift_block", "reset_flag", "block_24h", "block_7d")
 _ADMIN_ONLY_ACTIONS = ("trust", "untrust")
 
+#: Russian names for the raw enum stored in runtime_config / RoutePaceViolation.mode
+#: (BACKEND-4: the screen showed "shadow"/"enforce" verbatim).
+MODE_LABELS = {"off": "Выключено", "shadow": "Наблюдение", "enforce": "Боевой"}
+
 _LABELS = {
-    "af_mode": ("Режим", "off — выключено, shadow — только наблюдение, enforce — боевой"),
+    "af_mode": (
+        "Режим",
+        "Выключено — ничего не проверяет. Наблюдение — считает нарушения, "
+        "но не ограничивает. Боевой — держит очки и блокирует запуск.",
+    ),
     "af_pace_violation_ratio": ("Доля расчётного времени", "Участок быстрее этой доли — нарушение"),
     "af_min_mark_ratio": ("Пол отметки, доля", "Быстрее — отметка не даёт очков за точку"),
     "af_pace_leg_min_estimate_seconds": (
@@ -530,6 +538,7 @@ class AntiFraudConfigAdmin(BaseView):
             context={
                 "fields": fields,
                 "effective_mode": effective.mode.value,
+                "mode_labels": MODE_LABELS,
                 "held": held,
                 "overdue": overdue,
                 "overdue_days": effective.hold_overdue_days,

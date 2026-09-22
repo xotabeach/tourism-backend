@@ -72,7 +72,19 @@
     </div>
     <div class="page-body flex-grow-1">
       <div class="container-fluid">
-        <div class="row row-deck row-cards">
+        {# `row-deck` stretches every direct child of this row to equal
+           height, for a dashboard row of side-by-side cards. Every admin
+           page instead puts a single column here (col-12 col-xl-8, .ct-hub,
+           …) holding several stacked blocks — row-deck's own CSS
+           (`.row-deck>[class*=col-]{display:flex}`) turns that single
+           column into a flex ROW, so its stacked children end up side by
+           side instead of stacked, squeezed into the leftover space next to
+           the CSS' third rule that ` .card{flex:1 1 auto}` inflates
+           (BACKEND-4: antifraud's stat tiles collapsed to single-letter
+           columns, stats.html's period form ran into its cards). No current
+           page has more than one such column, so row-deck buys nothing and
+           only breaks columns with more than one child. #}
+        <div class="row row-cards">
           {% block content %} {% endblock %}
           {% block flash %}
           {% include 'sqladmin/flash.html' %}
