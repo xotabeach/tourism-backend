@@ -258,21 +258,27 @@ class ValhallaRoutingProvider:
         raw_legs = trip.get("legs") if isinstance(trip, Mapping) else None
         if not isinstance(raw_legs, list) or len(raw_legs) != len(waypoints) - 1:
             raise RoutingError("routing_provider_error", "Valhalla returned no legs")
-        max_leg = limits.max_leg_meters or default_max_leg_meters(transport_mode)
+        # Length alone never refuses a route: a long leg is built and flagged
+        # (spec 14, D24). Only a caller's explicit limit still refuses.
+        max_leg = limits.max_leg_meters
+        long_leg = default_max_leg_meters(transport_mode)
         legs: list[RouteLegResult] = []
         line: list[tuple[float, float]] = []
         heights: list[float] = []
+        warnings: list[str] = []
         for index, raw in enumerate(raw_legs):
             if not isinstance(raw, Mapping) or not isinstance(raw.get("summary"), Mapping):
                 raise RoutingError("routing_provider_error", "Valhalla leg is malformed")
             summary = raw["summary"]
             meters = round(float(summary.get("length") or 0) * 1000)
             seconds = round(float(summary.get("time") or 0))
-            if meters > max_leg:
+            if max_leg is not None and meters > max_leg:
                 raise RoutingError(
                     "routing_unreachable",
                     f"Leg exceeds max distance ({meters}m > {max_leg}m)",
                 )
+            if meters > long_leg:
+                warnings.append(f"long_leg:{index}")
             shape = raw.get("shape")
             points = decode_polyline6(shape) if isinstance(shape, str) else []
             # Legs share their joint point; keep it once in the whole line.
@@ -296,7 +302,6 @@ class ValhallaRoutingProvider:
                 "route_too_long",
                 f"Route length {total_distance}m exceeds max {limits.max_total_meters}m",
             )
-        warnings: list[str] = []
         geometry = _wkt(line)
         if geometry is None:
             warnings.append("provider_geometry_missing")

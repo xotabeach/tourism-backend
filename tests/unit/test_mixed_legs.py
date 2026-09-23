@@ -251,3 +251,19 @@ def test_pieces_draw_the_drive_solid_blue_and_the_walk_dashed_green() -> None:
     walk_start = _CAR_PARK
     r, g, b = _painted(png, frame, walk_start)
     assert (r, g, b) != (255, 255, 255)
+
+
+@pytest.mark.asyncio
+async def test_a_walk_with_one_pathless_pair_keeps_its_other_legs() -> None:
+    """Spec 14, D24: only the pair with no path is straight."""
+    from tourism_backend.modules.route_builder.application.mixed_legs import build_walked_route
+
+    router = _FakeRouter(failing={("walk", _FORTRESS)})
+    route = await build_walked_route(_stops(_PALACE, _FORTRESS, _MONASTERY), router=router)
+    assert [(s.leg_index, s.mode, s.origin) for s in route.segments] == [
+        (0, "walk", "synthetic"),
+        (1, "walk", "router"),
+    ]
+    assert route.warnings == ["leg_not_routed:0"]
+    assert not route.result.synthetic
+    assert len(route.result.legs) == 2

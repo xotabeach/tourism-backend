@@ -1,6 +1,7 @@
 """Valhalla with car parks: drives end where a walk to the stop begins (spec 14b).
 
-Walking routes go straight to Valhalla as before. Car and mixed routes are
+Walking routes go straight to Valhalla as before, and leg by leg when one
+pair has no path. Car and mixed routes are
 built leg by leg by ``mixed_legs.build_driven_route`` and carry their
 segments; a mixed route is driven until public transport is routed (12b).
 """
@@ -11,7 +12,10 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
-from tourism_backend.modules.route_builder.application.mixed_legs import build_driven_route
+from tourism_backend.modules.route_builder.application.mixed_legs import (
+    build_driven_route,
+    build_walked_route,
+)
 from tourism_backend.modules.route_builder.application.routing import (
     RouteWaypoint,
     RoutingConstraints,
@@ -44,10 +48,22 @@ class DrivenRoutingProvider:
         constraints: RoutingConstraints | None = None,
     ) -> RoutingResult:
         if transport_mode not in _DRIVEN:
-            return await self._valhalla.route(
-                waypoints=waypoints, transport_mode=transport_mode, constraints=constraints
+            try:
+                return await self._valhalla.route(
+                    waypoints=waypoints, transport_mode=transport_mode, constraints=constraints
+                )
+            except RoutingError as exc:
+                # A caller's own limit stands; a pair with no path does not
+                # flatten the other legs (spec 14, D24).
+                if exc.code != "routing_unreachable" or constraints is not None:
+                    raise
+                if len(waypoints) < 3:
+                    raise
+            built = await build_walked_route(waypoints, router=self._valhalla)
+        else:
+            built = await build_driven_route(
+                waypoints, router=self._valhalla, parkings=self._parkings
             )
-        built = await build_driven_route(waypoints, router=self._valhalla, parkings=self._parkings)
         if built.result.synthetic:
             # Nothing was routed at all: let callers fall back as before.
             raise RoutingError("routing_unreachable", "Valhalla не построил ни одного участка")
