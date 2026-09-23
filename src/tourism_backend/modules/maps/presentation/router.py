@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from collections.abc import Sequence
 from uuid import UUID
@@ -50,6 +51,106 @@ def _downsample(
     return [points[i] for i in sorted(indices)]
 
 
+# 2GIS static maps reject any object outside the requested frame with 400
+# "object is out of bounds". A frame zoomed in on one leg therefore can never
+# carry the whole route line: it is clipped to the frame first. The inset
+# keeps rounding of the 6-decimal coordinates from landing a hair outside.
+_FRAME_INSET_PX = 2.0
+_TILE_SIZE = 256.0
+_MAX_LINE_PIECES = 16
+
+
+def _world_xy(lon: float, lat: float, zoom: int) -> tuple[float, float]:
+    world = _TILE_SIZE * 2**zoom
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    rad = math.radians(lat)
+    x = (lon + 180.0) / 360.0 * world
+    y = (1 - math.log(math.tan(rad) + 1 / math.cos(rad)) / math.pi) / 2 * world
+    return x, y
+
+
+def _lon_lat(x: float, y: float, zoom: int) -> tuple[float, float]:
+    world = _TILE_SIZE * 2**zoom
+    lon = x / world * 360.0 - 180.0
+    lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / world))))
+    return lon, lat
+
+
+def _frame_box(
+    center: tuple[float, float], zoom: int, width: int, height: int
+) -> tuple[float, float, float, float]:
+    """Pixel bounds of the frame in world coordinates (`s` is logical px)."""
+    cx, cy = _world_xy(center[1], center[0], zoom)
+    half_w = width / 2 - _FRAME_INSET_PX
+    half_h = height / 2 - _FRAME_INSET_PX
+    return cx - half_w, cy - half_h, cx + half_w, cy + half_h
+
+
+def _clip_segment(
+    a: tuple[float, float], b: tuple[float, float], box: tuple[float, float, float, float]
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Liang-Barsky: the part of segment a-b inside box, or None."""
+    x0, y0 = a
+    dx, dy = b[0] - x0, b[1] - y0
+    t0, t1 = 0.0, 1.0
+    for p, q in (
+        (-dx, x0 - box[0]),
+        (dx, box[2] - x0),
+        (-dy, y0 - box[1]),
+        (dy, box[3] - y0),
+    ):
+        if p == 0:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return None
+    return (x0 + t0 * dx, y0 + t0 * dy), (x0 + t1 * dx, y0 + t1 * dy)
+
+
+def _clip_line(
+    points: Sequence[tuple[float, float]],
+    box: tuple[float, float, float, float],
+    zoom: int,
+) -> list[list[tuple[float, float]]]:
+    """Pieces of a lon,lat polyline that lie inside the frame, in lon,lat."""
+    pixels = [_world_xy(lon, lat, zoom) for lon, lat in points]
+    pieces: list[list[tuple[float, float]]] = []
+    current: list[tuple[float, float]] = []
+    for a, b in zip(pixels, pixels[1:], strict=False):
+        clipped = _clip_segment(a, b, box)
+        if clipped is None:
+            if len(current) >= 2:
+                pieces.append(current)
+            current = []
+            continue
+        start, end = clipped
+        if not current or current[-1] != start:
+            if len(current) >= 2:
+                pieces.append(current)
+            current = [start]
+        current.append(end)
+        if end != b:
+            # The segment leaves the frame here.
+            pieces.append(current)
+            current = []
+    if len(current) >= 2:
+        pieces.append(current)
+    # The longest stretches matter; the URL has room for a bounded number.
+    pieces.sort(key=len, reverse=True)
+    return [[_lon_lat(x, y, zoom) for x, y in piece] for piece in pieces[:_MAX_LINE_PIECES]]
+
+
+def _inside(point: tuple[float, float], box: tuple[float, float, float, float], zoom: int) -> bool:
+    x, y = _world_xy(point[0], point[1], zoom)
+    return box[0] <= x <= box[2] and box[1] <= y <= box[3]
+
+
 def _line(points: Sequence[tuple[float, float]]) -> str:
     # Static API expects latitude,longitude (the backend geometry is lon,lat).
     return ",".join(f"{lat:.6f},{lon:.6f}" for lon, lat in points)
@@ -66,24 +167,34 @@ def _route_static_params(
     zoom: int | None = None,
     pins: str = "numbered",
 ) -> list[tuple[str, str]]:
-    params: list[tuple[str, str]] = [
-        ("s", _size(width, height, scale)),
-        ("ls", _line(_downsample(line_points, _MAX_LINE_POINTS)) + "~c:16a34a~w:5"),
-    ]
+    params: list[tuple[str, str]] = [("s", _size(width, height, scale))]
     # An explicit center+zoom makes the projection deterministic, so a client
     # can place its own tappable pins over the raster (2GIS static maps use
     # standard 256px Web Mercator — verified against known pixel offsets).
     # Without it the provider auto-fits and the exact viewport is unknown.
+    box = None
     if center is not None and zoom is not None:
+        box = _frame_box(center, zoom, width, height)
+        pieces = _clip_line(line_points, box, zoom)
+        total = sum(len(piece) for piece in pieces)
+        for piece in pieces:
+            budget = max(2, _MAX_LINE_POINTS * len(piece) // max(total, 1))
+            params.append(("ls", _line(_downsample(piece, budget)) + "~c:16a34a~w:5"))
         # Static API takes latitude first, same as the `pt`/`ls` values above.
         params.append(("c", f"{center[0]:.6f},{center[1]:.6f}"))
         params.append(("z", str(zoom)))
+    else:
+        params.insert(
+            1, ("ls", _line(_downsample(line_points, _MAX_LINE_POINTS)) + "~c:16a34a~w:5")
+        )
     if pins == "numbered":
         # pt marker color only accepts 2GIS's predefined short codes (be/rd/
         # oe/yw/gn/pe/pk/gy/bk), unlike ls which takes an arbitrary hex
         # RRGGBB. Markers must sit on the real stops, not on points sampled
         # from the road-following geometry (which follows the road).
         for index, (lon, lat) in enumerate(stop_points[:8], start=1):
+            if box is not None and zoom is not None and not _inside((lon, lat), box, zoom):
+                continue
             params.append(("pt", f"{lat:.6f},{lon:.6f}~k:c~c:gn~n:{index}"))
     return params
 

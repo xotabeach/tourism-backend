@@ -131,3 +131,78 @@ def test_decimation_is_a_no_op_under_the_limit() -> None:
     line = [(float(i), float(i)) for i in range(10)]
 
     assert _downsample(line, 400) == line
+
+
+def _frame_pixels(params: list[tuple[str, str]], key: str) -> list[list[tuple[float, float]]]:
+    from tourism_backend.modules.maps.presentation.router import _world_xy
+
+    zoom = int(dict(params)["z"])
+    result = []
+    for name, value in params:
+        if name != key:
+            continue
+        coords = [float(v) for v in value.split("~", 1)[0].split(",")]
+        result.append(
+            [_world_xy(lon, lat, zoom) for lat, lon in zip(coords[0::2], coords[1::2], strict=True)]
+        )
+    return result
+
+
+# Livadia -> Swallow's nest leg of «Классика Южного берега», framed the way the
+# app frames a leg (zoom 13 fits it at 377x600 with the
+# app's 56px padding); the rest of the route (to Alupka) lies far outside it.
+_ROUTE = [(34.0556, 44.4197), (34.0900, 44.4300), (34.1436, 44.4678), (34.1235, 44.4307)]
+_STOPS = [_ROUTE[0], _ROUTE[2], _ROUTE[3]]
+_LEG_CENTER = (44.44925, 34.13355)
+
+
+def test_zoomed_frame_only_sends_the_line_inside_it() -> None:
+    """2GIS answers 400 "object is out of bounds" to any line leaving the frame."""
+    from tourism_backend.modules.maps.presentation.router import _world_xy
+
+    params = _route_static_params(
+        _ROUTE,
+        _STOPS,
+        width=377,
+        height=600,
+        scale=2,
+        center=_LEG_CENTER,
+        zoom=13,
+        pins="numbered",
+    )
+    cx, cy = _world_xy(_LEG_CENTER[1], _LEG_CENTER[0], 13)
+    lines = _frame_pixels(params, "ls")
+    assert lines, "the leg itself must still be drawn"
+    for line in lines + _frame_pixels(params, "pt"):
+        for x, y in line:
+            assert abs(x - cx) <= 377 / 2 - 1.9
+            assert abs(y - cy) <= 600 / 2 - 1.9
+    # Vorontsov palace (stop 1) is outside the frame, so its pin is dropped.
+    assert [v.rsplit("~n:", 1)[1] for k, v in params if k == "pt"] == ["2", "3"]
+
+
+def test_line_leaving_the_frame_ends_on_its_edge() -> None:
+    from tourism_backend.modules.maps.presentation.router import _world_xy
+
+    params = _route_static_params(
+        _ROUTE, _ROUTE, width=377, height=600, scale=2, center=_LEG_CENTER, zoom=13, pins="none"
+    )
+    cx, _ = _world_xy(_LEG_CENTER[1], _LEG_CENTER[0], 13)
+    (line,) = _frame_pixels(params, "ls")
+    # The Alupka side enters through the left edge (inset by 2px).
+    assert abs(line[0][0] - (cx - 377 / 2 + 2)) < 0.01
+
+
+def test_line_that_leaves_and_returns_becomes_two_pieces() -> None:
+    center = (44.45, 34.13)
+    zigzag = [(34.125, 44.45), (34.30, 44.45), (34.135, 44.451)]
+    params = _route_static_params(
+        zigzag, zigzag, width=377, height=600, scale=2, center=center, zoom=14, pins="none"
+    )
+    assert len([k for k, _ in params if k == "ls"]) == 2
+
+
+def test_without_a_frame_the_whole_line_is_sent() -> None:
+    params = _route_static_params(_ROUTE, _ROUTE, width=377, height=600, scale=2)
+    (line,) = [v for k, v in params if k == "ls"]
+    assert line.count(",") == len(_ROUTE) * 2 - 1
