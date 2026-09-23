@@ -14,9 +14,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 # embedding model download) depend only on pyproject.toml/uv.lock, so an
 # ordinary code change reuses them from the build cache instead of
 # re-downloading ~1 GB on every pipeline.
-# Only what dependency resolution reads: a README edit must not rebuild the
-# multi-gigabyte dependency layer and push it again over a slow link.
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 
 # --extra rag: real local RAG embedder (sentence-transformers/torch, pinned
 # to the CPU-only wheel index in pyproject.toml — see [tool.uv.sources]).
