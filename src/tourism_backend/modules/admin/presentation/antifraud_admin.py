@@ -60,12 +60,19 @@ _ADMIN_ONLY_ACTIONS = ("trust", "untrust")
 #: Russian names for the raw enum stored in runtime_config / RoutePaceViolation.mode
 #: (BACKEND-4: the screen showed "shadow"/"enforce" verbatim).
 MODE_LABELS = {"off": "Выключено", "shadow": "Наблюдение", "enforce": "Боевой"}
+#: Russian names for choice settings other than the mode.
+CHOICE_LABELS = {"straight_line": "По прямой", "provider": "По участкам маршрута"}
 
 _LABELS = {
     "af_mode": (
         "Режим",
         "Выключено — ничего не проверяет. Наблюдение — считает нарушения, "
         "но не ограничивает. Боевой — держит очки и блокирует запуск.",
+    ),
+    "af_pace_source": (
+        "Оценка участка для темпа",
+        "По прямой — как до перехода на OSM. По участкам маршрута — реальные тропы "
+        "и дороги; пока включено «по прямой», участки сравниваются в журнале.",
     ),
     "af_pace_violation_ratio": ("Доля расчётного времени", "Участок быстрее этой доли — нарушение"),
     "af_min_mark_ratio": ("Пол отметки, доля", "Быстрее — отметка не даёт очков за точку"),
@@ -529,6 +536,7 @@ class AntiFraudConfigAdmin(BaseView):
                 "minimum": item.minimum,
                 "maximum": item.maximum,
                 "value": stored.get(item.key, ""),
+                "options": item.options,
             }
             for item in describe_settings()
         ]
@@ -539,6 +547,7 @@ class AntiFraudConfigAdmin(BaseView):
                 "fields": fields,
                 "effective_mode": effective.mode.value,
                 "mode_labels": MODE_LABELS,
+                "choice_labels": CHOICE_LABELS,
                 "held": held,
                 "overdue": overdue,
                 "overdue_days": effective.hold_overdue_days,

@@ -263,7 +263,8 @@ async def test_run_start_exposes_leg_estimates_but_no_hints_in_shadow(
     stops = execution["stops"]
     assert stops[0]["leg_estimate_seconds"] is None
     assert all(stop["leg_estimate_seconds"] and stop["leg_distance_meters"] for stop in stops[1:])
-    assert all(stop["leg_estimate_source"] == "straight_line" for stop in stops[1:])
+    # The shown leg is the router's when the route kept its legs (spec 12a).
+    assert all(stop["leg_estimate_source"] in {"straight_line", "provider"} for stop in stops[1:])
     # Shadow (the default): no thresholds and no antifraud block for the client.
     assert execution["antifraud"] is None
     assert all(stop["pace_warn_below_seconds"] is None for stop in stops)
@@ -295,7 +296,13 @@ async def test_enforce_exposes_client_hints_after_the_first_mark(
         at=datetime.now(UTC) - timedelta(hours=2),
     )
     later = marked["stops"][1]
-    assert later["pace_warn_below_seconds"] == -(-later["leg_estimate_seconds"] // 2)
+    # The hint follows the estimate the pace check judges by, not the shown leg.
+    judged = await _scalar(
+        db,
+        "SELECT pace_estimate_seconds FROM route_execution_stops WHERE id = :id",
+        id=later["id"],
+    )
+    assert later["pace_warn_below_seconds"] == -(-judged // 2)
     assert marked["stops"][0]["pace_warn_below_seconds"] is None  # already marked
 
 
@@ -707,3 +714,80 @@ async def test_retention_keeps_events_of_open_or_recently_closed_holds(
         )
     async with maker() as session:
         assert await purgeable(session) == mine
+
+
+@pytest.mark.asyncio
+async def test_router_legs_are_shown_but_only_observed_by_the_pace_check(
+    live_client: AsyncClient, db: AsyncEngine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Spec 12a, D4: router legs show real km and time; the straight line judges."""
+    import json
+
+    route_id = await _route_id(db)
+    stop_count = await _scalar(
+        db, "SELECT count(*) FROM route_stops WHERE route_id = :id", id=UUID(route_id)
+    )
+    # A router answer much slower than the straight line: 2 h per leg. The
+    # seeded route is shared by other tests, so its metadata is put back.
+    legs = [{"distance_meters": 9000, "duration_seconds": 7200}] * (stop_count - 1)
+    saved = await _scalar(
+        db, "SELECT accessibility::text FROM routes WHERE id = :id", id=UUID(route_id)
+    )
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE routes SET accessibility = jsonb_set(coalesce(accessibility, '{}'), "
+                "'{routing}', coalesce(accessibility->'routing', '{}') || "
+                "jsonb_build_object('legs', CAST(:legs AS jsonb))) WHERE id = :id"
+            ),
+            {"id": UUID(route_id), "legs": json.dumps(legs)},
+        )
+    try:
+        await _observe_router_legs(live_client, db, caplog, route_id)
+    finally:
+        async with db.begin() as conn:
+            await conn.execute(
+                text("UPDATE routes SET accessibility = CAST(:saved AS jsonb) WHERE id = :id"),
+                {"id": UUID(route_id), "saved": saved},
+            )
+
+
+async def _observe_router_legs(
+    live_client: AsyncClient,
+    db: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+    route_id: str,
+) -> None:
+    import logging
+
+    headers, _user = await _login(live_client)
+    execution = await _start(live_client, db, headers, route_id)
+    second = execution["stops"][1]
+    assert second["leg_estimate_source"] == "provider"
+    assert second["leg_estimate_seconds"] == 7200
+    judged = await _scalar(
+        db,
+        "SELECT pace_estimate_seconds FROM route_execution_stops WHERE id = :id",
+        id=second["id"],
+    )
+    assert judged is not None
+    assert judged < 7200
+
+    started = datetime.now(UTC) - timedelta(hours=3)
+    await _mark(live_client, headers, execution["id"], execution["stops"][0]["id"], at=started)
+    # Slow for the straight line, but under half of the router's 2 hours.
+    with caplog.at_level(logging.INFO, logger="tourism_backend.antifraud"):
+        await _mark(
+            live_client,
+            headers,
+            execution["id"],
+            second["id"],
+            at=started + timedelta(seconds=max(judged, 1) + 60),
+        )
+    violations = await _scalar(
+        db,
+        "SELECT count(*) FROM route_pace_violations WHERE execution_id = :id",
+        id=UUID(execution["id"]),
+    )
+    assert violations == 0
+    assert any(record.getMessage() == "pace_router_leg_disagrees" for record in caplog.records)

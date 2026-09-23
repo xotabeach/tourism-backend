@@ -43,6 +43,13 @@
             <option value="{{ option }}" {% if field.value == option %}selected{% endif %}>{{ mode_labels.get(option, option) }}</option>
             {% endfor %}
           </select>
+          {% elif field.kind == "choice" %}
+          <select id="af-{{ field.key }}" class="form-select" name="{{ field.key }}">
+            <option value="" {% if not field.value %}selected{% endif %}>по умолчанию ({{ choice_labels.get(field.default, field.default) }})</option>
+            {% for option in field.options %}
+            <option value="{{ option }}" {% if field.value == option %}selected{% endif %}>{{ choice_labels.get(option, option) }}</option>
+            {% endfor %}
+          </select>
           {% else %}
           <input id="af-{{ field.key }}" class="form-control" type="text" name="{{ field.key }}"
             value="{{ field.value }}" placeholder="{{ field.default }}">

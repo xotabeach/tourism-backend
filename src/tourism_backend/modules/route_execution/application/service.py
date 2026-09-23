@@ -202,7 +202,7 @@ async def _execution_out(
                 ),
                 pace_warn_below_seconds=(
                     pace_warn_below_seconds(
-                        estimate_seconds=stop.leg_estimate_seconds,
+                        estimate_seconds=antifraud_service.pace_estimate(stop),
                         is_first_mark=first_mark,
                         rules=antifraud_settings.pace,
                     )
@@ -486,13 +486,25 @@ async def start_execution(
     # of its first stop that has one. The own cover alone left most runs
     # without a picture (FRONTEND-42).
     cover_url = (await route_cover_urls(session, [route.id])).get(route.id)
+    stop_points = [
+        StopPoint(route_stop.position, lat, lng) for route_stop, _place, lng, lat in rows
+    ]
+    # Shown to the walker: the router's real legs when the route has them.
     leg_estimates = build_leg_estimates(
-        [StopPoint(route_stop.position, lat, lng) for route_stop, _place, lng, lat in rows],
+        stop_points,
         transport_mode=route.transport_mode,
         provider_legs=provider_legs_from_metadata(
             routing_metadata if isinstance(routing_metadata, dict) else None,
             stop_count=len(rows),
         ),
+    )
+    # Judged by the pace check: the straight line until af_pace_source says
+    # otherwise; router legs are compared in the log meanwhile (spec 12a, D4).
+    pace_by_router = (await load_settings(session)).pace_source == "provider"
+    pace_estimates = (
+        leg_estimates
+        if pace_by_router
+        else build_leg_estimates(stop_points, transport_mode=route.transport_mode)
     )
     now = datetime.now(UTC)
     execution = RouteExecution(
@@ -525,10 +537,13 @@ async def start_execution(
                 leg_distance_meters=leg.distance_meters if leg else None,
                 leg_estimate_seconds=leg.duration_seconds if leg else None,
                 leg_estimate_source=leg.source if leg else None,
+                pace_estimate_seconds=pace.duration_seconds if pace else None,
                 created_at=now,
                 updated_at=now,
             )
-            for (route_stop, place, lng, lat), leg in zip(rows, leg_estimates, strict=True)
+            for (route_stop, place, lng, lat), leg, pace in zip(
+                rows, leg_estimates, pace_estimates, strict=True
+            )
         ]
     )
     await session.commit()

@@ -36,6 +36,7 @@ from tourism_backend.modules.route_execution.application.antifraud_logic import 
     MOSCOW_TZ,
     GpsReading,
     GpsVerdict,
+    PaceEvaluation,
     PaceKind,
     StopPoint,
     actual_leg_seconds,
@@ -186,6 +187,54 @@ async def _pause_intervals(
     return intervals
 
 
+def pace_estimate(stop: RouteExecutionStop) -> int | None:
+    """The leg estimate the pace check judges by; older runs only have the shown one."""
+    if stop.pace_estimate_seconds is not None:
+        return stop.pace_estimate_seconds
+    return stop.leg_estimate_seconds
+
+
+def _observe_router_leg(
+    stop: RouteExecutionStop,
+    *,
+    execution: RouteExecution,
+    actual: int | None,
+    judged: PaceEvaluation,
+    settings: AntiFraudSettings,
+) -> None:
+    """Log when the router's own leg would judge this mark differently (spec 12a, D4).
+
+    Observation only: nothing here is recorded as a violation or changes the
+    mark. The log tells whether switching af_pace_source to the router's legs
+    would flag more or fewer walkers.
+    """
+    router = stop.leg_estimate_seconds
+    if (
+        stop.leg_estimate_source != "provider"
+        or router is None
+        or stop.pace_estimate_seconds is None
+        or router == stop.pace_estimate_seconds
+    ):
+        return
+    shadow = evaluate_pace(estimate_seconds=router, actual_seconds=actual, rules=settings.pace)
+    if shadow.kind is judged.kind and shadow.below_floor == judged.below_floor:
+        return
+    _logger.info(
+        "pace_router_leg_disagrees",
+        extra={
+            "execution_id": str(execution.id),
+            "stop_position": stop.position,
+            "actual_seconds": actual,
+            "straight_estimate_seconds": stop.pace_estimate_seconds,
+            "router_estimate_seconds": router,
+            "judged": judged.kind.value,
+            "router_would_judge": shadow.kind.value,
+            "judged_below_floor": judged.below_floor,
+            "router_below_floor": shadow.below_floor,
+        },
+    )
+
+
 async def assess_stop_mark(
     session: AsyncSession,
     *,
@@ -242,11 +291,13 @@ async def assess_stop_mark(
         this_mark_at=effective_at,
         paused_seconds=paused,
     )
+    judged_by = pace_estimate(stop)
     pace = evaluate_pace(
-        estimate_seconds=stop.leg_estimate_seconds,
+        estimate_seconds=judged_by,
         actual_seconds=actual,
         rules=settings.pace,
     )
+    _observe_router_leg(stop, execution=execution, actual=actual, judged=pace, settings=settings)
     gps = gps_verdict(
         position,
         stops=[StopPoint(item.position, item.lat, item.lng) for item in stops],
@@ -295,7 +346,7 @@ async def assess_stop_mark(
             execution_id=execution.id,
             stop_id=stop.id,
             kind=violation_kind,
-            estimate_seconds=stop.leg_estimate_seconds,
+            estimate_seconds=judged_by,
             actual_seconds=actual,
             gps_verdict=gps.verdict.value if position is not None else None,
             gps_distance_bucket_m=gps.distance_bucket_m,

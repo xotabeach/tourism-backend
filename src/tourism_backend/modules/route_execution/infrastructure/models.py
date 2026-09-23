@@ -245,6 +245,10 @@ class RouteExecutionStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     leg_distance_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
     leg_estimate_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     leg_estimate_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # What the pace check judges by (af_pace_source): the straight-line leg
+    # while router legs are only observed (spec 12a, D4). NULL for runs that
+    # started before, which fall back to leg_estimate_seconds.
+    pace_estimate_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # The mark came so soon after the previous one that it earns no stop points.
     mark_below_floor: Mapped[bool] = mapped_column(
         Boolean,
