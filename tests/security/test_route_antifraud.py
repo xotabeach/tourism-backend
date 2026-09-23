@@ -736,8 +736,12 @@ async def test_router_legs_are_shown_but_only_observed_by_the_pace_check(
     async with db.begin() as conn:
         await conn.execute(
             text(
-                "UPDATE routes SET accessibility = jsonb_set(coalesce(accessibility, '{}'), "
-                "'{routing}', coalesce(accessibility->'routing', '{}') || "
+                # A fresh CI database seeds JSON null here, not an object.
+                "UPDATE routes SET accessibility = jsonb_set("
+                "CASE WHEN jsonb_typeof(accessibility) = 'object' "
+                "THEN accessibility ELSE '{}' END, '{routing}', "
+                "CASE WHEN jsonb_typeof(accessibility->'routing') = 'object' "
+                "THEN accessibility->'routing' ELSE '{}' END || "
                 "jsonb_build_object('legs', CAST(:legs AS jsonb))) WHERE id = :id"
             ),
             {"id": UUID(route_id), "legs": json.dumps(legs)},
