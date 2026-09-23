@@ -61,6 +61,7 @@ from tourism_backend.modules.routes.application.schemas import (
     UserRouteMediaOut,
 )
 from tourism_backend.modules.routes.application.seaside import is_seaside as stops_are_seaside
+from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
 
 _PUBLIC_CATALOG = (
@@ -1622,7 +1623,9 @@ async def preview_user_route_draft(
         )
 
     settings = get_settings()
-    transport_mode = type_cast(TransportMode, payload.transport_mode)
+    # Old spellings (bicycle, public_transport) are routed as walked or
+    # driven: nothing else is routed before 12b (spec 14, R4).
+    transport_mode: TransportMode = segment_mode_for(payload.transport_mode)
     # The form previews the same points repeatedly while the author drags one
     # around, and then saves them. All of that is one routing answer.
     fingerprint = routing_fingerprint(waypoints, transport_mode=transport_mode)

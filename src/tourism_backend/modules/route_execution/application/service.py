@@ -43,6 +43,7 @@ from tourism_backend.modules.route_execution.application.offline_sync import (
 )
 from tourism_backend.modules.route_execution.application.rewards import (
     RouteEffort,
+    SegmentEffort,
     travel_points_for_effort,
 )
 from tourism_backend.modules.route_execution.application.routing_snapshot import (
@@ -66,8 +67,12 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecutionEvent,
     RouteExecutionStop,
     RouteRoutingSnapshot,
+    RoutingSnapshotDay,
+    RoutingSnapshotSegment,
 )
 from tourism_backend.modules.routes.application.service import route_cover_urls
+from tourism_backend.modules.routes.application.structure import refresh_route_structure
+from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
 
 _PUBLIC_ROUTE = and_(
@@ -473,9 +478,12 @@ async def start_execution(
             status_code=409,
         )
 
+    segments, days = await refresh_route_structure(session, route)
     routing_snapshot = await ensure_routing_snapshot(
         session,
         route=route,
+        segments=segments,
+        days=days,
         stop_signature=[
             (route_stop.id, route_stop.position, place.id) for route_stop, place, _lng, _lat in rows
         ],
@@ -490,9 +498,12 @@ async def start_execution(
         StopPoint(route_stop.position, lat, lng) for route_stop, _place, lng, lat in rows
     ]
     # Shown to the walker: the router's real legs when the route has them.
+    # Straight-line speeds follow the mode the legs are travelled in: a
+    # mixed route is driven until 14b, not walked (spec 14, step 0).
+    leg_mode = segment_mode_for(route.base_mode)
     leg_estimates = build_leg_estimates(
         stop_points,
-        transport_mode=route.transport_mode,
+        transport_mode=leg_mode,
         provider_legs=provider_legs_from_metadata(
             routing_metadata if isinstance(routing_metadata, dict) else None,
             stop_count=len(rows),
@@ -504,7 +515,7 @@ async def start_execution(
     pace_estimates = (
         leg_estimates
         if pace_by_router
-        else build_leg_estimates(stop_points, transport_mode=route.transport_mode)
+        else build_leg_estimates(stop_points, transport_mode=leg_mode)
     )
     now = datetime.now(UTC)
     execution = RouteExecution(
@@ -919,10 +930,35 @@ async def _award_completion_points(
         if execution.routing_snapshot_id is not None
         else None
     )
-    difficulty = None
-    if execution.route_id is not None:
+    difficulty = snapshot.difficulty if snapshot is not None else None
+    if difficulty is None and execution.route_id is not None:
+        # Snapshots taken before spec 14 did not keep the difficulty.
         difficulty = await session.scalar(
             select(Route.difficulty).where(Route.id == execution.route_id)
+        )
+    segments: tuple[SegmentEffort, ...] = ()
+    day_count = 1
+    if snapshot is not None:
+        segments = tuple(
+            SegmentEffort(
+                mode=row.mode,
+                role=row.role,
+                distance_meters=row.distance_meters,
+                elevation_gain_meters=row.elevation_gain_meters,
+            )
+            for row in await session.scalars(
+                select(RoutingSnapshotSegment)
+                .where(RoutingSnapshotSegment.snapshot_id == snapshot.id)
+                .order_by(RoutingSnapshotSegment.leg_index, RoutingSnapshotSegment.seq)
+            )
+        )
+        day_count = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(RoutingSnapshotDay)
+                .where(RoutingSnapshotDay.snapshot_id == snapshot.id)
+            )
+            or 1
         )
 
     points = travel_points_for_effort(
@@ -933,6 +969,8 @@ async def _award_completion_points(
             max_road_angle_degrees=snapshot.max_road_angle_degrees if snapshot else None,
             transport_mode=snapshot.transport_mode if snapshot else None,
             difficulty=difficulty,
+            segments=segments,
+            day_count=day_count,
         )
     )
     await antifraud_service.settle_completion_points(
