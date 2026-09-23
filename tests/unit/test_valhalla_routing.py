@@ -156,9 +156,16 @@ async def test_timeout_and_unsupported_mode():
 async def test_length_limits():
     body = {"trip": {"legs": [_leg([_A, _B], 30.0, 20000, []), _leg([_B, _C], 1.0, 600, [])]}}
     provider, _ = _provider(lambda _: httpx.Response(200, json=body))
+    # A 30 km walk leg is built and flagged, not refused (spec 14, D24).
+    long_walk = await provider.route(waypoints=_WAYPOINTS, transport_mode="walk")
+    assert long_walk.warnings == ("long_leg:0",)
     with pytest.raises(RoutingError) as caught:
-        await provider.route(waypoints=_WAYPOINTS, transport_mode="walk")
-    assert caught.value.code == "routing_unreachable"  # walk leg over 25 km
+        await provider.route(
+            waypoints=_WAYPOINTS,
+            transport_mode="walk",
+            constraints=RoutingConstraints(max_leg_meters=25_000),
+        )
+    assert caught.value.code == "routing_unreachable"
     with pytest.raises(RoutingError) as caught:
         await provider.route(
             waypoints=_WAYPOINTS,

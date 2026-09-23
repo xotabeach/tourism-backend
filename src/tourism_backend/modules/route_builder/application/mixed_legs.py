@@ -293,3 +293,34 @@ def _summary(segments: list[BuiltSegment], legs: Sequence[Sequence[BuiltSegment]
         elevation_gain_meters=sum(gains) if gains else None,
         elevation_loss_meters=sum(losses) if losses else None,
     )
+
+
+async def build_walked_route(
+    stops: Sequence[RouteWaypoint], *, router: SegmentRouter
+) -> MixedRoute:
+    """A walk routed leg by leg, when routing it in one go failed.
+
+    One unreachable pair used to flatten the whole route into straight
+    lines; now only that leg is straight and flagged (spec 14, D24).
+    """
+    if len(stops) < 2:
+        raise RoutingError("routing_provider_error", "At least two waypoints are required")
+
+    async def leg(index: int) -> list[BuiltSegment]:
+        a = (stops[index].lng, stops[index].lat)
+        b = (stops[index + 1].lng, stops[index + 1].lat)
+        walked = await _routed(router, a, b, mode="walk", role="main")
+        return [walked or _straight(a, b, leg_index=0, seq=0, mode="walk", role="main")]
+
+    legs = await asyncio.gather(*(leg(i) for i in range(len(stops) - 1)))
+    segments = [
+        _placed(segment, leg_index, seq)
+        for leg_index, parts in enumerate(legs)
+        for seq, segment in enumerate(parts)
+    ]
+    warnings = [
+        f"leg_not_routed:{segment.leg_index}"
+        for segment in segments
+        if segment.origin == "synthetic"
+    ]
+    return MixedRoute(segments=segments, result=_summary(segments, legs), warnings=warnings)

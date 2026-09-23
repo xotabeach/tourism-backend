@@ -53,7 +53,9 @@ class StubRoutingProvider:
                 message="At least two waypoints are required",
             )
         limits = constraints or RoutingConstraints()
-        max_leg = limits.max_leg_meters or default_max_leg_meters(transport_mode)
+        # Like the real router, length alone refuses nothing (spec 14, D24).
+        max_leg = limits.max_leg_meters
+        long_leg = default_max_leg_meters(transport_mode)
         max_total = limits.max_total_meters
         speed = _SPEED_KMH[transport_mode]
 
@@ -65,7 +67,9 @@ class StubRoutingProvider:
         for index in range(len(waypoints) - 1):
             start, end = waypoints[index], waypoints[index + 1]
             distance = int(round(_haversine_m(start, end) * _ROAD_FACTOR))
-            if distance > max_leg:
+            if distance > long_leg:
+                warnings.append(f"long_leg:{index}")
+            if max_leg is not None and distance > max_leg:
                 raise RoutingError(
                     code="routing_unreachable",
                     message=(
