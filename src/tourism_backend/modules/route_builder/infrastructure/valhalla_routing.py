@@ -42,6 +42,10 @@ _SLOPE_SPAN_M = 50
 # park point otherwise lands on an isolated service road inside a fence and
 # no car path exists (Livadia Palace did exactly that).
 _MIN_REACHABILITY = 200
+# A car stops at the nearest street, not on a forest track next to a
+# mountain place: snapping to tracks sent Alushta - Demerdzhi on a 74 km
+# detour (2GIS: 11 km); from residential streets up it is 11 km again.
+_CAR_SNAP: dict[str, Any] = {"search_filter": {"min_road_class": "residential"}}
 # Valhalla error codes meaning "no way between these points".
 _UNREACHABLE_CODES = frozenset({170, 171, 442, 443})
 _MAX_RESPONSE_BYTES = 8_000_000
@@ -152,6 +156,7 @@ class ValhallaRoutingProvider:
                     "lon": point.lng,
                     "type": "break",
                     "minimum_reachability": _MIN_REACHABILITY,
+                    **(_CAR_SNAP if costing == "auto" else {}),
                 }
                 for point in waypoints
             ],

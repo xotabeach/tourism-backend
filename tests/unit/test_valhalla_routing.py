@@ -85,6 +85,7 @@ async def test_walk_route_keeps_one_leg_per_pair_and_elevation():
     assert seen[0]["costing_options"]["pedestrian"]["max_hiking_difficulty"] == 4
     assert seen[0]["costing_options"]["pedestrian"]["use_ferry"] == 0
     assert all(loc["minimum_reachability"] == 200 for loc in seen[0]["locations"])
+    assert all("search_filter" not in loc for loc in seen[0]["locations"])
     assert result.provider == "valhalla"
     assert not result.synthetic
     assert [(leg.from_index, leg.to_index) for leg in result.legs] == [(0, 1), (1, 2)]
@@ -107,6 +108,9 @@ async def test_car_uses_auto_costing_without_ferries():
     result = await provider.route(waypoints=_WAYPOINTS, transport_mode="car")
     assert seen[0]["costing"] == "auto"
     assert seen[0]["costing_options"] == {"auto": {"use_ferry": 0}}
+    assert all(
+        loc["search_filter"] == {"min_road_class": "residential"} for loc in seen[0]["locations"]
+    )
     assert result.elevation_gain_meters is None
 
 
