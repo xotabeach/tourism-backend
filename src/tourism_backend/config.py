@@ -183,8 +183,15 @@ class Settings(BaseSettings):
     # ADR-004/010 RoutingProvider. ``stub`` is synthetic local DX; ``2gis``
     # uses the server-side HTTP Routing API.  Keep the default conservative so
     # a missing external key can never silently change local/test behaviour.
-    routing_provider: Literal["stub", "2gis"] = "stub"
-    osrm_base_url: str | None = None
+    routing_provider: Literal["stub", "valhalla", "2gis"] = "stub"
+    # Our own Valhalla in the private compose network (spec 12a).
+    valhalla_base_url: str = "http://valhalla:8002"
+    # Static map images: our tileserver-gl on OSM tiles (spec 12a). 2GIS stays
+    # only as an off-by-default fallback (D1).
+    map_provider: Literal["osm", "2gis"] = "osm"
+    tileserver_base_url: str = "http://tileserver:8080"
+    # Goes into image URLs and cache keys; bump when style or tiles change (D22).
+    map_source_version: str = Field(default="osm1", pattern=r"^[a-z0-9]{1,16}$")
     routing_timeout_seconds: float = Field(default=10, ge=1, le=60)
     # Keep the canonical name explicit, while accepting the two names used by
     # older deployment manifests during a rolling migration.  The value is

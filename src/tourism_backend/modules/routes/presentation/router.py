@@ -5,7 +5,7 @@ from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile,
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
 from tourism_backend.api.errors import AppError
-from tourism_backend.modules.maps.presentation.router import _fetch, _route_static_params
+from tourism_backend.modules.maps.presentation.router import route_map_response
 from tourism_backend.modules.routes.application import media as route_media
 from tourism_backend.modules.routes.application import review_media, review_service
 from tourism_backend.modules.routes.application import service as routes_service
@@ -98,21 +98,19 @@ async def route_draft_preview_map(
             status_code=404,
         )
     line, stops = shape
-    response = await _fetch(
+    response = await route_map_response(
         settings=settings,
         request=request,
-        params=_route_static_params(
-            line,
-            stops,
-            width=width,
-            height=height,
-            scale=scale,
-            center=(center_lat, center_lng)
-            if center_lat is not None and center_lng is not None
-            else None,
-            zoom=zoom,
-            pins=pins,
-        ),
+        line=line,
+        stops=stops,
+        width=width,
+        height=height,
+        scale=scale,
+        center=(center_lat, center_lng)
+        if center_lat is not None and center_lng is not None
+        else None,
+        zoom=zoom,
+        pins=pins,
     )
     # An unsaved draft is the author's alone, even though the raster
     # provider is shared.
