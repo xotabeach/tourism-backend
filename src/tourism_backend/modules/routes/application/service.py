@@ -752,6 +752,8 @@ def _difficulty_name(value: int) -> str:
         return "easy"
     if value == 3:
         return "moderate"
+    if value >= 5:
+        return "extreme"
     return "hard"
 
 

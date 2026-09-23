@@ -45,7 +45,7 @@ _DURATION_RANGES: dict[DurationOption, tuple[int, int]] = {
 _PACE_DIFFICULTY: dict[PaceOption, set[str]] = {
     "calm": {"easy", "лёгкий", "легкий", "1", "2"},
     "moderate": {"moderate", "средний", "3"},
-    "active": {"hard", "сложный", "4", "5", "difficult"},
+    "active": {"hard", "extreme", "очень сложный", "сложный", "4", "5", "difficult"},
 }
 
 _TRIP_KEYWORDS: dict[TripType, tuple[str, ...]] = {

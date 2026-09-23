@@ -1,5 +1,6 @@
 """Route execution state machine and ownership rules."""
 
+import math
 from datetime import UTC, datetime
 from typing import Literal, cast
 from uuid import UUID, uuid4
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.achievements.service import after_commit as evaluate_achievements
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.infrastructure.models import Place, RoadEvent
@@ -26,6 +28,7 @@ from tourism_backend.modules.route_execution.application.antifraud_logic import 
     GpsReading,
     StopPoint,
     build_leg_estimates,
+    haversine_meters,
     pace_warn_below_seconds,
     provider_legs_from_metadata,
 )
@@ -319,6 +322,10 @@ async def _commit_event(
         if replayed is None:
             raise
         return replayed
+    if applied and action in {"complete_stop", "complete"}:
+        await evaluate_achievements(
+            session, execution.user_id, {"stop" if action == "complete_stop" else "completion"}
+        )
     return await _execution_out(
         session,
         execution,
@@ -651,6 +658,10 @@ async def complete_stop(
         stop.updated_at = now
         execution.updated_at = now
         position = event.position if event is not None else None
+        if position is not None and stop.lat is not None and stop.lng is not None:
+            stop.device_distance_m = math.ceil(
+                haversine_meters(position.lat, position.lng, stop.lat, stop.lng)
+            )
         assessment = await antifraud_service.assess_stop_mark(
             session,
             execution=execution,

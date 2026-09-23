@@ -173,6 +173,13 @@ async def test_route_execution_lifecycle_is_idempotent(live_client: AsyncClient)
     )
     assert repeated_finish.status_code == 200
     assert repeated_finish.json()["id"] == execution["id"]
+    badges = await live_client.get("/api/v1/me/achievements", headers=headers)
+    first_step = [item for item in badges.json()["items"] if item["slug"] == "first-step"]
+    assert len(first_step) == 1
+    assert first_step[0]["status"] == "unlocked"
+    inbox = await live_client.get("/api/v1/me/notifications", headers=headers)
+    notices = [item for item in inbox.json()["items"] if item["target_id"] == first_step[0]["id"]]
+    assert len(notices) == 1
     # A replayed complete must not pay out a second time.
     assert repeated_finish.json()["awarded_points"] == awarded
 
@@ -383,6 +390,42 @@ async def test_route_execution_is_owner_scoped_and_cancel_is_idempotent(
 async def test_route_execution_requires_auth(live_client: AsyncClient) -> None:
     response = await live_client.get("/api/v1/route-executions")
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_achievement_failure_does_not_rollback_completion(
+    live_client: AsyncClient, monkeypatch
+):
+    from tourism_backend.modules.achievements import service as awards
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("simulated achievement query failure")
+
+    monkeypatch.setattr(awards, "evaluate", broken)
+    tokens = await _login(live_client, f"+7922{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    response = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    assert response.status_code == 201, response.text
+    run = response.json()
+    for stop in run["stops"]:
+        marked = await live_client.put(
+            f"/api/v1/route-executions/{run['id']}/stops/{stop['id']}/complete", headers=headers
+        )
+        assert marked.status_code == 200, marked.text
+    finished = await live_client.post(
+        f"/api/v1/route-executions/{run['id']}/complete", headers=headers
+    )
+    assert finished.status_code == 200, finished.text
+    assert finished.json()["status"] == "completed"
+    # The committed result remains readable even though every award attempt failed.
+    history = await live_client.get("/api/v1/route-executions", headers=headers)
+    assert any(
+        item["id"] == run["id"] and item["status"] == "completed"
+        for item in history.json()["items"]
+    )
 
 
 @pytest.mark.asyncio

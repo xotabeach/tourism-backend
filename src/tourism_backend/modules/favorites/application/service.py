@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.achievements.service import after_commit as evaluate_achievements
 from tourism_backend.modules.favorites.application.schemas import FavoritesOut
 from tourism_backend.modules.favorites.infrastructure.models import FavoritePlace, FavoriteRoute
 from tourism_backend.modules.identity.application.travel_points import grant_due_travel_points
@@ -89,6 +90,7 @@ async def add_favorite_route(session: AsyncSession, user_id: UUID, route_id: UUI
         )
     )
     await session.commit()
+    await evaluate_achievements(session, user_id, {"favorite"})
     await grant_due_travel_points(session)
 
 

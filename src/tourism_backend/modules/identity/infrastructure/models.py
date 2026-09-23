@@ -206,6 +206,13 @@ class Achievement(Base):
 
 class UserAchievement(Base):
     __tablename__ = "user_achievements"
+    __table_args__ = (
+        CheckConstraint("source IN ('rule', 'backfill', 'operator')", name="source"),
+        CheckConstraint(
+            "source <> 'operator' OR (reason IS NOT NULL AND length(trim(reason)) > 0)",
+            name="operator_reason",
+        ),
+    )
 
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -217,6 +224,29 @@ class UserAchievement(Base):
         index=True,
     )
     unlocked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, server_default="rule")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    granted_by_admin_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("admin_principals.id", ondelete="SET NULL"), nullable=True
+    )
+    celebrated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AchievementAdminAction(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "achievement_admin_actions"
+    __table_args__ = (
+        CheckConstraint("action IN ('grant', 'revoke')", name="action"),
+        CheckConstraint("length(trim(reason)) > 0", name="reason_required"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    achievement_id: Mapped[UUID] = mapped_column(ForeignKey("achievements.id", ondelete="CASCADE"))
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    admin_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("admin_principals.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ProfileLike(Base):

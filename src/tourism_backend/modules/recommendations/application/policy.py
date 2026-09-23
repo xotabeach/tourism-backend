@@ -36,7 +36,7 @@ MSK = timezone(timedelta(hours=3))
 _DIFFICULTY_ALIASES: dict[str, frozenset[str]] = {
     "easy": frozenset({"easy", "лёгкий", "легкий", "1", "2"}),
     "moderate": frozenset({"moderate", "средний", "3"}),
-    "hard": frozenset({"hard", "сложный", "4", "5", "difficult"}),
+    "hard": frozenset({"hard", "extreme", "очень сложный", "сложный", "4", "5", "difficult"}),
 }
 
 _SEASON_BY_MONTH = {

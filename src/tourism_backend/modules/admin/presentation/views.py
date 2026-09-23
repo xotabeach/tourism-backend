@@ -23,6 +23,7 @@ from wtforms.validators import Length, Optional  # type: ignore[import-untyped]
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings, get_settings
+from tourism_backend.modules.achievements.service import after_commit as evaluate_achievements
 from tourism_backend.modules.admin.application.audit import record_audit
 from tourism_backend.modules.admin.application.passwords import hash_password
 from tourism_backend.modules.admin.application.support_ops import operator_reply
@@ -30,6 +31,9 @@ from tourism_backend.modules.admin.infrastructure.models import (
     AdminAuditEvent,
     AdminPrincipal,
     AdminRoleBinding,
+)
+from tourism_backend.modules.admin.presentation.achievements_admin import (
+    AchievementsOperationsAdmin,
 )
 from tourism_backend.modules.admin.presentation.antifraud_admin import (
     AntiFraudConfigAdmin,
@@ -102,6 +106,7 @@ from tourism_backend.modules.identity.application.schemas import normalize_ru_ph
 from tourism_backend.modules.identity.infrastructure.models import (
     EXPERT_RANK_ID,
     Achievement,
+    AchievementAdminAction,
     AuthOtpChallenge,
     AuthPhoneChangeChallenge,
     SmsDeliveryJob,
@@ -1425,6 +1430,14 @@ class RouteAdmin(ModelView, model=Route):
         BooleanFilter(Route.is_seaside, title="Море"),
         OperationColumnFilter(Route.owner_user_id, title="ID автора"),
     ]
+    form_choices = {
+        "difficulty": [
+            ("easy", "Лёгкий"),
+            ("moderate", "Средний"),
+            ("hard", "Сложный"),
+            ("extreme", "Очень сложный"),
+        ]
+    }
     form_columns = [
         Route.name,
         Route.short_description,
@@ -1529,6 +1542,11 @@ class RouteAdmin(ModelView, model=Route):
                             target_id=route.id,
                         )
                 await session.commit()
+                if publication_status == "published":
+                    for owner_id in {
+                        route.owner_user_id for route in routes if route.owner_user_id is not None
+                    }:
+                        await evaluate_achievements(session, owner_id, {"route"})
         return RedirectResponse(
             str(request.url_for("admin:list", identity=self.identity)),
             status_code=303,
@@ -1887,6 +1905,14 @@ class RouteReviewAdmin(ModelView, model=RouteReview):
                         ip=request.client.host if request.client else None,
                     )
                 await session.commit()
+                if status_value == "published":
+                    owners = (
+                        await session.scalars(
+                            select(RouteReview.author_user_id).where(RouteReview.id.in_(review_ids))
+                        )
+                    ).all()
+                    for owner_id in set(owners):
+                        await evaluate_achievements(session, owner_id, {"review"})
         return RedirectResponse(
             str(request.url_for("admin:list", identity=self.identity)),
             status_code=303,
@@ -2028,6 +2054,14 @@ class PlaceReviewAdmin(ModelView, model=PlaceReview):
                         ip=request.client.host if request.client else None,
                     )
                 await session.commit()
+                if status_value == "published":
+                    owners = (
+                        await session.scalars(
+                            select(PlaceReview.author_user_id).where(PlaceReview.id.in_(review_ids))
+                        )
+                    ).all()
+                    for owner_id in set(owners):
+                        await evaluate_achievements(session, owner_id, {"review"})
         return RedirectResponse(
             str(request.url_for("admin:list", identity=self.identity)),
             status_code=303,
@@ -2104,6 +2138,24 @@ class AchievementAdmin(ModelView, model=Achievement):
     page_size = 50
 
 
+class AchievementActionAdmin(ModelView, model=AchievementAdminAction):
+    category = "Достижения"
+    name = "Ручное действие"
+    name_plural = "Журнал ручных действий"
+    column_list = [
+        AchievementAdminAction.user_id,
+        AchievementAdminAction.achievement_id,
+        AchievementAdminAction.action,
+        AchievementAdminAction.reason,
+        AchievementAdminAction.admin_id,
+        AchievementAdminAction.created_at,
+    ]
+    can_create = False
+    can_edit = False
+    can_delete = False
+    can_export = False
+
+
 class UserAchievementAdmin(ModelView, model=UserAchievement):
     category = "Достижения"
     category_icon = "fa-solid fa-trophy"
@@ -2115,11 +2167,15 @@ class UserAchievementAdmin(ModelView, model=UserAchievement):
         UserAchievement.user_id,
         UserAchievement.achievement_id,
         UserAchievement.unlocked_at,
+        UserAchievement.source,
+        UserAchievement.reason,
     ]
     column_labels = {
         UserAchievement.user_id: "Пользователь",
         UserAchievement.achievement_id: "Достижение",
         UserAchievement.unlocked_at: "Получено",
+        UserAchievement.source: "Источник",
+        UserAchievement.reason: "Причина",
     }
     column_formatters = {UserAchievement.user_id: format_user_fk}
     column_sortable_list = [UserAchievement.unlocked_at]
@@ -2945,6 +3001,14 @@ class ArticleAdmin(ModelView, model=Article):
                         ip=request.client.host if request.client else None,
                     )
                 await session.commit()
+                if status_value == "published":
+                    owners = (
+                        await session.scalars(
+                            select(Article.author_user_id).where(Article.id.in_(article_ids))
+                        )
+                    ).all()
+                    for owner_id in set(owners):
+                        await evaluate_achievements(session, owner_id, {"article"})
         return RedirectResponse(
             str(request.url_for("admin:list", identity=self.identity)),
             status_code=303,
@@ -3726,7 +3790,9 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(AdminPrincipalAdmin)
     admin.add_view(AdminRoleBindingAdmin)
     admin.add_view(AdminAuditEventAdmin)
+    admin.add_view(AchievementsOperationsAdmin)
     admin.add_view(AchievementAdmin)
+    admin.add_view(AchievementActionAdmin)
     admin.add_view(UserAchievementAdmin)
     admin.add_view(RouteExecutionAdmin)
     admin.add_view(RouteExecutionStopAdmin)
@@ -3761,5 +3827,6 @@ def register_views(admin: Any, settings: Settings) -> None:
         RuntimeConfigAdmin.session_maker = session_maker
         SmsConfigAdmin.session_maker = session_maker
         AntiFraudConfigAdmin.session_maker = session_maker
+        AchievementsOperationsAdmin.session_maker = session_maker
         StatsAdmin.session_maker = session_maker
         SupportHelpIndexAdmin.session_maker = session_maker
