@@ -72,6 +72,10 @@ _FLOAT_SPECS: dict[str, _FloatSpec] = {
     "af_min_mark_ratio": _FloatSpec(0.2, 0.05, 0.5),
 }
 KEY_MODE = "af_mode"
+# Which leg estimate judges pace: the straight line (as before OSM) or the
+# router's own legs. Router legs start in observation only (spec 12a, D4).
+KEY_PACE_SOURCE = "af_pace_source"
+PACE_SOURCES: tuple[str, ...] = ("straight_line", "provider")
 KEY_BLOCK_LADDER = "af_block_ladder_hours"
 
 DEFAULT_LADDER: tuple[int, ...] = (1, 24, 168)
@@ -79,7 +83,7 @@ _LADDER_MAX_HOURS = 24 * 30
 _LADDER_MAX_STEPS = 3
 
 ALL_KEYS: frozenset[str] = frozenset(
-    {KEY_MODE, KEY_BLOCK_LADDER, *_INT_SPECS.keys(), *_FLOAT_SPECS.keys()}
+    {KEY_MODE, KEY_PACE_SOURCE, KEY_BLOCK_LADDER, *_INT_SPECS.keys(), *_FLOAT_SPECS.keys()}
 )
 
 
@@ -93,6 +97,7 @@ class AntiFraudSettings:
     route_points_cooldown_days: int = 14
     daily_points_cap: int = 600
     hold_overdue_days: int = 7
+    pace_source: str = "straight_line"
 
     @property
     def enforcing(self) -> bool:
@@ -129,6 +134,10 @@ def validate_setting(key: str, value: str) -> str:
             return AntiFraudMode(text).value
         except ValueError as exc:
             raise ValueError("Режим: off, shadow или enforce.") from exc
+    if key == KEY_PACE_SOURCE:
+        if text not in PACE_SOURCES:
+            raise ValueError("Источник оценки: straight_line или provider.")
+        return text
     if key == KEY_BLOCK_LADDER:
         return ",".join(str(hours) for hours in parse_ladder(text))
     int_spec = _INT_SPECS.get(key)
@@ -192,6 +201,13 @@ def parse_settings(raw: Mapping[str, str]) -> AntiFraudSettings:
         except ValueError:
             _logger.warning("antifraud_invalid_setting", extra={"key": KEY_BLOCK_LADDER})
 
+    pace_source = "straight_line"
+    if (stored_source := raw.get(KEY_PACE_SOURCE)) is not None:
+        if stored_source.strip() in PACE_SOURCES:
+            pace_source = stored_source.strip()
+        else:
+            _logger.warning("antifraud_invalid_setting", extra={"key": KEY_PACE_SOURCE})
+
     flag_violations = _int_value(raw, "af_flag_violations")
     block_violations = max(_int_value(raw, "af_block_violations"), flag_violations)
     batch_window = _int_value(raw, "af_batch_window_seconds")
@@ -219,6 +235,7 @@ def parse_settings(raw: Mapping[str, str]) -> AntiFraudSettings:
         route_points_cooldown_days=_int_value(raw, "af_route_points_cooldown_days"),
         daily_points_cap=_int_value(raw, "af_daily_points_cap"),
         hold_overdue_days=_int_value(raw, "af_hold_overdue_days"),
+        pace_source=pace_source,
     )
 
 
@@ -252,10 +269,11 @@ class SettingDescription:
     """What the admin form needs to render one key."""
 
     key: str
-    kind: str  # "mode" | "ladder" | "int" | "float"
+    kind: str  # "mode" | "choice" | "ladder" | "int" | "float"
     default: str
     minimum: float | None = None
     maximum: float | None = None
+    options: tuple[str, ...] = ()
 
 
 def describe_settings() -> list[SettingDescription]:
@@ -263,6 +281,7 @@ def describe_settings() -> list[SettingDescription]:
 
     described = [
         SettingDescription(KEY_MODE, "mode", AntiFraudMode.SHADOW.value),
+        SettingDescription(KEY_PACE_SOURCE, "choice", "straight_line", options=PACE_SOURCES),
         SettingDescription(KEY_BLOCK_LADDER, "ladder", ",".join(map(str, DEFAULT_LADDER))),
     ]
     described += [
