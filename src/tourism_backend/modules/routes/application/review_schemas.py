@@ -10,17 +10,16 @@ ReviewStatus = Literal["pending_review", "published", "rejected", "deleted"]
 class RouteReviewCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    body: str = Field(min_length=1, max_length=2000)
+    # Empty means a bare star rating, allowed only after walking the route
+    # (checked by the service, which knows about runs).
+    body: str = Field(default="", max_length=2000)
     rating: int = Field(ge=1, le=5)
     reply_to_review_id: UUID | None = None
 
     @field_validator("body")
     @classmethod
     def _trim_body(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("must not be empty")
-        return cleaned
+        return value.strip()
 
 
 class RouteReviewMediaOut(BaseModel):
@@ -57,6 +56,8 @@ class RouteReviewOut(BaseModel):
     created_at: datetime
     media: list[RouteReviewMediaOut] = Field(default_factory=list)
     reply_to: RouteReviewReplyOut | None = None
+    # The author has a completed run of this route.
+    author_completed_route: bool = False
 
 
 class RouteReviewListOut(BaseModel):
