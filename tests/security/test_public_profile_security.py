@@ -491,29 +491,13 @@ async def test_achievements_catalog_is_public_and_bounded(live_client: AsyncClie
     catalog = await live_client.get(f"/api/v1/users/{user_id}/achievements")
     assert catalog.status_code == 200, catalog.text
     body = catalog.json()
-    assert body["total"] >= 15
-    assert 5 <= body["unlocked_count"] <= 15
-    assert body["unlocked_count"] <= body["total"]
-    assert len(body["items"]) == body["total"]
-    for item in body["items"]:
-        assert set(item) == {
-            "id",
-            "slug",
-            "title",
-            "description",
-            "how_to_earn",
-            "icon_slug",
-            "is_unlocked",
-            "unlocked_at",
-        }
-        assert len(item["title"]) <= 120
-        assert len(item["description"]) <= 240
-        assert len(item["how_to_earn"]) <= 240
-        assert len(item["icon_slug"]) <= 64
-        if item["is_unlocked"]:
-            assert item["unlocked_at"] is not None
-        else:
-            assert item["unlocked_at"] is None
+    assert body == {"items": [], "total": 0, "unlocked_count": 0}
+    private = await live_client.get("/api/v1/me/achievements", headers=headers)
+    assert private.status_code == 200, private.text
+    assert len(private.json()["items"]) == 32
+    assert private.json()["unlocked_count"] == 0
+    assert private.json()["total"] < 32
+    assert (await live_client.get("/api/v1/me/achievements")).status_code == 401
 
     missing = await live_client.get(f"/api/v1/users/{uuid4()}/achievements")
     assert missing.status_code == 404
@@ -530,11 +514,7 @@ async def test_achievement_unlock_notifies_owner_inbox(live_client: AsyncClient)
     inbox = await live_client.get("/api/v1/me/notifications", headers=headers)
     assert inbox.status_code == 200, inbox.text
     unlocked = [item for item in inbox.json()["items"] if item["kind"] == "achievement_unlocked"]
-    assert len(unlocked) == 1
-    assert unlocked[0]["title"] == "Новое достижение"
-    assert unlocked[0]["target_type"] == "achievement"
-    assert unlocked[0]["target_id"]
-    assert "phone" not in str(unlocked[0]).lower()
+    assert unlocked == []
 
 
 @pytest.mark.asyncio
@@ -617,3 +597,310 @@ async def test_public_profile_reports_completed_routes_reviews_and_distance(
     assert body["completed_routes_count"] == 1
     assert body["reviews_written_count"] == 1
     assert body["total_distance_meters"] == (expected_distance or 0)
+
+
+@pytest.mark.asyncio
+async def test_achievement_grant_race_privacy_and_celebration(live_client: AsyncClient):
+    import asyncio
+    from datetime import UTC, datetime
+    from uuid import UUID
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from tourism_backend.modules.achievements.service import evaluate
+    from tourism_backend.modules.content.infrastructure.models import Article
+    from tourism_backend.modules.identity.infrastructure.models import UserAchievement
+    from tourism_backend.modules.notifications.infrastructure.models import Notification
+
+    tokens = await _login(live_client, phone=f"+7911{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    user_id = UUID((await live_client.get("/api/v1/me", headers=headers)).json()["id"])
+    engine = create_async_engine(DATABASE_URL)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            session.add(
+                Article(
+                    id=uuid4(),
+                    author_user_id=user_id,
+                    title="Путевые заметки",
+                    status="published",
+                    published_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+
+        async def grant():
+            async with factory() as session:
+                badges = await evaluate(session, user_id, {"article"})
+                await session.commit()
+                return badges
+
+        results = await asyncio.gather(grant(), grant())
+        assert sum(map(len, results)) == 1
+        async with factory() as session:
+            award = (
+                await session.scalars(
+                    select(UserAchievement).where(UserAchievement.user_id == user_id)
+                )
+            ).one()
+            badge_id = str(award.achievement_id)
+            assert award.source == "rule"
+            assert award.celebrated_at is None
+            notices = (
+                await session.scalars(
+                    select(Notification).where(
+                        Notification.user_id == user_id, Notification.kind == "achievement_unlocked"
+                    )
+                )
+            ).all()
+            assert len(notices) == 1
+        public = (await live_client.get(f"/api/v1/users/{user_id}/achievements")).json()
+        assert len(public["items"]) == 1
+        assert "unlocked_at" not in public["items"][0]
+        assert "progress" not in public["items"][0]
+        private = await live_client.get(
+            "/api/v1/me/achievements?uncelebrated=true", headers=headers
+        )
+        assert [item["id"] for item in private.json()["items"]] == [badge_id]
+        for _ in range(2):
+            response = await live_client.post(
+                "/api/v1/me/achievements/celebrated",
+                headers=headers,
+                json={"achievement_ids": [badge_id]},
+            )
+            assert response.status_code == 204
+        assert (
+            await live_client.get("/api/v1/me/achievements?uncelebrated=true", headers=headers)
+        ).json()["items"] == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_achievement_backfill_and_flag_gate(live_client: AsyncClient):
+    from datetime import UTC, datetime, timedelta
+    from uuid import UUID
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from tourism_backend.modules.achievements.service import evaluate
+    from tourism_backend.modules.content.infrastructure.models import Article
+    from tourism_backend.modules.identity.infrastructure.models import UserAchievement
+    from tourism_backend.modules.notifications.infrastructure.models import Notification
+    from tourism_backend.modules.route_execution.infrastructure.models import UserFraudState
+
+    tokens = await _login(live_client, phone=f"+7912{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    user_id = UUID((await live_client.get("/api/v1/me", headers=headers)).json()["id"])
+    engine = create_async_engine(DATABASE_URL)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    published = datetime.now(UTC) - timedelta(days=10)
+    try:
+        async with factory() as session:
+            session.add(
+                Article(
+                    id=uuid4(),
+                    author_user_id=user_id,
+                    title="Путевые заметки",
+                    status="published",
+                    published_at=published,
+                )
+            )
+            state = UserFraudState(user_id=user_id, is_flagged=True, updated_at=datetime.now(UTC))
+            session.add(state)
+            await session.commit()
+            assert await evaluate(session, user_id, backfill=True) == []
+            state.is_flagged = False
+            await session.commit()
+            assert len(await evaluate(session, user_id, backfill=True)) == 1
+            await session.commit()
+            assert await evaluate(session, user_id, backfill=True) == []
+            row = (
+                await session.scalars(
+                    select(UserAchievement).where(UserAchievement.user_id == user_id)
+                )
+            ).one()
+            assert row.source == "backfill"
+            assert row.unlocked_at == row.celebrated_at == published
+            assert not (
+                await session.scalars(
+                    select(Notification).where(
+                        Notification.user_id == user_id, Notification.kind == "achievement_unlocked"
+                    )
+                )
+            ).all()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manual_achievement_actions_are_audited_and_soon_rejected(live_client: AsyncClient):
+    from uuid import UUID
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from tourism_backend.api.errors import AppError
+    from tourism_backend.modules.achievements.admin_actions import apply
+    from tourism_backend.modules.admin.infrastructure.models import AdminPrincipal
+    from tourism_backend.modules.identity.infrastructure.models import (
+        Achievement,
+        AchievementAdminAction,
+        UserAchievement,
+    )
+    from tourism_backend.modules.notifications.infrastructure.models import Notification
+
+    tokens = await _login(live_client, phone=f"+7914{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    user_id = UUID((await live_client.get("/api/v1/me", headers=headers)).json()["id"])
+    engine = create_async_engine(DATABASE_URL)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            admin = AdminPrincipal(id=uuid4(), login=f"test-{uuid4()}", password_hash="test-only")
+            session.add(admin)
+            await session.commit()
+            badge = (
+                await session.scalars(select(Achievement).where(Achievement.slug == "pen"))
+            ).one()
+            soon = (
+                await session.scalars(select(Achievement).where(Achievement.slug == "group"))
+            ).one()
+            with pytest.raises(AppError, match="") as error:
+                await apply(
+                    session,
+                    user_id=user_id,
+                    achievement_id=soon.id,
+                    admin_id=admin.id,
+                    action="grant",
+                    reason="Проверка",
+                )
+            assert error.value.code == "achievement_soon"
+            await session.rollback()
+            # ORM values expire on rollback; keep only stable fixture ids below.
+            admin = (
+                await session.scalars(
+                    select(AdminPrincipal)
+                    .where(AdminPrincipal.login.like("test-%"))
+                    .order_by(AdminPrincipal.created_at.desc())
+                )
+            ).first()
+            badge = (
+                await session.scalars(select(Achievement).where(Achievement.slug == "pen"))
+            ).one()
+            assert admin is not None
+            admin_id, badge_id = admin.id, badge.id
+            for _ in range(2):
+                await apply(
+                    session,
+                    user_id=user_id,
+                    achievement_id=badge_id,
+                    admin_id=admin_id,
+                    action="grant",
+                    reason="Подтверждено редактором",
+                )
+            row = await session.get(UserAchievement, (user_id, badge_id))
+            assert row is not None
+            assert row.source == "operator"
+            assert row.reason == "Подтверждено редактором"
+            assert (
+                len(
+                    (
+                        await session.scalars(
+                            select(Notification).where(
+                                Notification.user_id == user_id,
+                                Notification.kind == "achievement_unlocked",
+                            )
+                        )
+                    ).all()
+                )
+                == 1
+            )
+            await apply(
+                session,
+                user_id=user_id,
+                achievement_id=badge_id,
+                admin_id=admin_id,
+                action="revoke",
+                reason="Исправление",
+            )
+            assert await session.get(UserAchievement, (user_id, badge_id)) is None
+            assert not (
+                await session.scalars(
+                    select(Notification).where(
+                        Notification.user_id == user_id, Notification.kind == "achievement_unlocked"
+                    )
+                )
+            ).all()
+            assert (
+                len(
+                    (
+                        await session.scalars(
+                            select(AchievementAdminAction).where(
+                                AchievementAdminAction.user_id == user_id
+                            )
+                        )
+                    ).all()
+                )
+                == 3
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reset_backfill_exports_before_deleting_and_is_repeatable(
+    live_client: AsyncClient, tmp_path
+):
+    import csv
+    from uuid import UUID
+
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from tourism_backend.modules.achievements.maintenance import backfill
+    from tourism_backend.modules.identity.infrastructure.models import UserAchievement
+    from tourism_backend.modules.notifications.infrastructure.models import Notification
+
+    tokens = await _login(live_client, phone=f"+7913{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    user_id = UUID((await live_client.get("/api/v1/me", headers=headers)).json()["id"])
+    # Re-evaluating every user of a shared test database grows with each run;
+    # the reset itself still covers all grants.
+    scope = [user_id]
+    engine = create_async_engine(DATABASE_URL)
+    try:
+        async with AsyncSession(engine) as session:
+            before = await session.scalar(select(func.count()).select_from(UserAchievement))
+            count = await backfill(session, reset=True, backup_dir=tmp_path, user_ids=scope)
+            assert count >= 0
+            backups = list(tmp_path.glob("achievements-*/user_achievements.csv"))
+            assert len(backups) == 1
+            with backups[0].open() as source:
+                assert len(list(csv.DictReader(source))) == before
+            assert backups[0].stat().st_mode & 0o777 == 0o600
+            assert await backfill(session, user_ids=scope) == 0
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(Notification)
+                    .where(Notification.kind == "achievement_unlocked")
+                )
+                == 0
+            )
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(UserAchievement)
+                    .where(UserAchievement.celebrated_at.is_(None))
+                )
+                == 0
+            )
+            # This integration test exercises the full reset transaction but
+            # rolls back instead of disturbing other tests' committed fixtures.
+            await session.rollback()
+    finally:
+        await engine.dispose()

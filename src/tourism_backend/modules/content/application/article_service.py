@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import get_settings
+from tourism_backend.modules.achievements.service import after_commit as evaluate_achievements
 from tourism_backend.modules.content.application.article_media import (
     SavedArticleImage,
     delete_article_image,
@@ -827,6 +828,7 @@ async def set_article_like(
         )
         article.like_count += 1
         await session.commit()
+        await evaluate_achievements(session, article.author_user_id, {"article_like"})
     elif not liked and existing is not None:
         await session.delete(existing)
         article.like_count = max(0, article.like_count - 1)

@@ -236,6 +236,8 @@ class RouteExecutionStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_optional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Rounded up so 500.1 metres cannot pass the 500-metre achievement rule.
+    device_distance_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Expected leg from the previous stop, computed once when the run starts
     # (the routing snapshot is append-only and holds no per-leg data). NULL
     # for the first stop, for stops without coordinates and for runs that

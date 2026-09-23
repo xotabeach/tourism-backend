@@ -8,9 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings
 from tourism_backend.modules.identity.application import (
-    achievements as achievements_service,
-)
-from tourism_backend.modules.identity.application import (
     default_profile_media,
 )
 from tourism_backend.modules.identity.application.crypto import (
@@ -43,7 +40,6 @@ from tourism_backend.modules.identity.infrastructure.models import (
     User,
 )
 from tourism_backend.modules.media.application import service as media_service
-from tourism_backend.modules.notifications.application import service as notifications_service
 
 _OTP_TTL = timedelta(minutes=5)
 _MAX_OTP_ATTEMPTS = 8
@@ -332,32 +328,14 @@ async def verify_otp(
             user.personal_data_accepted_at = user.personal_data_accepted_at or now
 
     await session.flush()
-    achievement_notif = None
     if is_new:
         await default_profile_media.ensure_default_user_media(session, user.id)
-        achievement_notif = await achievements_service.grant_random_starter_achievements(
-            session,
-            user_id=user.id,
-            notify=True,
-        )
-    tokens = await _issue_tokens(
+    return await _issue_tokens(
         session,
         user=user,
         settings=settings,
         device_label=payload.device_label,
     )
-    if achievement_notif is not None:
-        await notifications_service.maybe_push_notification(
-            session,
-            settings,
-            user_id=user.id,
-            kind=achievement_notif.kind,
-            title=achievement_notif.title,
-            body=achievement_notif.body,
-            target_type="achievement",
-            target_id=achievement_notif.target_id or user.id,
-        )
-    return tokens
 
 
 def refresh_session_lock_stmt(digest: str) -> Select[tuple[AuthRefreshSession]]:

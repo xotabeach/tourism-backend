@@ -33,6 +33,7 @@ _DIFFICULTY_MULTIPLIERS: dict[str, float] = {
     "moderate": 1.25,
     "средний": 1.25,
     "hard": 1.5,
+    "extreme": 1.5,
     "сложный": 1.5,
     "difficult": 1.5,
 }

@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.achievements.service import after_commit as evaluate_achievements
 from tourism_backend.modules.identity.application.travel_points import adjust_travel_points
 from tourism_backend.modules.notifications.application import service as notifications
 from tourism_backend.modules.route_execution.application import antifraud_service
@@ -93,6 +94,8 @@ async def decide_hold(
         body=push.body,
     )
     await session.commit()
+    if approve:
+        await evaluate_achievements(session, hold.user_id)
     await antifraud_service.deliver_pushes(session, [push])
     return hold
 
@@ -115,6 +118,7 @@ async def reset_flag(
     state.counters_from = moment
     state.updated_at = moment
     await session.commit()
+    await evaluate_achievements(session, user_id)
     return state
 
 

@@ -3,8 +3,13 @@ from typing import Annotated
 from fastapi import APIRouter, File, Request, Response, UploadFile, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
+from tourism_backend.modules.identity.application import achievements
 from tourism_backend.modules.identity.application import media as identity_media
 from tourism_backend.modules.identity.application import service as identity_service
+from tourism_backend.modules.identity.application.achievement_schemas import (
+    AchievementListOut,
+    AchievementsCelebratedIn,
+)
 from tourism_backend.modules.identity.application.schemas import (
     LogoutIn,
     MeOut,
@@ -207,3 +212,18 @@ async def upload_cover(
         width=saved.width,
         height=saved.height,
     )
+
+
+@router.get("/me/achievements")
+async def my_achievements(
+    session: DbSession, user_id: CurrentUserId, uncelebrated: bool = False
+) -> AchievementListOut:
+    return await achievements.list_for_owner(session, user_id, uncelebrated=uncelebrated)
+
+
+@router.post("/me/achievements/celebrated", status_code=204)
+async def celebrate_achievements(
+    payload: AchievementsCelebratedIn, session: DbSession, user_id: CurrentUserId
+) -> Response:
+    await achievements.mark_celebrated(session, user_id, payload.achievement_ids)
+    return Response(status_code=204)

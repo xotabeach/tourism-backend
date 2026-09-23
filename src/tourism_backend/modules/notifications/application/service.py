@@ -302,8 +302,8 @@ async def create_achievement_notification(
     notification = _build_notification(
         user_id=user_id,
         kind="achievement_unlocked",
-        title="Новое достижение",
-        body=f"Получено достижение «{short_title}»",
+        title="Вы получили достижение",
+        body=short_title,
         target_type="achievement",
         target_id=achievement_id,
     )
@@ -368,7 +368,7 @@ async def maybe_push_notification(
     title: str,
     body: str,
     target_type: str,
-    target_id: UUID,
+    target_id: UUID | None,
 ) -> None:
     """Best-effort FCM when user opted into push and tokens exist."""
     user = await session.get(User, user_id)
@@ -387,7 +387,7 @@ async def maybe_push_notification(
         data={
             "kind": kind,
             "target_type": target_type,
-            "target_id": str(target_id),
+            **({"target_id": str(target_id)} if target_id is not None else {}),
         },
     )
 
