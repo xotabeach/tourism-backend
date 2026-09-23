@@ -186,6 +186,9 @@ class Settings(BaseSettings):
     routing_provider: Literal["stub", "valhalla", "2gis"] = "stub"
     # Our own Valhalla in the private compose network (spec 12a).
     valhalla_base_url: str = "http://valhalla:8002"
+    # OSM data build the graph and tiles come from (osmYYYYMMDD); written into
+    # every routing snapshot so a monthly rebuild can be diffed (D25).
+    osm_data_version: str | None = None
     # Static map images: our tileserver-gl on OSM tiles (spec 12a). 2GIS stays
     # only as an off-by-default fallback (D1).
     map_provider: Literal["osm", "2gis"] = "osm"
