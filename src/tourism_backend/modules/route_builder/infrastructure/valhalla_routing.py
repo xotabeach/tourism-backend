@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from tourism_backend.modules.route_builder.application.polyline import decode_polyline6
 from tourism_backend.modules.route_builder.application.routing import (
     RouteLegResult,
     RouteWaypoint,
@@ -23,6 +24,8 @@ from tourism_backend.modules.route_builder.application.routing import (
     TransportMode,
     default_max_leg_meters,
 )
+
+__all__ = ["ValhallaRoutingProvider", "decode_polyline6"]
 
 _logger = logging.getLogger("tourism_backend.valhalla_routing")
 
@@ -49,31 +52,6 @@ _CAR_SNAP: dict[str, Any] = {"search_filter": {"min_road_class": "residential"}}
 # Valhalla error codes meaning "no way between these points".
 _UNREACHABLE_CODES = frozenset({170, 171, 442, 443})
 _MAX_RESPONSE_BYTES = 8_000_000
-
-
-def decode_polyline6(encoded: str) -> list[tuple[float, float]]:
-    """Google polyline with 1e6 precision, as (lng, lat) pairs."""
-    points: list[tuple[float, float]] = []
-    index = lat = lng = 0
-    length = len(encoded)
-    while index < length:
-        deltas = []
-        for _ in range(2):
-            shift = result = 0
-            while True:
-                if index >= length:
-                    raise RoutingError("routing_provider_error", "Valhalla shape is truncated")
-                byte = ord(encoded[index]) - 63
-                index += 1
-                result |= (byte & 0x1F) << shift
-                shift += 5
-                if byte < 0x20:
-                    break
-            deltas.append(~(result >> 1) if result & 1 else result >> 1)
-        lat += deltas[0]
-        lng += deltas[1]
-        points.append((lng / 1e6, lat / 1e6))
-    return points
 
 
 def _wkt(points: Sequence[tuple[float, float]]) -> str | None:
@@ -172,8 +150,68 @@ class ValhallaRoutingProvider:
         data = await self._post(payload)
         return self._parse(data, waypoints, transport_mode, constraints or RoutingConstraints())
 
-    async def _post(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        url = f"{self._base_url}/route"
+    async def locate_car(self, point: RouteWaypoint) -> tuple[float, float] | None:
+        """Where a car stops for this point: the nearest street it can use.
+
+        Same snapping as a car route, so the answer is where a drive to the
+        point really ends (spec 14b). ``None`` when no street is near.
+        """
+        data = await self._post(
+            {
+                "locations": [
+                    {
+                        "lat": point.lat,
+                        "lon": point.lng,
+                        "minimum_reachability": _MIN_REACHABILITY,
+                        **_CAR_SNAP,
+                    }
+                ],
+                "costing": "auto",
+            },
+            endpoint="locate",
+        )
+        answers = data.get("locate")
+        first = answers[0] if isinstance(answers, list) and answers else None
+        edges = first.get("edges") if isinstance(first, Mapping) else None
+        edge = edges[0] if isinstance(edges, list) and edges else None
+        if not isinstance(edge, Mapping):
+            return None
+        lng, lat = edge.get("correlated_lon"), edge.get("correlated_lat")
+        if not isinstance(lng, (int, float)) or not isinstance(lat, (int, float)):
+            return None
+        return float(lng), float(lat)
+
+    async def walk_distances(
+        self, sources: Sequence[RouteWaypoint], target: RouteWaypoint
+    ) -> list[int | None]:
+        """Walking metres from each source to the target; ``None`` where no path."""
+        if not sources:
+            return []
+        data = await self._post(
+            {
+                "sources": [{"lat": p.lat, "lon": p.lng} for p in sources],
+                "targets": [{"lat": target.lat, "lon": target.lng}],
+                "costing": "pedestrian",
+                "costing_options": {"pedestrian": _PEDESTRIAN_OPTIONS},
+                "units": "kilometers",
+            },
+            endpoint="sources_to_targets",
+        )
+        rows = data.get("sources_to_targets") if isinstance(data, Mapping) else None
+        result: list[int | None] = []
+        for index in range(len(sources)):
+            row = rows[index] if isinstance(rows, list) and index < len(rows) else None
+            cell = row[0] if isinstance(row, list) and row else None
+            distance = cell.get("distance") if isinstance(cell, Mapping) else None
+            result.append(
+                round(float(distance) * 1000) if isinstance(distance, (int, float)) else None
+            )
+        return result
+
+    async def _post(
+        self, payload: Mapping[str, Any], *, endpoint: str = "route"
+    ) -> Mapping[str, Any]:
+        url = f"{self._base_url}/{endpoint}"
         try:
             if self._client is not None:
                 response = await self._client.post(url, json=payload, timeout=self._timeout)
@@ -190,6 +228,9 @@ class ValhallaRoutingProvider:
             data = response.json()
         except ValueError as exc:
             raise RoutingError("routing_provider_error", "Valhalla returned invalid JSON") from exc
+        if isinstance(data, list) and response.status_code < 400:
+            # /locate answers with a bare list.
+            return {"locate": data}
         if not isinstance(data, Mapping):
             raise RoutingError("routing_provider_error", "Valhalla returned an invalid response")
         if response.status_code >= 400:

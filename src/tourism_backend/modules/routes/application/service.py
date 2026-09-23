@@ -62,7 +62,12 @@ from tourism_backend.modules.routes.application.schemas import (
 )
 from tourism_backend.modules.routes.application.seaside import is_seaside as stops_are_seaside
 from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
-from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
+from tourism_backend.modules.routes.infrastructure.models import (
+    Route,
+    RouteReview,
+    RouteSegment,
+    RouteStop,
+)
 
 _PUBLIC_CATALOG = (
     or_(Route.source == "editorial", Route.source == "user_created"),
@@ -1724,3 +1729,28 @@ async def draft_preview_shape(
         _logger.warning("route_draft_preview_decode_failed", exc_info=True)
         return None
     return (line, stops, mode) if len(line) >= 2 else None
+
+
+async def route_segment_lines(
+    session: AsyncSession, route_id: UUID
+) -> list[tuple[str, list[tuple[float, float]]]]:
+    """(mode, line) of each segment, in order, when every segment has a line.
+
+    Only then can the map draw the drive and the walks apart (spec 14, D23);
+    otherwise it draws the route line in the route's own mode. The walk back
+    to the car retraces the approach: drawing both would fill the dashes in.
+    """
+    rows = (
+        await session.execute(
+            select(RouteSegment.mode, ST_AsGeoJSON(RouteSegment.geometry))
+            .where(RouteSegment.route_id == route_id, RouteSegment.role != "return")
+            .order_by(RouteSegment.leg_index, RouteSegment.seq)
+        )
+    ).all()
+    pieces: list[tuple[str, list[tuple[float, float]]]] = []
+    for mode, raw in rows:
+        if not raw:
+            return []
+        coordinates = json.loads(raw).get("coordinates") or []
+        pieces.append((mode, [(float(x), float(y)) for x, y, *_ in coordinates]))
+    return pieces

@@ -13,9 +13,12 @@ from dataclasses import replace
 from typing import Any
 from uuid import UUID, uuid4
 
+from geoalchemy2 import WKTElement
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tourism_backend.modules.route_builder.application.polyline import decode_polyline6
+from tourism_backend.modules.route_builder.application.routing import RoutingError
 from tourism_backend.modules.routes.application.structure_rules import (
     PlannedDay,
     PlannedSegment,
@@ -23,6 +26,7 @@ from tourism_backend.modules.routes.application.structure_rules import (
     implies_public_transport,
     plan_segments,
     plan_single_day,
+    segment_shapes,
 )
 from tourism_backend.modules.routes.infrastructure.models import (
     Route,
@@ -36,6 +40,21 @@ def _routing(route: Route) -> dict[str, Any]:
     value = route.accessibility
     routing = value.get("routing") if isinstance(value, dict) else None
     return routing if isinstance(routing, dict) else {}
+
+
+def _line(shape: str | None) -> WKTElement | None:
+    if not shape:
+        return None
+    try:
+        points = decode_polyline6(shape)
+    except RoutingError:
+        return None
+    if len(points) < 2:
+        return None
+    return WKTElement(
+        "LINESTRING(" + ", ".join(f"{lng:.6f} {lat:.6f}" for lng, lat in points) + ")",
+        srid=4326,
+    )
 
 
 def _as_planned_segment(row: RouteSegment) -> PlannedSegment:
@@ -104,7 +123,9 @@ async def refresh_route_structure(
         ).all()
     )
 
-    planned = plan_segments(stop_ids, routing=_routing(route), base_mode=route.base_mode)
+    routing = _routing(route)
+    planned = plan_segments(stop_ids, routing=routing, base_mode=route.base_mode)
+    shapes = segment_shapes(routing)
     edited: dict[tuple[UUID, UUID], list[RouteSegment]] = {}
     for row in existing_segments:
         if row.origin == "editor":
@@ -141,6 +162,7 @@ async def refresh_route_structure(
                     duration_seconds=segment.duration_seconds,
                     elevation_gain_meters=segment.elevation_gain_meters,
                     elevation_loss_meters=segment.elevation_loss_meters,
+                    geometry=_line(shapes.get((segment.leg_index, segment.seq))),
                 )
             )
 

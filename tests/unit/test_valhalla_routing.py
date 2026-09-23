@@ -166,3 +166,37 @@ async def test_length_limits():
             constraints=RoutingConstraints(max_total_meters=10_000),
         )
     assert caught.value.code == "route_too_long"
+
+
+@pytest.mark.asyncio
+async def test_locate_car_reads_the_street_point_a_drive_ends_at():
+    provider, calls = _provider(
+        lambda body: httpx.Response(
+            200,
+            json=[{"edges": [{"correlated_lon": 33.9122, "correlated_lat": 44.743}]}],
+        )
+    )
+    point = await provider.locate_car(RouteWaypoint(lng=33.9205, lat=44.742))
+    assert point == (33.9122, 44.743)
+    assert calls[0]["costing"] == "auto"
+    assert calls[0]["locations"][0]["search_filter"] == {"min_road_class": "residential"}
+
+    nowhere, _ = _provider(lambda body: httpx.Response(200, json=[{"edges": None}]))
+    assert await nowhere.locate_car(RouteWaypoint(lng=33.9, lat=44.7)) is None
+
+
+@pytest.mark.asyncio
+async def test_walk_distances_are_metres_with_gaps_where_no_path():
+    provider, calls = _provider(
+        lambda body: httpx.Response(
+            200,
+            json={"sources_to_targets": [[{"distance": 1.392}], [{"distance": None}]]},
+        )
+    )
+    distances = await provider.walk_distances(
+        [RouteWaypoint(lng=33.91, lat=44.74), RouteWaypoint(lng=33.95, lat=44.74)],
+        RouteWaypoint(lng=33.92, lat=44.742),
+    )
+    assert distances == [1392, None]
+    assert calls[0]["costing"] == "pedestrian"
+    assert await provider.walk_distances([], RouteWaypoint(lng=33.92, lat=44.742)) == []

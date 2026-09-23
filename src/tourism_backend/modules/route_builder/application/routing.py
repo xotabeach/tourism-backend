@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 from uuid import UUID
@@ -52,6 +53,9 @@ class RoutingResult:
     max_altitude_meters: int | None = None
     max_road_angle_degrees: float | None = None
     road_types: tuple[str, ...] = ()
+    # Segments of a drive with walks to places a car cannot reach, in the
+    # form kept in routing metadata (mixed_legs.BuiltSegment.as_meta).
+    segments: tuple[Mapping[str, object], ...] = ()
 
 
 class RoutingError(Exception):
@@ -129,4 +133,6 @@ def routing_details(
         ]
     if (result.max_road_angle_degrees or 0) >= STEEP_SEGMENT_DEGREES:
         details["steep_segment"] = True
+    if result.segments:
+        details["segments"] = [dict(segment) for segment in result.segments]
     return details
