@@ -26,7 +26,7 @@ from typing import Any
 
 from geoalchemy2 import Geometry, WKTElement
 from geoalchemy2.functions import ST_X, ST_Y
-from sqlalchemy import cast, select
+from sqlalchemy import cast, select, text
 
 from tourism_backend.config import get_settings
 from tourism_backend.db.redis import create_redis_client
@@ -125,9 +125,24 @@ def _store_route(
     route.accessibility = accessibility
 
 
+async def _clear_routing_cache(settings: Any) -> None:
+    """Cached draft preview lines may still hold 2GIS answers."""
+    redis = create_redis_client(settings)
+    removed = 0
+    async for key in redis.scan_iter(match=_ROUTING_CACHE_PATTERN):
+        removed += await redis.delete(key)
+    await redis.aclose()
+    print(f"routing cache entries removed: {removed}")
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--snapshots",
+        action="store_true",
+        help="also replace the line and elevation of 2GIS routing snapshots",
+    )
     args = parser.parse_args()
     settings = get_settings()
     if settings.routing_provider != "valhalla":
@@ -174,6 +189,16 @@ async def main() -> None:
                 if args.apply:
                     _store_route(route, waypoints, result, version)
 
+            # Routes first, in their own transaction: snapshots are guarded
+            # by an immutability trigger and are handled separately.
+            if args.apply:
+                await session.commit()
+            if not args.snapshots:
+                print(
+                    f"routes: built={built} straight={fallback}; snapshots untouched; "
+                    f"mode={'apply' if args.apply else 'dry-run'}"
+                )
+                return
             snapshots = list(
                 (
                     await session.scalars(
@@ -210,6 +235,23 @@ async def main() -> None:
                     snapshot.max_altitude_meters = None
                     snapshot.max_road_angle_degrees = None
             if args.apply:
+                # route_routing_snapshots_immutable forbids any UPDATE; this
+                # one-off replacement of 2GIS lines (D14) lifts it inside this
+                # transaction only, so a failure leaves the guard in place.
+                with session.no_autoflush:
+                    await session.execute(
+                        text(
+                            "ALTER TABLE route_routing_snapshots "
+                            "DISABLE TRIGGER route_routing_snapshots_immutable"
+                        )
+                    )
+                await session.flush()
+                await session.execute(
+                    text(
+                        "ALTER TABLE route_routing_snapshots "
+                        "ENABLE TRIGGER route_routing_snapshots_immutable"
+                    )
+                )
                 await session.commit()
             print(
                 f"routes: built={built} straight={fallback}; "
@@ -218,14 +260,8 @@ async def main() -> None:
             )
     finally:
         await engine.dispose()
-    if args.apply:
-        # Cached draft preview lines may still hold 2GIS answers.
-        redis = create_redis_client(settings)
-        removed = 0
-        async for key in redis.scan_iter(match=_ROUTING_CACHE_PATTERN):
-            removed += await redis.delete(key)
-        await redis.aclose()
-        print(f"routing cache entries removed: {removed}")
+        if args.apply:
+            await _clear_routing_cache(settings)
 
 
 if __name__ == "__main__":
