@@ -304,7 +304,10 @@ async def _route_places(
     try:
         routing = await provider.route(waypoints=waypoints, transport_mode=transport_mode)
     except RoutingError as exc:
-        if settings.routing_provider == "2gis" and exc.code in _ROUTING_FALLBACK_CODES:
+        if (
+            settings.routing_provider in {"valhalla", "2gis"}
+            and exc.code in _ROUTING_FALLBACK_CODES
+        ):
             _logger.warning(
                 "routing_provider_fallback_to_stub",
                 extra={"routing_error_code": exc.code},

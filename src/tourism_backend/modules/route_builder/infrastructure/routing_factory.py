@@ -10,12 +10,20 @@ from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
 from tourism_backend.modules.route_builder.infrastructure.two_gis_routing import (
     TwoGisRoutingProvider,
 )
+from tourism_backend.modules.route_builder.infrastructure.valhalla_routing import (
+    ValhallaRoutingProvider,
+)
 
 
 def get_routing_provider(settings: Settings | None = None) -> RoutingProvider:
     cfg = settings or get_settings()
     if cfg.routing_provider == "stub":
         return StubRoutingProvider()
+    if cfg.routing_provider == "valhalla":
+        return ValhallaRoutingProvider(
+            base_url=cfg.valhalla_base_url,
+            timeout_seconds=cfg.routing_timeout_seconds,
+        )
     if cfg.routing_provider == "2gis":
         key = cfg.two_gis_http_api_key
         if key is None or not key.get_secret_value().strip():

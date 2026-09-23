@@ -11,6 +11,14 @@ from fastapi import APIRouter, Query, Request, Response
 
 from tourism_backend.api.deps import DbSession, SettingsDep
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import Settings
+from tourism_backend.modules.maps.infrastructure.osm_static import (
+    MapFrame,
+    StaticMapError,
+    draw_overlays,
+    fetch_basemap,
+    fit_frame,
+)
 from tourism_backend.modules.places.application import service as places_service
 from tourism_backend.modules.route_builder.infrastructure.two_gis_routing import (
     two_gis_routing_stats,
@@ -264,12 +272,112 @@ async def _fetch(
     )
 
 
+_OSM_TIMEOUT_SECONDS = 10.0
+_osm_cache: dict[tuple[object, ...], tuple[float, bytes, str]] = {}
+
+
+def _png_response(content: bytes, etag: str, request: Request, cache_control: str) -> Response:
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={
+            "Cache-Control": cache_control,
+            "ETag": etag,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+async def _osm_image(
+    *,
+    settings: Settings,
+    request: Request,
+    frame: MapFrame,
+    line: Sequence[tuple[float, float]] = (),
+    numbered_pins: Sequence[tuple[float, float]] = (),
+    place_pin: tuple[float, float] | None = None,
+) -> Response:
+    line_digest = hashlib.sha256(repr((tuple(line), tuple(numbered_pins))).encode()).hexdigest()
+    key = (settings.map_source_version, frame, line_digest, place_pin)
+    now = time.monotonic()
+    cached = _osm_cache.get(key)
+    if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
+        return _png_response(cached[1], cached[2], request, "public, max-age=86400")
+    try:
+        base = await fetch_basemap(
+            frame, base_url=settings.tileserver_base_url, timeout_seconds=_OSM_TIMEOUT_SECONDS
+        )
+    except StaticMapError as exc:
+        raise AppError(
+            code="map_preview_upstream_unavailable",
+            message="Map renderer is temporarily unavailable",
+            status_code=502,
+        ) from exc
+    content = draw_overlays(
+        base, frame, line=line, numbered_pins=numbered_pins, place_pin=place_pin
+    )
+    etag = f'"{hashlib.sha256(content).hexdigest()}"'
+    if len(_osm_cache) >= _CACHE_MAX_ITEMS:
+        _osm_cache.pop(next(iter(_osm_cache)))
+    _osm_cache[key] = (now, content, etag)
+    return _png_response(
+        content, etag, request, "public, max-age=86400, stale-while-revalidate=604800"
+    )
+
+
+async def route_map_response(
+    *,
+    settings: Settings,
+    request: Request,
+    line: Sequence[tuple[float, float]],
+    stops: Sequence[tuple[float, float]],
+    width: int,
+    height: int,
+    scale: int,
+    center: tuple[float, float] | None,
+    zoom: int | None,
+    pins: str,
+) -> Response:
+    """One route image for every endpoint that shows a route (spec 12a)."""
+    if settings.map_provider == "2gis":
+        return await _fetch(
+            settings=settings,
+            request=request,
+            params=_route_static_params(
+                line,
+                stops,
+                width=width,
+                height=height,
+                scale=scale,
+                center=center,
+                zoom=zoom,
+                pins=pins,
+            ),
+        )
+    if center is not None and zoom is not None:
+        frame = MapFrame(center[0], center[1], zoom, width, height, scale)
+    else:
+        frame = fit_frame(list(line) + list(stops), width=width, height=height, scale=scale)
+    return await _osm_image(
+        settings=settings,
+        request=request,
+        frame=frame,
+        line=line,
+        numbered_pins=stops if pins == "numbered" else (),
+    )
+
+
 @router.get("/maps/static/route/{route_id}")
+@router.get("/maps/static/route/{route_id}/{version}")
 async def route_static_map(
     route_id: UUID,
     session: DbSession,
     settings: SettingsDep,
     request: Request,
+    # The renderer version only busts caches (v=osm1, D22); any value works.
+    version: str | None = None,
     width: int = Query(default=880, ge=120, le=1280),
     height: int = Query(default=420, ge=90, le=1280),
     scale: int = Query(default=2, ge=1, le=2),
@@ -294,9 +402,11 @@ async def route_static_map(
             status_code=404,
         )
     has_center = center_lat is not None and center_lng is not None
-    params = _route_static_params(
-        line_points,
-        stop_points or line_points,
+    return await route_map_response(
+        settings=settings,
+        request=request,
+        line=line_points,
+        stops=stop_points or line_points,
         width=width,
         height=height,
         scale=scale,
@@ -304,20 +414,29 @@ async def route_static_map(
         zoom=zoom if has_center else None,
         pins=pins,
     )
-    return await _fetch(settings=settings, params=params, request=request)
 
 
 @router.get("/maps/static/place/{place_id}")
+@router.get("/maps/static/place/{place_id}/{version}")
 async def place_static_map(
     place_id: UUID,
     session: DbSession,
     settings: SettingsDep,
     request: Request,
+    # The renderer version only busts caches (v=osm1, D22); any value works.
+    version: str | None = None,
     width: int = Query(default=880, ge=120, le=1280),
     height: int = Query(default=420, ge=90, le=1280),
     scale: int = Query(default=2, ge=1, le=2),
 ) -> Response:
     place = await places_service.get_place(session, place_id)
+    if settings.map_provider == "osm":
+        return await _osm_image(
+            settings=settings,
+            request=request,
+            frame=MapFrame(place.lat, place.lng, 14, width, height, scale),
+            place_pin=(place.lng, place.lat),
+        )
     params = [
         ("s", _size(width, height, scale)),
         ("c", f"{place.lat:.6f},{place.lng:.6f}"),

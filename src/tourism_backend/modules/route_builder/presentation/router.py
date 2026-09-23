@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Query, Request, Response
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
-from tourism_backend.modules.maps.presentation.router import _fetch, _route_static_params
+from tourism_backend.modules.maps.presentation.router import route_map_response
 from tourism_backend.modules.route_builder.application import (
     generate_service,
     match_service,
@@ -100,21 +100,19 @@ async def proposal_map(
         if stop.lng is not None and stop.lat is not None
     ]
     line = preview.geometry.coordinates if preview.geometry else stops
-    response = await _fetch(
+    response = await route_map_response(
         settings=settings,
         request=request,
-        params=_route_static_params(
-            line,
-            stops,
-            width=width,
-            height=height,
-            scale=scale,
-            center=(center_lat, center_lng)
-            if center_lat is not None and center_lng is not None
-            else None,
-            zoom=zoom,
-            pins=pins,
-        ),
+        line=line,
+        stops=stops,
+        width=width,
+        height=height,
+        scale=scale,
+        center=(center_lat, center_lng)
+        if center_lat is not None and center_lng is not None
+        else None,
+        zoom=zoom,
+        pins=pins,
     )
     # The proposal is private even though the raster provider is shared.
     response.headers["Cache-Control"] = "private, no-store"
