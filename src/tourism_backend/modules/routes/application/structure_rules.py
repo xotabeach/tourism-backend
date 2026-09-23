@@ -112,19 +112,86 @@ def _leg_numbers(item: object) -> tuple[int, int] | None:
     return round(distance), round(duration)  # type: ignore[arg-type]
 
 
+_ROLES = frozenset({"main", "approach", "return"})
+_ORIGINS = frozenset({"router", "synthetic", "editor", "transit"})
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return round(value)
+
+
+def _routed_segments(stop_ids: Sequence[UUID], raw: object) -> list[PlannedSegment] | None:
+    """Segments the router built (14b), if they cover every leg of these stops."""
+    if not isinstance(raw, list) or not raw:
+        return None
+    segments: list[PlannedSegment] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            return None
+        leg, seq = item.get("leg_index"), item.get("seq")
+        mode, role, origin = item.get("mode"), item.get("role"), item.get("origin")
+        if (
+            not isinstance(leg, int)
+            or not isinstance(seq, int)
+            or not 0 <= leg < len(stop_ids) - 1
+            or seq < 0
+            or mode not in SEGMENT_MODES
+            or role not in _ROLES
+            or origin not in _ORIGINS
+        ):
+            return None
+        segments.append(
+            PlannedSegment(
+                leg_index=leg,
+                seq=seq,
+                from_stop_id=stop_ids[leg],
+                to_stop_id=stop_ids[leg + 1],
+                mode=mode,
+                role=role,
+                origin=origin,
+                distance_meters=_optional_int(item.get("distance_meters")),
+                duration_seconds=_optional_int(item.get("duration_seconds")),
+                elevation_gain_meters=_optional_int(item.get("elevation_gain_meters")),
+                elevation_loss_meters=_optional_int(item.get("elevation_loss_meters")),
+            )
+        )
+    segments.sort(key=lambda s: (s.leg_index, s.seq))
+    if {s.leg_index for s in segments} != set(range(len(stop_ids) - 1)):
+        return None
+    keys = [(s.leg_index, s.seq) for s in segments]
+    return segments if len(keys) == len(set(keys)) else None
+
+
+def segment_shapes(routing: Mapping[str, object] | None) -> dict[tuple[int, int], str]:
+    """Encoded line of each routed segment, by (leg_index, seq)."""
+    shapes: dict[tuple[int, int], str] = {}
+    raw = (routing or {}).get("segments")
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, Mapping) and isinstance(item.get("shape"), str):
+            leg, seq = item.get("leg_index"), item.get("seq")
+            if isinstance(leg, int) and isinstance(seq, int):
+                shapes[(leg, seq)] = str(item["shape"])
+    return shapes
+
+
 def plan_segments(
     stop_ids: Sequence[UUID],
     *,
     routing: Mapping[str, object] | None,
     base_mode: str | None,
 ) -> list[PlannedSegment]:
-    """One ``main`` segment per leg in the route's own mode.
+    """The router's segments when it built them, else one per leg in the route's mode.
 
     Distances come from the router's per-pair legs when the route kept them;
     otherwise the segment is ``synthetic`` and has no numbers, as the route
     itself only has a straight line there.
     """
 
+    routed = _routed_segments(stop_ids, (routing or {}).get("segments"))
+    if routed is not None:
+        return routed
     raw_legs = (routing or {}).get("legs")
     legs: list[tuple[int, int]] | None = None
     if isinstance(raw_legs, list) and len(raw_legs) == max(0, len(stop_ids) - 1):

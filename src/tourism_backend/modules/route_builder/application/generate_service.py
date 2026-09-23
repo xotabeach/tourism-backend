@@ -72,6 +72,7 @@ from tourism_backend.modules.route_builder.infrastructure.tsp_factory import (
     get_tsp_provider,
 )
 from tourism_backend.modules.routes.application.schemas import RouteGeometryOut, RouteStopOut
+from tourism_backend.modules.routes.application.structure import refresh_route_structure
 from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 from tourism_backend.modules.subscriptions.application import service as travel_plus
@@ -659,6 +660,10 @@ async def _persist_generated_route(
                 updated_at=now,
             )
         )
+    await session.flush()
+    # Segments right away: the map image draws the drive and the walks from
+    # them (spec 14b), not only once a run starts.
+    await refresh_route_structure(session, route)
     return route
 
 

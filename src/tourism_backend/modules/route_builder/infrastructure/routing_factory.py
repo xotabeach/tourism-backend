@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from tourism_backend.config import Settings, get_settings
 from tourism_backend.modules.route_builder.application.routing import RoutingProvider
+from tourism_backend.modules.route_builder.infrastructure.driven_routing import (
+    DrivenRoutingProvider,
+)
 from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
     StubRoutingProvider,
 )
@@ -20,9 +23,12 @@ def get_routing_provider(settings: Settings | None = None) -> RoutingProvider:
     if cfg.routing_provider == "stub":
         return StubRoutingProvider()
     if cfg.routing_provider == "valhalla":
-        return ValhallaRoutingProvider(
-            base_url=cfg.valhalla_base_url,
-            timeout_seconds=cfg.routing_timeout_seconds,
+        return DrivenRoutingProvider(
+            ValhallaRoutingProvider(
+                base_url=cfg.valhalla_base_url,
+                timeout_seconds=cfg.routing_timeout_seconds,
+            ),
+            settings=cfg,
         )
     if cfg.routing_provider == "2gis":
         key = cfg.two_gis_http_api_key

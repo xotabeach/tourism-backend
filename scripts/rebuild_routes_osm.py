@@ -50,19 +50,21 @@ from tourism_backend.modules.route_builder.infrastructure.routing_factory import
     get_routing_provider,
 )
 from tourism_backend.modules.route_execution.infrastructure.models import RouteRoutingSnapshot
+from tourism_backend.modules.routes.application.structure import refresh_route_structure
+from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 from tourism_backend.modules.subscriptions.infrastructure import (
     models as _subscription_models,  # noqa: F401
 )
 
-_WALK_MODES = frozenset({"walk", "walking", "pedestrian", "foot"})
 _REBUILT_NOTE = "geometry_rebuilt_osm"
 _ROUTING_CACHE_PATTERN = "route-routing:*"
 
 
 def _mode(route: Route) -> TransportMode:
-    value = (route.transport_mode or "").casefold().strip()
-    return "walk" if value in _WALK_MODES else "car"
+    # Car and mixed routes are driven with walks to what a car cannot reach
+    # (spec 14b); the provider builds those segments.
+    return segment_mode_for(route.transport_mode)
 
 
 async def _waypoints(session: Any, route_id: Any) -> list[RouteWaypoint]:
@@ -93,7 +95,7 @@ def _store_route(
     data_version: str | None,
 ) -> None:
     meta = dict((route.accessibility or {}).get("routing") or {})
-    for stale in ("legs", "steep_segment", "backfilled", "road_types"):
+    for stale in ("legs", "segments", "steep_segment", "backfilled", "road_types"):
         meta.pop(stale, None)
     if result is None or not result.geometry_wkt:
         route.geometry = WKTElement(_straight(waypoints), srid=4326)
@@ -188,6 +190,7 @@ async def main() -> None:
                     )
                 if args.apply:
                     _store_route(route, waypoints, result, version)
+                    await refresh_route_structure(session, route)
 
             # Routes first, in their own transaction: snapshots are guarded
             # by an immutability trigger and are handled separately.

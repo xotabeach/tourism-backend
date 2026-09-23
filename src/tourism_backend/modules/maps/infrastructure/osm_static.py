@@ -142,10 +142,13 @@ def draw_overlays(
     numbered_pins: Sequence[Point] = (),
     place_pin: Point | None = None,
     line_mode: str = "walk",
+    pieces: Sequence[tuple[str, Sequence[Point]]] = (),
 ) -> bytes:
     """Route line, pins and the OSM credit on top of the basemap, as PNG.
 
     ``line_mode`` is the way the line is travelled: ``walk`` draws it dashed.
+    ``pieces``, when given, replace ``line``: each (mode, points) part of a
+    route is drawn in its own style, drives first so walks stay on top.
     """
     k = frame.scale * _SUPERSAMPLE
     size = (base.width * _SUPERSAMPLE, base.height * _SUPERSAMPLE)
@@ -156,11 +159,14 @@ def draw_overlays(
         x, y = to_pixel(frame, point[0], point[1])
         return x * k, y * k
 
-    if len(line) >= 2:
-        coords = [px(p) for p in line]
-        color = _MODE_COLORS.get(line_mode, _TRANSIT_COLOR)
-        width = round(_LINE_WIDTH * k)
-        if line_mode == "walk":
+    parts = list(pieces) or [(line_mode, line)]
+    width = round(_LINE_WIDTH * k)
+    for mode, points in sorted(parts, key=lambda part: part[0] == "walk"):
+        if len(points) < 2:
+            continue
+        coords = [px(p) for p in points]
+        color = _MODE_COLORS.get(mode, _TRANSIT_COLOR)
+        if mode == "walk":
             _draw_dashed(draw, coords, color=color, width=width, dash=_DASH * k, gap=_GAP * k)
         else:
             draw.line(coords, fill=color, width=width, joint="curve")

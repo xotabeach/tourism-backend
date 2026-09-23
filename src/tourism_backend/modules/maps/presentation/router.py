@@ -300,9 +300,17 @@ async def _osm_image(
     numbered_pins: Sequence[tuple[float, float]] = (),
     place_pin: tuple[float, float] | None = None,
     line_mode: str = "walk",
+    pieces: Sequence[tuple[str, Sequence[tuple[float, float]]]] = (),
 ) -> Response:
     line_digest = hashlib.sha256(
-        repr((tuple(line), tuple(numbered_pins), line_mode)).encode()
+        repr(
+            (
+                tuple(line),
+                tuple(numbered_pins),
+                line_mode,
+                tuple((mode, tuple(points)) for mode, points in pieces),
+            )
+        ).encode()
     ).hexdigest()
     key = (settings.map_source_version, frame, line_digest, place_pin)
     now = time.monotonic()
@@ -326,6 +334,7 @@ async def _osm_image(
         numbered_pins=numbered_pins,
         place_pin=place_pin,
         line_mode=line_mode,
+        pieces=pieces,
     )
     etag = f'"{hashlib.sha256(content).hexdigest()}"'
     if len(_osm_cache) >= _CACHE_MAX_ITEMS:
@@ -349,6 +358,7 @@ async def route_map_response(
     zoom: int | None,
     pins: str,
     line_mode: str = "walk",
+    pieces: Sequence[tuple[str, Sequence[tuple[float, float]]]] = (),
 ) -> Response:
     """One route image for every endpoint that shows a route (spec 12a).
 
@@ -372,7 +382,8 @@ async def route_map_response(
     if center is not None and zoom is not None:
         frame = MapFrame(center[0], center[1], zoom, width, height, scale)
     else:
-        frame = fit_frame(list(line) + list(stops), width=width, height=height, scale=scale)
+        everything = list(line) + [p for _, points in pieces for p in points]
+        frame = fit_frame(everything + list(stops), width=width, height=height, scale=scale)
     return await _osm_image(
         settings=settings,
         request=request,
@@ -380,6 +391,7 @@ async def route_map_response(
         line=line,
         numbered_pins=stops if pins == "numbered" else (),
         line_mode=line_mode,
+        pieces=pieces,
     )
 
 
@@ -428,6 +440,7 @@ async def route_static_map(
         zoom=zoom if has_center else None,
         pins=pins,
         line_mode=segment_mode_for(route.transport_mode),
+        pieces=await routes_service.route_segment_lines(session, route_id),
     )
 
 
