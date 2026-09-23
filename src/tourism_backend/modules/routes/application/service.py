@@ -171,6 +171,11 @@ async def _cover_urls_for_routes(
     return covers
 
 
+async def route_cover_urls(session: AsyncSession, route_ids: list[UUID]) -> dict[UUID, str]:
+    """The cover a route shows in the catalog, for other modules to reuse."""
+    return await _cover_urls_for_routes(session, route_ids)
+
+
 async def _author_fields_for_routes(
     session: AsyncSession,
     routes: list[Route],

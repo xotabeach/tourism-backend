@@ -77,6 +77,8 @@ async def collect(session: AsyncSession, user_id: UUID, *, historical: bool = Fa
                     model.author_user_id == user_id,
                     model.status == "published",
                     model.reply_to_review_id.is_(None),
+                    # A bare star rating (FRONTEND-42) is not a review.
+                    model.body != "",
                 )
             )
             or 0
@@ -149,6 +151,7 @@ async def collect(session: AsyncSession, user_id: UUID, *, historical: bool = Fa
                         model.author_user_id == user_id,
                         model.status == "published",
                         model.reply_to_review_id.is_(None),
+                        model.body != "",
                         model.moderated_at.is_not(None),
                     )
                 )

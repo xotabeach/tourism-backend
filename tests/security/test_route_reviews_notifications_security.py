@@ -1188,3 +1188,70 @@ async def test_profile_like_notifies_target_once(live_client: AsyncClient) -> No
     assert unlike.status_code == 204
     after_unlike = await live_client.get("/api/v1/me/notifications", headers=target_headers)
     assert after_unlike.json()["unread_count"] == after.json()["unread_count"]
+
+
+@pytest.mark.asyncio
+async def test_star_rating_after_the_run_and_walked_badge(live_client: AsyncClient) -> None:
+    """FRONTEND-42: stars without text from the home card, and «Прошёл маршрут»."""
+    route_id = await _public_route_id()
+    if route_id is None:
+        pytest.skip("No public route seeded")
+    auth = await _login(live_client, phone=f"+7902{uuid4().int % 10_000_000:07d}", name="Оценщик")
+    headers = {"Authorization": f"Bearer {auth['access_token']}"}
+    reviews_url = f"/api/v1/routes/{route_id}/reviews"
+
+    # Without a finished run, stars alone are not accepted.
+    early = await live_client.post(reviews_url, json={"rating": 5}, headers=headers)
+    assert early.status_code == 422, early.text
+    assert early.json()["error"]["code"] == "review_body_required"
+
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    assert started.status_code == 201, started.text
+    # The run shows the same cover as the catalog card.
+    catalog = await live_client.get(f"/api/v1/routes/{route_id}")
+    assert started.json()["route_cover_url"] == catalog.json()["cover_image_url"]
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE route_executions SET status = 'completed', completed_at = now() "
+                    "WHERE id = :id"
+                ),
+                {"id": started.json()["id"]},
+            )
+    finally:
+        await engine.dispose()
+
+    rated = await live_client.post(reviews_url, json={"rating": 4}, headers=headers)
+    assert rated.status_code in (200, 201), rated.text
+    body = rated.json()
+    assert body["status"] == "published"
+    assert body["body"] == ""
+    assert body["author_completed_route"] is True
+
+    # Rating again replaces the stars instead of adding a second vote.
+    again = await live_client.post(reviews_url, json={"rating": 2}, headers=headers)
+    assert again.json()["id"] == body["id"]
+    listed = await live_client.get(reviews_url, params={"limit": 50})
+    mine = [item for item in listed.json()["items"] if item["id"] == body["id"]]
+    assert len(mine) == 1
+    assert mine[0]["rating"] == 2
+    assert mine[0]["author_completed_route"] is True
+
+    # Words added later go into the same row and wait for moderation.
+    worded = await live_client.post(
+        reviews_url, json={"rating": 3, "body": "Хороший маршрут"}, headers=headers
+    )
+    assert worded.json()["id"] == body["id"]
+    assert worded.json()["status"] == "pending_review"
+    assert worded.json()["body"] == "Хороший маршрут"
+
+    # A reply still needs words.
+    reply = await live_client.post(
+        reviews_url, json={"rating": 5, "reply_to_review_id": body["id"]}, headers=headers
+    )
+    assert reply.status_code == 422, reply.text

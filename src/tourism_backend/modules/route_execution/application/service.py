@@ -16,7 +16,6 @@ from sqlalchemy.sql.elements import ColumnElement
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.achievements.service import after_commit as evaluate_achievements
 from tourism_backend.modules.identity.infrastructure.models import User
-from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.infrastructure.models import Place, RoadEvent
 from tourism_backend.modules.route_builder.application.route_quality import (
     RoadEventSignal,
@@ -68,6 +67,7 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecutionStop,
     RouteRoutingSnapshot,
 )
+from tourism_backend.modules.routes.application.service import route_cover_urls
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
 
 _PUBLIC_ROUTE = and_(
@@ -164,11 +164,16 @@ async def _execution_out(
                 )
             )
         )
+    cover_url = execution.route_cover_url
+    if cover_url is None and execution.route_id is not None:
+        # Runs started before FRONTEND-42 saved no cover when the route had no
+        # own one; show the catalog's instead of a grey card.
+        cover_url = (await route_cover_urls(session, [execution.route_id])).get(execution.route_id)
     return RouteExecutionOut(
         id=execution.id,
         route_id=execution.route_id,
         route_name=execution.route_name,
-        route_cover_url=execution.route_cover_url,
+        route_cover_url=cover_url,
         status=cast(RouteExecutionStatus, execution.status),
         started_at=execution.started_at,
         completed_at=execution.completed_at,
@@ -477,16 +482,10 @@ async def start_execution(
         captured_at=datetime.now(UTC),
     )
 
-    cover_url = await session.scalar(
-        select(MediaAttachment.public_path)
-        .where(
-            MediaAttachment.entity_type == "route",
-            MediaAttachment.entity_id == route.id,
-            MediaAttachment.role == "cover",
-            MediaAttachment.status == "active",
-        )
-        .limit(1)
-    )
+    # Same cover as the catalog card: the route's own cover, else the photo
+    # of its first stop that has one. The own cover alone left most runs
+    # without a picture (FRONTEND-42).
+    cover_url = (await route_cover_urls(session, [route.id])).get(route.id)
     leg_estimates = build_leg_estimates(
         [StopPoint(route_stop.position, lat, lng) for route_stop, _place, lng, lat in rows],
         transport_mode=route.transport_mode,
