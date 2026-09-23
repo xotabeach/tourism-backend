@@ -84,9 +84,15 @@ def default_max_leg_meters(mode: TransportMode) -> int:
     }[mode]
 
 
+_DRIVE_SPELLINGS = frozenset({"car", "driving", "drive", "auto"})
+
+
 def normalize_transport_mode(mode: str | None) -> TransportMode:
     if mode in {"walk", "car", "public", "mixed"}:
         return mode  # type: ignore[return-value]
+    # Stored routes spell driving several ways; "driving" used to be walked.
+    if (mode or "").casefold().strip() in _DRIVE_SPELLINGS:
+        return "car"
     return "walk"
 
 

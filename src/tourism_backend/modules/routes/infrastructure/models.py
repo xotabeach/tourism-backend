@@ -50,6 +50,7 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
             "publication_status IN ('draft', 'pending_review', 'published', 'rejected', 'deleted')",
             name="publication_status",
         ),
+        CheckConstraint("base_mode IN ('walk', 'car', 'mixed')", name="base_mode"),
         # One device-generated key per author's draft: a retry after a lost
         # response finds the draft it already created instead of making another.
         Index(
@@ -116,6 +117,22 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     price_min_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
     price_max_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
     client_draft_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Days and segments (spec 14). ``transport_mode`` keeps whatever spelling
+    # clients sent; ``base_mode`` is its normalised walk/car/mixed.
+    base_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="walk", server_default="walk"
+    )
+    needs_public_transport: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # The author or an editor moved a day boundary: automatic splitting
+    # leaves the days alone from then on (spec 14, D8).
+    days_manual: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    has_hard_day: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
 
 class RouteStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -123,6 +140,7 @@ class RouteStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("route_id", "position", name="uq_route_stops_route_position"),
         CheckConstraint("position >= 1", name="position_positive"),
+        CheckConstraint("time_of_day IN ('any', 'dark', 'dawn')", name="time_of_day"),
     )
 
     route_id: Mapped[UUID] = mapped_column(
@@ -143,6 +161,80 @@ class RouteStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     visit_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_optional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # «в тёмное время» / «к рассвету» (spec 14, D11).
+    time_of_day: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="any", server_default="any"
+    )
+
+
+class RouteDay(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A continuous run of a route's stops walked or driven in one day."""
+
+    __tablename__ = "route_days"
+    __table_args__ = (
+        UniqueConstraint("route_id", "day_index", name="uq_route_days_route_day"),
+        CheckConstraint("day_index >= 1", name="day_index_positive"),
+        CheckConstraint("boundary_source IN ('auto', 'manual')", name="boundary_source"),
+    )
+
+    route_id: Mapped[UUID] = mapped_column(
+        ForeignKey("routes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    day_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_stop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("route_stops.id", ondelete="CASCADE"), nullable=False
+    )
+    last_stop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("route_stops.id", ondelete="CASCADE"), nullable=False
+    )
+    boundary_source: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="auto", server_default="auto"
+    )
+    overnight_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    overloaded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    difficulty: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class RouteSegment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """One stretch of a leg between two stops, travelled one way."""
+
+    __tablename__ = "route_segments"
+    __table_args__ = (
+        UniqueConstraint("route_id", "leg_index", "seq", name="uq_route_segments_leg_seq"),
+        CheckConstraint("leg_index >= 0 AND seq >= 0", name="order_non_negative"),
+        CheckConstraint(
+            "mode IN ('walk', 'car', 'bus', 'trolleybus', 'train', 'cable_car', 'ferry')",
+            name="mode",
+        ),
+        CheckConstraint("role IN ('main', 'approach', 'return')", name="role"),
+        CheckConstraint("origin IN ('router', 'synthetic', 'editor', 'transit')", name="origin"),
+    )
+
+    route_id: Mapped[UUID] = mapped_column(
+        ForeignKey("routes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    leg_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    from_stop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("route_stops.id", ondelete="CASCADE"), nullable=False
+    )
+    to_stop_id: Mapped[UUID] = mapped_column(
+        ForeignKey("route_stops.id", ondelete="CASCADE"), nullable=False
+    )
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="main")
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    distance_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    elevation_gain_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    elevation_loss_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    geometry = mapped_column(Geography(geometry_type="LINESTRING", srid=4326), nullable=True)
+    quality_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # A 12b transit line once public transport is routed; free text until then.
+    transit_line_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class RouteReview(Base, UUIDPrimaryKeyMixin, TimestampMixin):

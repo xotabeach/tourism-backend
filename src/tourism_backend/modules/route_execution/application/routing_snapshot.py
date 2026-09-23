@@ -20,8 +20,15 @@ from tourism_backend.modules.route_execution.application.schemas import (
 )
 from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteRoutingSnapshot,
+    RoutingSnapshotDay,
+    RoutingSnapshotSegment,
 )
 from tourism_backend.modules.routes.application.schemas import RouteGeometryOut, RouteQualityStatus
+from tourism_backend.modules.routes.application.structure_rules import (
+    PlannedDay,
+    PlannedSegment,
+    structure_signature,
+)
 from tourism_backend.modules.routes.infrastructure.models import Route
 
 _QUALITY_STATUSES = {
@@ -120,13 +127,16 @@ def routing_snapshot_fingerprint(
     *,
     geometry_wkt: str | None,
     stop_signature: Sequence[tuple[UUID, int, UUID]],
+    segments: Sequence[PlannedSegment] = (),
+    days: Sequence[PlannedDay] = (),
 ) -> str:
     """Return a stable digest of all routing-relevant route state.
 
     Names and descriptions are intentionally excluded: editing copy should not
     create a new route graph revision. Stops, geometry and normalized routing
     metadata are included, so an execution never silently follows a changed
-    path.
+    path. Days and segments are hashed in full: the generic metadata copy
+    below is bounded and would not see a changed leg (spec 14, R1).
     """
 
     routing = _routing_metadata(route)
@@ -134,6 +144,9 @@ def routing_snapshot_fingerprint(
     relevant = {
         "route_id": str(route.id),
         "transport_mode": route.transport_mode,
+        "base_mode": route.base_mode,
+        "needs_public_transport": route.needs_public_transport,
+        "structure": structure_signature(segments, days),
         "distance_meters": route.distance_meters,
         "estimated_duration_minutes": route.estimated_duration_minutes,
         "difficulty": route.difficulty,
@@ -211,12 +224,16 @@ async def ensure_routing_snapshot(
     route: Route,
     stop_signature: Sequence[tuple[UUID, int, UUID]],
     captured_at: datetime | None = None,
+    segments: Sequence[PlannedSegment] = (),
+    days: Sequence[PlannedDay] = (),
 ) -> RouteRoutingSnapshot:
     """Reuse the current revision or append a new immutable snapshot.
 
     The caller locks the route row before invoking this function. That makes
     the ``latest revision + 1`` operation safe for simultaneous users starting
     the same route while retaining a simple unique constraint in PostgreSQL.
+    ``segments`` and ``days`` are the route's current ones
+    (``refresh_route_structure``); they are copied into the snapshot.
     """
 
     captured = captured_at or datetime.now(UTC)
@@ -228,6 +245,8 @@ async def ensure_routing_snapshot(
         route,
         geometry_wkt=geometry_wkt,
         stop_signature=stop_signature,
+        segments=segments,
+        days=days,
     )
     latest_stmt: Select[tuple[RouteRoutingSnapshot]] = (
         select(RouteRoutingSnapshot)
@@ -300,8 +319,39 @@ async def ensure_routing_snapshot(
         route_updated_at=route.updated_at,
         captured_at=captured,
         created_at=captured,
+        difficulty=_bounded_string(route.difficulty, max_length=32),
+        base_mode=route.base_mode,
     )
     session.add(snapshot)
+    await session.flush()
+    positions = {route_stop_id: position for route_stop_id, position, _place in stop_signature}
+    for day in days:
+        session.add(
+            RoutingSnapshotDay(
+                id=uuid4(),
+                snapshot_id=snapshot.id,
+                day_index=day.day_index,
+                first_position=positions[day.first_stop_id],
+                last_position=positions[day.last_stop_id],
+                boundary_source=day.boundary_source,
+            )
+        )
+    for segment in segments:
+        session.add(
+            RoutingSnapshotSegment(
+                id=uuid4(),
+                snapshot_id=snapshot.id,
+                leg_index=segment.leg_index,
+                seq=segment.seq,
+                mode=segment.mode,
+                role=segment.role,
+                origin=segment.origin,
+                distance_meters=segment.distance_meters,
+                duration_seconds=segment.duration_seconds,
+                elevation_gain_meters=segment.elevation_gain_meters,
+                elevation_loss_meters=segment.elevation_loss_meters,
+            )
+        )
     await session.flush()
     return snapshot
 

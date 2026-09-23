@@ -113,6 +113,63 @@ class RouteRoutingSnapshot(Base, UUIDPrimaryKeyMixin):
     )
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Taken at start so a later edit cannot raise the reward multiplier
+    # (spec 14, R1). Snapshots before 0069 have none and read the route.
+    difficulty: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    base_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+
+class RoutingSnapshotDay(Base, UUIDPrimaryKeyMixin):
+    """A day of the route as it was at start; immutable like its snapshot."""
+
+    __tablename__ = "routing_snapshot_days"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "day_index", name="uq_routing_snapshot_days_day"),
+    )
+
+    snapshot_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "route_routing_snapshots.id",
+            ondelete="CASCADE",
+            name="fk_routing_snapshot_days_snapshot",
+        ),
+        nullable=False,
+        index=True,
+    )
+    day_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_position: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_position: Mapped[int] = mapped_column(Integer, nullable=False)
+    boundary_source: Mapped[str] = mapped_column(String(8), nullable=False)
+
+
+class RoutingSnapshotSegment(Base, UUIDPrimaryKeyMixin):
+    """A segment of a leg as it was at start; points and pace read these."""
+
+    __tablename__ = "routing_snapshot_segments"
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_id", "leg_index", "seq", name="uq_routing_snapshot_segments_leg_seq"
+        ),
+    )
+
+    snapshot_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "route_routing_snapshots.id",
+            ondelete="CASCADE",
+            name="fk_routing_snapshot_segments_snapshot",
+        ),
+        nullable=False,
+        index=True,
+    )
+    leg_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    distance_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    elevation_gain_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    elevation_loss_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):

@@ -603,3 +603,83 @@ async def test_parallel_starts_leave_one_run_and_name_the_blocking_one(
     again = await start(first["id"])
     assert again.status_code == 201, again.text
     assert again.json()["id"] != run_id
+
+
+@pytest.mark.asyncio
+async def test_run_start_keeps_the_route_days_and_segments_in_its_snapshot(
+    live_client: AsyncClient,
+) -> None:
+    """Spec 14, step 0: one day, a segment per leg, frozen with the snapshot."""
+
+    tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    assert started.status_code == 201, started.text
+    execution = started.json()
+    snapshot_id = execution["routing"]["snapshot_id"]
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            stop_count = await conn.scalar(
+                text("SELECT count(*) FROM route_stops WHERE route_id = :id"), {"id": route_id}
+            )
+            route_segments = await conn.scalar(
+                text("SELECT count(*) FROM route_segments WHERE route_id = :id"),
+                {"id": route_id},
+            )
+            route_days = (
+                await conn.execute(
+                    text("SELECT day_index, boundary_source FROM route_days WHERE route_id = :id"),
+                    {"id": route_id},
+                )
+            ).all()
+            snapshot_segments = (
+                await conn.execute(
+                    text(
+                        "SELECT leg_index, mode, role FROM routing_snapshot_segments "
+                        "WHERE snapshot_id = :id ORDER BY leg_index, seq"
+                    ),
+                    {"id": snapshot_id},
+                )
+            ).all()
+            snapshot_days = (
+                await conn.execute(
+                    text(
+                        "SELECT day_index, first_position, last_position "
+                        "FROM routing_snapshot_days WHERE snapshot_id = :id"
+                    ),
+                    {"id": snapshot_id},
+                )
+            ).all()
+            base_mode = await conn.scalar(
+                text("SELECT base_mode FROM route_routing_snapshots WHERE id = :id"),
+                {"id": snapshot_id},
+            )
+        assert route_segments == stop_count - 1
+        assert [tuple(row) for row in route_days] == [(1, "auto")]
+        assert [row.leg_index for row in snapshot_segments] == list(range(stop_count - 1))
+        assert {row.role for row in snapshot_segments} <= {"main"}
+        assert {row.mode for row in snapshot_segments} <= {"walk", "car"}
+        assert len(snapshot_days) == 1
+        assert snapshot_days[0].day_index == 1
+        assert snapshot_days[0].last_position >= snapshot_days[0].first_position
+        assert base_mode in {"walk", "car", "mixed"}
+
+        with pytest.raises(DBAPIError):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE routing_snapshot_segments SET distance_meters = 1 "
+                        "WHERE snapshot_id = :id"
+                    ),
+                    {"id": snapshot_id},
+                )
+    finally:
+        await engine.dispose()
+        await live_client.post(
+            f"/api/v1/route-executions/{execution['id']}/cancel", headers=headers
+        )

@@ -177,7 +177,7 @@ class RouteDraftPreviewIn(BaseModel):
     """
 
     place_ids: list[UUID] = Field(min_length=2, max_length=22)
-    transport_mode: Literal["walk", "car", "bicycle", "public_transport"] = "walk"
+    transport_mode: Literal["walk", "car", "mixed", "bicycle", "public_transport"] = "walk"
 
 
 class RouteDraftPreviewOut(BaseModel):
