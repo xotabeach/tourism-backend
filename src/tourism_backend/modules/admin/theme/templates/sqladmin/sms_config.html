@@ -25,7 +25,7 @@
             <span class="form-selectgroup-label flex-fill">Отключено — только помечать задания выполненными</span>
           </label>
           <div class="text-secondary mt-2" style="font-size: 0.85rem;">
-            Значение окружения: {{ env_provider }}.
+            Значение окружения: {{ {"smsaero": "SMS Aero", "stub": "Доставка отключена"}.get(env_provider, env_provider) }}.
             {% if not smsaero_configured %}⚠ Учётные данные SMS Aero не настроены.{% endif %}
           </div>
         </div>

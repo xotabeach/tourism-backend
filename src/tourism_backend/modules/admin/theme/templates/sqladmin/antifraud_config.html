@@ -1,4 +1,5 @@
 {% extends "sqladmin/layout.html" %}
+{% from "sqladmin/_components.html" import metric %}
 {% block content_header %}
 <div class="row align-items-center">
   <div class="col">
@@ -9,24 +10,12 @@
 {% endblock %}
 {% block content %}
 <div class="col-12 col-xl-8">
-  <div class="row row-cards mb-3">
-    <div class="col-6 col-md-3"><div class="card card-body">
-      <div class="text-secondary">Очки на проверке</div>
-      <div class="h2 mb-0">{{ held }}</div>
-    </div></div>
-    <div class="col-6 col-md-3"><div class="card card-body">
-      <div class="text-secondary">Старше {{ overdue_days }} дн.</div>
-      <div class="h2 mb-0 {% if overdue %}text-danger{% endif %}">{{ overdue }}</div>
-    </div></div>
-    <div class="col-6 col-md-3"><div class="card card-body">
-      <div class="text-secondary">Отмечено / заблокировано</div>
-      <div class="h2 mb-0">{{ flagged }} / {{ blocked }}</div>
-    </div></div>
-    <div class="col-6 col-md-3"><div class="card card-body">
-      <div class="text-secondary">Нарушений за 24 ч</div>
-      <div class="h2 mb-0">{{ violations_shadow + violations_enforce }}</div>
-      <div class="text-secondary small">{{ violations_shadow }} в наблюдении · {{ violations_enforce }} в боевом</div>
-    </div></div>
+  <div class="ct-metrics mb-3">
+    {{ metric("Очки на проверке", held) }}
+    {{ metric("Старше " ~ overdue_days ~ " дн.", overdue, danger=overdue > 0) }}
+    {{ metric("Отмечено / заблокировано", flagged ~ " / " ~ blocked) }}
+    {{ metric("Нарушений за 24 ч", violations_shadow + violations_enforce,
+      violations_shadow ~ " в наблюдении · " ~ violations_enforce ~ " в боевом") }}
   </div>
 
   <div class="card">

@@ -28,6 +28,7 @@ from tourism_backend.modules.admin.presentation.auth import (
 )
 from tourism_backend.modules.admin.presentation.datetime_fmt import ADMIN_COLUMN_TYPE_FORMATTERS
 from tourism_backend.modules.admin.presentation.formatters import (
+    choice_formatter,
     format_fraud_flag,
     format_hold_status,
     format_user_fk,
@@ -190,6 +191,10 @@ class RoutePointsHoldAdmin(ModelView, model=RoutePointsHold):
     }
     column_formatters = {
         RoutePointsHold.status: format_hold_status,
+        RoutePointsHold.reason: choice_formatter(
+            "reason",
+            {"flag_retro": "Проверка прошлых начислений", "flag_forward": "Флаг при начислении"},
+        ),
         RoutePointsHold.user_id: format_user_fk,
     }
     column_formatters_detail = column_formatters
@@ -428,6 +433,18 @@ class RoutePaceViolationAdmin(ModelView, model=RoutePaceViolation):
         RoutePaceViolation.user_id: format_user_fk,
         RoutePaceViolation.kind: format_violation_kind,
         RoutePaceViolation.mode: format_violation_mode,
+        RoutePaceViolation.gps_verdict: choice_formatter(
+            "gps_verdict",
+            {
+                "at": "У точки",
+                "behind": "Позади точки",
+                "ahead": "Впереди точки",
+                "unknown": "Не определено",
+            },
+        ),
+        RoutePaceViolation.timing_source: choice_formatter(
+            "timing_source", {"server": "Сервер", "device": "Устройство"}
+        ),
     }
     column_formatters_detail = column_formatters
     column_sortable_list = [RoutePaceViolation.occurred_at]

@@ -55,6 +55,7 @@ from tourism_backend.modules.admin.presentation.filters import (
     OtpLinkedUserIdFilter,
 )
 from tourism_backend.modules.admin.presentation.formatters import (
+    choice_formatter,
     format_admin_role,
     format_article_block_image,
     format_article_status,
@@ -1355,7 +1356,17 @@ class TravelPlusSubscriptionAdmin(ModelView, model=TravelPlusSubscription):
     }
     column_formatters = {
         TravelPlusSubscription.user_id: format_user_id_peek,
+        TravelPlusSubscription.plan: choice_formatter(
+            "plan", {"monthly": "Месяц", "yearly": "Год"}
+        ),
+        TravelPlusSubscription.status: choice_formatter(
+            "status", {"active": "Активна", "canceled": "Отменена", "expired": "Истекла"}
+        ),
+        TravelPlusSubscription.source: choice_formatter(
+            "source", {"admin": "Администратор", "mock_checkout": "Тестовая покупка"}
+        ),
     }
+    column_formatters_detail = column_formatters
     column_default_sort = (TravelPlusSubscription.created_at, True)
     column_filters = [
         OperationColumnFilter(TravelPlusSubscription.status, title="Статус"),
@@ -2150,6 +2161,22 @@ class AchievementActionAdmin(ModelView, model=AchievementAdminAction):
         AchievementAdminAction.admin_id,
         AchievementAdminAction.created_at,
     ]
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_labels = {
+        AchievementAdminAction.user_id: "Пользователь",
+        AchievementAdminAction.achievement_id: "Достижение",
+        AchievementAdminAction.action: "Действие",
+        AchievementAdminAction.reason: "Причина",
+        AchievementAdminAction.admin_id: "Администратор",
+        AchievementAdminAction.created_at: "Когда",
+    }
+    column_formatters = {
+        AchievementAdminAction.user_id: format_user_fk,
+        AchievementAdminAction.action: choice_formatter(
+            "action", {"grant": "Выдано", "revoke": "Отозвано"}
+        ),
+    }
+    column_formatters_detail = column_formatters
     can_create = False
     can_edit = False
     can_delete = False
@@ -2177,7 +2204,13 @@ class UserAchievementAdmin(ModelView, model=UserAchievement):
         UserAchievement.source: "Источник",
         UserAchievement.reason: "Причина",
     }
-    column_formatters = {UserAchievement.user_id: format_user_fk}
+    column_formatters = {
+        UserAchievement.user_id: format_user_fk,
+        UserAchievement.source: choice_formatter(
+            "source", {"rule": "По правилу", "backfill": "Пересчёт истории", "operator": "Оператор"}
+        ),
+    }
+    column_formatters_detail = column_formatters
     column_sortable_list = [UserAchievement.unlocked_at]
     column_default_sort = (UserAchievement.unlocked_at, True)
     column_filters = [OperationColumnFilter(UserAchievement.user_id, title="ID пользователя")]
@@ -2221,7 +2254,17 @@ class RouteExecutionAdmin(ModelView, model=RouteExecution):
         RouteExecution.user_id: format_user_fk,
         RouteExecution.route_id: format_route_fk,
         RouteExecution.points_status: format_points_status,
+        RouteExecution.status: choice_formatter(
+            "status",
+            {
+                "active": "В пути",
+                "paused": "На паузе",
+                "completed": "Завершено",
+                "cancelled": "Отменено",
+            },
+        ),
     }
+    column_formatters_detail = column_formatters
     column_sortable_list = [RouteExecution.started_at, RouteExecution.status]
     column_default_sort = (RouteExecution.started_at, True)
     column_filters = [
@@ -2297,7 +2340,19 @@ class RecommendationDeckItemAdmin(ModelView, model=RouteRecommendationDeckItem):
     column_formatters = {
         RouteRecommendationDeckItem.user_id: format_user_fk,
         RouteRecommendationDeckItem.route_id: format_route_fk,
+        RouteRecommendationDeckItem.explanation_code: choice_formatter(
+            "explanation_code",
+            {
+                "matches_interest": "По интересам",
+                "nearby_exploration": "Новые места рядом",
+                "fresh_route": "Новый маршрут",
+                "popular_route": "Популярный маршрут",
+                "cold_start": "Начальная подборка",
+                "catalog_fallback": "Из каталога",
+            },
+        ),
     }
+    column_formatters_detail = column_formatters
     column_sortable_list = [
         RouteRecommendationDeckItem.deck_date,
         RouteRecommendationDeckItem.rank,
@@ -2337,7 +2392,9 @@ class RecommendationFeedbackAdmin(ModelView, model=RouteRecommendationFeedback):
     column_formatters = {
         RouteRecommendationFeedback.user_id: format_user_fk,
         RouteRecommendationFeedback.route_id: format_route_fk,
+        RouteRecommendationFeedback.action: choice_formatter("action", {"skip": "Пропущено"}),
     }
+    column_formatters_detail = column_formatters
     column_sortable_list = [RouteRecommendationFeedback.created_at]
     column_default_sort = (RouteRecommendationFeedback.created_at, True)
     column_filters = [
@@ -2479,6 +2536,34 @@ class RoadEventAdmin(ModelView, model=RoadEvent):
         RoadEvent.ends_at: "Окончание",
         RoadEvent.affects_transport: "Влияет на транспорт",
         RoadEvent.source_url: "Источник",
+    }
+    column_formatters = {
+        RoadEvent.status: choice_formatter(
+            "status", {"active": "Действует", "scheduled": "Запланировано", "resolved": "Завершено"}
+        ),
+        RoadEvent.event_kind: choice_formatter(
+            "event_kind",
+            {
+                "closure": "Перекрытие",
+                "restriction": "Ограничение",
+                "congestion": "Затор",
+                "other": "Другое",
+            },
+        ),
+    }
+    column_formatters_detail = column_formatters
+    form_choices = {
+        "status": [
+            ("active", "Действует"),
+            ("scheduled", "Запланировано"),
+            ("resolved", "Завершено"),
+        ],
+        "event_kind": [
+            ("closure", "Перекрытие"),
+            ("restriction", "Ограничение"),
+            ("congestion", "Затор"),
+            ("other", "Другое"),
+        ],
     }
     form_columns = [
         RoadEvent.title,
@@ -2740,7 +2825,8 @@ class RuntimeConfigAdmin(BaseView):
             )
         Flash.success(
             request,
-            f"Провайдер ИИ переключён на «{value}». Подхватится на следующем ходу чата, "
+            f"Провайдер ИИ переключён на «{dict(_SELECTABLE_AI_PROVIDERS)[value]}». "
+            "Подхватится на следующем ходу чата, "
             "без перезапуска бэкенда.",
         )
         return RedirectResponse(redirect_url, status_code=303)
@@ -3754,6 +3840,7 @@ def register_views(admin: Any, settings: Settings) -> None:
             SmsDeliveryJob.updated_at: "Обновлено",
         }
         column_formatters = {SmsDeliveryJob.status: format_sms_delivery_status}
+        column_formatters_detail = column_formatters
         column_searchable_list = [SmsDeliveryJob.phone_e164, SmsDeliveryJob.provider_sms_id]
         column_sortable_list = [
             SmsDeliveryJob.created_at,

@@ -38,7 +38,7 @@
         <div class="col-md-6">
           <div class="text-secondary mb-1">По версиям APK</div>
           {% for version, n in report.downloads_by_version %}
-          <div>{{ version }}: <strong>{{ n }}</strong></div>
+          <div>{{ "Версия неизвестна" if version == "unknown" else version }}: <strong>{{ n }}</strong></div>
           {% else %}<div class="text-secondary">Пока нет данных</div>{% endfor %}
         </div>
       </div>
@@ -65,11 +65,11 @@
     </div>
     <div class="card-body">
       <div class="text-secondary mb-2">
-        Пользователи без заголовка версии считаются на старой версии («unknown») и входят в знаменатель.
+        Пользователи без заголовка версии показаны как «Версия неизвестна» и входят в общее число активных.
         Один пользователь на двух версиях учтён в обеих.
       </div>
       {% for version, build, n in report.users_by_version %}
-      <div>{{ version }}{% if build %} (сборка {{ build }}){% endif %}: <strong>{{ n }}</strong></div>
+      <div>{{ "Версия неизвестна" if version == "unknown" else version }}{% if build %} (сборка {{ build }}){% endif %}: <strong>{{ n }}</strong></div>
       {% else %}<div class="text-secondary">Пока нет данных</div>{% endfor %}
     </div>
     <div class="table-responsive">
