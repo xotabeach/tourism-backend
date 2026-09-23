@@ -97,3 +97,35 @@ async def test_basemap_failures_raise():
             timeout_seconds=5,
             client=client,
         )
+
+
+def _coverage_along(png: bytes, frame: MapFrame, start: tuple, end: tuple) -> list[bool]:
+    """Whether each sample between two points is painted (not white)."""
+    image = Image.open(io.BytesIO(png)).convert("RGB")
+    x0, y0 = to_pixel(frame, *start)
+    x1, y1 = to_pixel(frame, *end)
+    samples = []
+    for i in range(20, 181):
+        t = i / 200
+        x = (x0 + (x1 - x0) * t) * frame.scale
+        y = (y0 + (y1 - y0) * t) * frame.scale
+        samples.append(image.getpixel((round(x), round(y))) != (255, 255, 255))
+    return samples
+
+
+def test_walking_is_dashed_and_driving_is_solid():
+    """Spec 14, D23: gaps along a walked line, none along a driven one."""
+    frame = fit_frame([_LIVADIA, _SWALLOW], width=377, height=600, scale=2)
+    walked = draw_overlays(_blank(frame), frame, line=[_LIVADIA, _SWALLOW])
+    driven = draw_overlays(_blank(frame), frame, line=[_LIVADIA, _SWALLOW], line_mode="car")
+
+    walk_samples = _coverage_along(walked, frame, _LIVADIA, _SWALLOW)
+    assert any(walk_samples)
+    assert not all(walk_samples)
+    assert all(_coverage_along(driven, frame, _LIVADIA, _SWALLOW))
+
+    blue = Image.open(io.BytesIO(driven)).convert("RGB")
+    x, y = to_pixel(frame, *_MIDDLE)
+    r, g, b = blue.getpixel((round(x * frame.scale), round(y * frame.scale)))
+    assert b > r
+    assert b > g

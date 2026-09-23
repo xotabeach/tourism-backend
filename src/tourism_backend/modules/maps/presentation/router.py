@@ -24,6 +24,7 @@ from tourism_backend.modules.route_builder.infrastructure.two_gis_routing import
     two_gis_routing_stats,
 )
 from tourism_backend.modules.routes.application import service as routes_service
+from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
 
 router = APIRouter(tags=["maps"])
 _STATIC_URL = "https://static.maps.2gis.com/2.0"
@@ -298,8 +299,11 @@ async def _osm_image(
     line: Sequence[tuple[float, float]] = (),
     numbered_pins: Sequence[tuple[float, float]] = (),
     place_pin: tuple[float, float] | None = None,
+    line_mode: str = "walk",
 ) -> Response:
-    line_digest = hashlib.sha256(repr((tuple(line), tuple(numbered_pins))).encode()).hexdigest()
+    line_digest = hashlib.sha256(
+        repr((tuple(line), tuple(numbered_pins), line_mode)).encode()
+    ).hexdigest()
     key = (settings.map_source_version, frame, line_digest, place_pin)
     now = time.monotonic()
     cached = _osm_cache.get(key)
@@ -316,7 +320,12 @@ async def _osm_image(
             status_code=502,
         ) from exc
     content = draw_overlays(
-        base, frame, line=line, numbered_pins=numbered_pins, place_pin=place_pin
+        base,
+        frame,
+        line=line,
+        numbered_pins=numbered_pins,
+        place_pin=place_pin,
+        line_mode=line_mode,
     )
     etag = f'"{hashlib.sha256(content).hexdigest()}"'
     if len(_osm_cache) >= _CACHE_MAX_ITEMS:
@@ -339,8 +348,12 @@ async def route_map_response(
     center: tuple[float, float] | None,
     zoom: int | None,
     pins: str,
+    line_mode: str = "walk",
 ) -> Response:
-    """One route image for every endpoint that shows a route (spec 12a)."""
+    """One route image for every endpoint that shows a route (spec 12a).
+
+    ``line_mode`` is a segment mode (spec 14): walking is drawn dashed.
+    """
     if settings.map_provider == "2gis":
         return await _fetch(
             settings=settings,
@@ -366,6 +379,7 @@ async def route_map_response(
         frame=frame,
         line=line,
         numbered_pins=stops if pins == "numbered" else (),
+        line_mode=line_mode,
     )
 
 
@@ -413,6 +427,7 @@ async def route_static_map(
         center=(center_lat, center_lng) if has_center else None,  # type: ignore[arg-type]
         zoom=zoom if has_center else None,
         pins=pins,
+        line_mode=segment_mode_for(route.transport_mode),
     )
 
 

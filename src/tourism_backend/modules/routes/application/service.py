@@ -1682,7 +1682,7 @@ async def preview_user_route_draft(
         try:
             await redis.set(
                 f"{_DRAFT_PREVIEW_KEY}{preview_id}",
-                json.dumps({"line": line, "stops": stops}),
+                json.dumps({"line": line, "stops": stops, "mode": transport_mode}),
                 ex=_DRAFT_PREVIEW_TTL_SECONDS,
             )
         except Exception:  # noqa: BLE001 — the raster falls back to the points
@@ -1704,8 +1704,8 @@ async def preview_user_route_draft(
 async def draft_preview_shape(
     redis: Redis | None,
     preview_id: str,
-) -> tuple[list[tuple[float, float]], list[tuple[float, float]]] | None:
-    """Cached ``(line, stops)`` for a preview, or None once it has expired."""
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]], str] | None:
+    """Cached ``(line, stops, mode)`` for a preview, or None once it has expired."""
     if redis is None:
         return None
     try:
@@ -1719,7 +1719,8 @@ async def draft_preview_shape(
         data = json.loads(raw)
         line = [(float(x), float(y)) for x, y in data["line"]]
         stops = [(float(x), float(y)) for x, y in data["stops"]]
+        mode = segment_mode_for(data.get("mode"))
     except Exception:  # noqa: BLE001 — a corrupt entry behaves like a miss
         _logger.warning("route_draft_preview_decode_failed", exc_info=True)
         return None
-    return (line, stops) if len(line) >= 2 else None
+    return (line, stops, mode) if len(line) >= 2 else None

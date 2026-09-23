@@ -72,6 +72,7 @@ from tourism_backend.modules.route_builder.infrastructure.tsp_factory import (
     get_tsp_provider,
 )
 from tourism_backend.modules.routes.application.schemas import RouteGeometryOut, RouteStopOut
+from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 from tourism_backend.modules.subscriptions.application import service as travel_plus
 from tourism_backend.modules.subscriptions.application.entitlements import (
@@ -922,6 +923,7 @@ async def _build_preview(
         synthetic=routing.synthetic,
         static_map_url=f"/api/v1/route-builder/proposals/{proposal.id}/map",
         trip_plan=trip_plan,
+        line_mode=segment_mode_for(params.transport_mode),
     )
 
 
