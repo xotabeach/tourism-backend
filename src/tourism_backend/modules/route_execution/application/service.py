@@ -373,7 +373,13 @@ async def start_execution(
             code="active_route_execution_exists",
             message="Finish or cancel the active route first",
             status_code=409,
-            details={"execution_id": str(active.id)},
+            # Lets the app name the run in the way instead of a bare refusal.
+            details={
+                "execution_id": str(active.id),
+                "route_id": str(active.route_id) if active.route_id else None,
+                "route_name": active.route_name,
+                "status": active.status,
+            },
         )
 
     antifraud_settings = await load_settings(session)

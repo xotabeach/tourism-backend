@@ -559,3 +559,47 @@ async def test_run_reports_pause_start_last_activity_and_own_review(
                 {"user": me["id"]},
             )
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_parallel_starts_leave_one_run_and_name_the_blocking_one(
+    live_client: AsyncClient,
+) -> None:
+    """BACKEND-25: double taps, two devices and restarts after a cancel."""
+    import asyncio
+
+    tokens = await _login(live_client, f"+7901{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    routes = await live_client.get("/api/v1/routes", params={"limit": 2})
+    items = routes.json()["items"]
+    assert len(items) >= 2, "seeded catalog must contain two routes"
+    first, second = items[0], items[1]
+
+    async def start(route_id: str):
+        return await live_client.post(
+            "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+        )
+
+    # The same route started five times at once is one run.
+    same = await asyncio.gather(*(start(first["id"]) for _ in range(5)))
+    assert all(r.status_code in (200, 201) for r in same), [r.text for r in same]
+    assert len({r.json()["id"] for r in same}) == 1
+    run_id = same[0].json()["id"]
+
+    # Two devices racing different routes: never a second run, and the refusal
+    # names the run in the way.
+    raced = await asyncio.gather(start(second["id"]), start(second["id"]))
+    for response in raced:
+        assert response.status_code == 409, response.text
+        error = response.json()["error"]
+        assert error["code"] == "active_route_execution_exists"
+        assert error["details"]["execution_id"] == run_id
+        assert error["details"]["route_id"] == first["id"]
+        assert error["details"]["route_name"] == same[0].json()["route_name"]
+
+    # A cancelled run no longer blocks: the same route starts afresh.
+    cancelled = await live_client.post(f"/api/v1/route-executions/{run_id}/cancel", headers=headers)
+    assert cancelled.status_code == 200, cancelled.text
+    again = await start(first["id"])
+    assert again.status_code == 201, again.text
+    assert again.json()["id"] != run_id
