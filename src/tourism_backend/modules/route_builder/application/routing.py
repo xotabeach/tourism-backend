@@ -88,3 +88,39 @@ def normalize_transport_mode(mode: str | None) -> TransportMode:
     if mode in {"walk", "car", "public", "mixed"}:
         return mode  # type: ignore[return-value]
     return "walk"
+
+
+# A 50 m stretch at least this steep makes a route a candidate for «очень
+# сложный» with editor review; it never blocks anything (spec 12a, D19). The
+# value is provisional until the elevation profiles are tuned on real routes.
+STEEP_SEGMENT_DEGREES = 30.0
+
+
+def routing_details(
+    result: RoutingResult, *, stop_count: int, data_version: str | None
+) -> dict[str, object]:
+    """Per-leg and elevation fields a route keeps from its routing answer.
+
+    ``legs`` is written only when there is exactly one leg per stop pair: the
+    run's anti-fraud plan reads it as such (provider_legs_from_metadata).
+    """
+    legs = result.legs
+    per_pair = len(legs) == stop_count - 1 and all(
+        leg.from_index == index and leg.to_index == index + 1 for index, leg in enumerate(legs)
+    )
+    details: dict[str, object] = {
+        "provider_version": data_version,
+        "elevation_gain_meters": result.elevation_gain_meters,
+        "elevation_loss_meters": result.elevation_loss_meters,
+        "min_altitude_meters": result.min_altitude_meters,
+        "max_altitude_meters": result.max_altitude_meters,
+        "max_road_angle_degrees": result.max_road_angle_degrees,
+    }
+    if per_pair and not result.synthetic:
+        details["legs"] = [
+            {"distance_meters": leg.distance_meters, "duration_seconds": leg.duration_seconds}
+            for leg in legs
+        ]
+    if (result.max_road_angle_degrees or 0) >= STEEP_SEGMENT_DEGREES:
+        details["steep_segment"] = True
+    return details

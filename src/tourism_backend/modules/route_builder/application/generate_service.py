@@ -39,6 +39,7 @@ from tourism_backend.modules.route_builder.application.routing import (
     RoutingResult,
     TransportMode,
     normalize_transport_mode,
+    routing_details,
 )
 from tourism_backend.modules.route_builder.application.schemas import (
     ActionsBlockOut,
@@ -606,12 +607,12 @@ async def _persist_generated_route(
             "buffer_duration_seconds": 0,
             "total_duration_seconds": total_duration_seconds,
             "geometry_available": routing.geometry_wkt is not None,
-            "elevation_gain_meters": routing.elevation_gain_meters,
-            "elevation_loss_meters": routing.elevation_loss_meters,
-            "min_altitude_meters": routing.min_altitude_meters,
-            "max_altitude_meters": routing.max_altitude_meters,
-            "max_road_angle_degrees": routing.max_road_angle_degrees,
             "road_types": list(routing.road_types),
+            **routing_details(
+                routing,
+                stop_count=len(places),
+                data_version=get_settings().osm_data_version,
+            ),
         },
     }
 

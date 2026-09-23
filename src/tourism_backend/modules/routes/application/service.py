@@ -31,6 +31,7 @@ from tourism_backend.modules.route_builder.application.routing import (
     RoutingError,
     RoutingResult,
     TransportMode,
+    routing_details,
 )
 from tourism_backend.modules.route_builder.infrastructure.routing_factory import (
     get_routing_provider,
@@ -1565,6 +1566,9 @@ async def routing_line_for_waypoints(
             "warnings": list(routing.warnings),
             "road_types": list(routing.road_types),
             "quality_status": "unverified",
+            **routing_details(
+                routing, stop_count=len(waypoints), data_version=settings.osm_data_version
+            ),
         }
     await store_routing_line(redis, fingerprint, geometry_wkt=line, meta=meta)
     return line, meta
@@ -1649,6 +1653,9 @@ async def preview_user_route_draft(
             "warnings": list(routing.warnings),
             "road_types": list(routing.road_types),
             "quality_status": "unverified",
+            **routing_details(
+                routing, stop_count=len(waypoints), data_version=settings.osm_data_version
+            ),
         }
         await store_routing_line(
             redis,
