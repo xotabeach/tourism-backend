@@ -113,6 +113,7 @@ async def proposal_map(
         else None,
         zoom=zoom,
         pins=pins,
+        line_mode=preview.line_mode,
     )
     # The proposal is private even though the raster provider is shared.
     response.headers["Cache-Control"] = "private, no-store"

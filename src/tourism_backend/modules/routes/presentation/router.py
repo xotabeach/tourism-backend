@@ -97,7 +97,7 @@ async def route_draft_preview_map(
             message="Route preview expired",
             status_code=404,
         )
-    line, stops = shape
+    line, stops, mode = shape
     response = await route_map_response(
         settings=settings,
         request=request,
@@ -111,6 +111,7 @@ async def route_draft_preview_map(
         else None,
         zoom=zoom,
         pins=pins,
+        line_mode=mode,
     )
     # An unsaved draft is the author's alone, even though the raster
     # provider is shared.

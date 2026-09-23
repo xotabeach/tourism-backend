@@ -352,6 +352,9 @@ class RouteProposalPreviewOut(BaseModel):
     synthetic: bool = True
     static_map_url: str | None = None
     trip_plan: TripPlanOut | None = None
+    # How the line is travelled, for its look on the map (spec 14, D23).
+    # Proposals stored before it have none and were walked or driven alike.
+    line_mode: Literal["walk", "car"] = "walk"
 
 
 class ProposalTripDateIn(BaseModel):

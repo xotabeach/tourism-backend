@@ -83,7 +83,9 @@ async def test_draft_preview_cache_round_trips_and_expires_into_a_miss() -> None
             return self._raw
 
     stored = json.dumps({"line": line, "stops": stops})
-    assert await draft_preview_shape(_Redis(stored), "id") == (line, stops)
+    assert await draft_preview_shape(_Redis(stored), "id") == (line, stops, "walk")
+    driven = json.dumps({"line": line, "stops": stops, "mode": "car"})
+    assert await draft_preview_shape(_Redis(driven), "id") == (line, stops, "car")
 
     # Expired entry, no Redis at all, and a corrupt payload all behave alike.
     assert await draft_preview_shape(_Redis(None), "id") is None

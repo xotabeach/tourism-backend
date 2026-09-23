@@ -32,6 +32,15 @@ ATTRIBUTION = "© OpenMapTiles © участники OpenStreetMap"
 _STYLE = "crimeatrip"
 _LINE_COLOR = (22, 163, 74, 255)  # #16A34A, the route green of the old maps
 _LINE_WIDTH = 5
+# Walking is dashed and every vehicle solid (spec 14, D23); colours per
+# mode are provisional until the designer's mockups (D15).
+_MODE_COLORS: dict[str, tuple[int, int, int, int]] = {
+    "walk": _LINE_COLOR,
+    "car": (37, 99, 235, 255),  # #2563EB
+}
+_TRANSIT_COLOR = (245, 158, 11, 255)  # #F59E0B: bus, train, cable car, ferry
+_DASH = 10  # in the image's points, like _LINE_WIDTH
+_GAP = 7
 _PIN_COLOR = (22, 163, 74, 255)
 _PLACE_PIN_COLOR = (229, 57, 53, 255)
 # Overlays are drawn this many times larger and scaled down: Pillow lines
@@ -132,8 +141,12 @@ def draw_overlays(
     line: Sequence[Point] = (),
     numbered_pins: Sequence[Point] = (),
     place_pin: Point | None = None,
+    line_mode: str = "walk",
 ) -> bytes:
-    """Route line, pins and the OSM credit on top of the basemap, as PNG."""
+    """Route line, pins and the OSM credit on top of the basemap, as PNG.
+
+    ``line_mode`` is the way the line is travelled: ``walk`` draws it dashed.
+    """
     k = frame.scale * _SUPERSAMPLE
     size = (base.width * _SUPERSAMPLE, base.height * _SUPERSAMPLE)
     layer = Image.new("RGBA", size, (0, 0, 0, 0))
@@ -145,10 +158,14 @@ def draw_overlays(
 
     if len(line) >= 2:
         coords = [px(p) for p in line]
-        draw.line(coords, fill=_LINE_COLOR, width=round(_LINE_WIDTH * k), joint="curve")
-        radius = _LINE_WIDTH * k / 2
-        for x, y in (coords[0], coords[-1]):
-            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=_LINE_COLOR)
+        color = _MODE_COLORS.get(line_mode, _TRANSIT_COLOR)
+        width = round(_LINE_WIDTH * k)
+        if line_mode == "walk":
+            _draw_dashed(draw, coords, color=color, width=width, dash=_DASH * k, gap=_GAP * k)
+        else:
+            draw.line(coords, fill=color, width=width, joint="curve")
+            _round_cap(draw, coords[0], color, width)
+            _round_cap(draw, coords[-1], color, width)
     number_font = _font(round(11 * k))
     for index, point in enumerate(numbered_pins[:8], start=1):
         x, y = px(point)
@@ -169,6 +186,65 @@ def draw_overlays(
     out = io.BytesIO()
     image.convert("RGB").save(out, format="PNG", optimize=True)
     return out.getvalue()
+
+
+def _round_cap(
+    draw: ImageDraw.ImageDraw,
+    point: tuple[float, float],
+    color: tuple[int, int, int, int],
+    width: int,
+) -> None:
+    x, y = point
+    r = width / 2
+    draw.ellipse((x - r, y - r, x + r, y + r), fill=color)
+
+
+def _draw_dashed(
+    draw: ImageDraw.ImageDraw,
+    coords: Sequence[tuple[float, float]],
+    *,
+    color: tuple[int, int, int, int],
+    width: int,
+    dash: float,
+    gap: float,
+) -> None:
+    """A polyline cut into round-capped dashes that run on across its vertices."""
+    period = dash + gap
+    walked = 0.0
+    current: list[tuple[float, float]] = []
+
+    def flush() -> None:
+        if len(current) >= 2:
+            draw.line(current, fill=color, width=width, joint="curve")
+            _round_cap(draw, current[0], color, width)
+            _round_cap(draw, current[-1], color, width)
+        current.clear()
+
+    for (x0, y0), (x1, y1) in zip(coords, coords[1:], strict=False):
+        length = math.hypot(x1 - x0, y1 - y0)
+        if length == 0:
+            continue
+        start = walked
+        end = walked + length
+        position = start
+        while position < end:
+            phase = position % period
+            in_dash = phase < dash
+            boundary = position + ((dash - phase) if in_dash else (period - phase))
+            stop = min(boundary, end)
+            if in_dash:
+                t0 = (position - start) / length
+                t1 = (stop - start) / length
+                p0 = (x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0)
+                p1 = (x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1)
+                if not current:
+                    current.append(p0)
+                current.append(p1)
+                if stop == boundary:
+                    flush()
+            position = stop
+        walked = end
+    flush()
 
 
 def _draw_attribution(image: Image.Image, scale: int) -> None:
