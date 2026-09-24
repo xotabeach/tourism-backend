@@ -115,3 +115,41 @@ def test_a_night_stop_ends_its_day_and_a_dawn_stop_starts_one() -> None:
 
 def test_no_stops_no_days() -> None:
     assert split_days([], [], norm_minutes=360) == []
+
+
+def _route_stops(*names: str) -> list[tuple]:
+    places = {name: uuid4() for name in set(names)}
+    return [(uuid4(), places[name], name) for name in names]
+
+
+def test_manual_days_end_after_the_places_the_author_chose() -> None:
+    from tourism_backend.modules.routes.application.structure_rules import days_from_breaks
+
+    stops = _route_stops("Ялта", "Ливадия", "Ай-Петри", "Алупка")
+    days = days_from_breaks(stops, [str(stops[1][1])])
+    assert [(d.first_stop_id, d.last_stop_id) for d in days] == [
+        (stops[0][0], stops[1][0]),
+        (stops[2][0], stops[3][0]),
+    ]
+    assert {d.boundary_source for d in days} == {"manual"}
+    assert days[0].overnight_note == "Ночлег в районе: Ливадия"
+    assert days[1].overnight_note is None
+
+
+def test_a_break_on_a_removed_place_or_the_last_stop_is_dropped() -> None:
+    from tourism_backend.modules.routes.application.structure_rules import days_from_breaks
+
+    stops = _route_stops("Ялта", "Ливадия", "Алупка")
+    gone = str(uuid4())
+    assert len(days_from_breaks(stops, [gone])) == 1
+    assert len(days_from_breaks(stops, [str(stops[-1][1])])) == 1
+    assert days_from_breaks([], [gone]) == []
+
+
+def test_a_place_visited_twice_ends_the_day_at_the_visit_in_order() -> None:
+    from tourism_backend.modules.routes.application.structure_rules import days_from_breaks
+
+    stops = _route_stops("Ялта", "Ливадия", "Ялта", "Алупка")
+    yalta = str(stops[0][1])
+    days = days_from_breaks(stops, [yalta, yalta])
+    assert [d.last_stop_id for d in days] == [stops[0][0], stops[2][0], stops[3][0]]

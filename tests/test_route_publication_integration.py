@@ -877,3 +877,107 @@ async def test_a_bad_client_draft_id_is_rejected(
         json=_draft_payload(place_ids, client_draft_id="x'; DROP TABLE routes;--"),
     )
     assert bad.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_author_day_boundaries_survive_a_save_and_can_be_reset(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """Spec 14a, section 2: «закончить день здесь», then «разделить заново»."""
+    client, _app = publication_context
+    tokens = await _login(client, f"+7907{uuid4().int % 10_000_000:07d}")
+    other = await _login(client, f"+7908{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    places = await client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 3})
+    place_ids = [item["id"] for item in places.json()["items"][:3]]
+    assert len(place_ids) == 3
+    payload = {
+        "name": "Маршрут на два дня",
+        "description": "Проверка ручных дней",
+        "place_ids": place_ids,
+        "filters": ["Природа"],
+        "difficulty": 2,
+    }
+    saved = await client.post("/api/v1/routes/drafts", headers=headers, json=payload)
+    assert saved.status_code == 200, saved.text
+    route_id = saved.json()["id"]
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+
+    async def stop_ids() -> list[str]:
+        async with engine.connect() as conn:
+            rows = await conn.execute(
+                text("SELECT id FROM route_stops WHERE route_id = :id ORDER BY position"),
+                {"id": route_id},
+            )
+            return [str(row[0]) for row in rows]
+
+    async def day_sources() -> list[tuple[int, str]]:
+        async with engine.connect() as conn:
+            rows = await conn.execute(
+                text(
+                    "SELECT day_index, boundary_source FROM route_days "
+                    "WHERE route_id = :id ORDER BY day_index"
+                ),
+                {"id": route_id},
+            )
+            return [(row[0], row[1]) for row in rows]
+
+    try:
+        stops = await stop_ids()
+        set_days = await client.put(
+            f"/api/v1/routes/{route_id}/days",
+            headers=headers,
+            json={"ends_after_stop_ids": [stops[0]]},
+        )
+        assert set_days.status_code == 200, set_days.text
+        days = set_days.json()
+        assert [(d["day_index"], d["boundary_source"]) for d in days] == [
+            (1, "manual"),
+            (2, "manual"),
+        ]
+        assert days[0]["last_stop_id"] == stops[0]
+        assert days[0]["overnight_note"].startswith("Ночлег в районе: ")
+        assert days[1]["overnight_note"] is None
+
+        # A save recreates every stop; the boundary follows its place.
+        resaved = await client.post(
+            "/api/v1/routes/drafts", headers=headers, json={**payload, "route_id": route_id}
+        )
+        assert resaved.status_code == 200, resaved.text
+        new_stops = await stop_ids()
+        assert new_stops != stops
+        async with engine.connect() as conn:
+            first_day_end = await conn.scalar(
+                text("SELECT last_stop_id FROM route_days WHERE route_id = :id AND day_index = 1"),
+                {"id": route_id},
+            )
+            breaks = await conn.scalar(
+                text("SELECT day_breaks FROM routes WHERE id = :id"), {"id": route_id}
+            )
+        assert breaks == [place_ids[0]]
+        assert str(first_day_end) == new_stops[0]
+        assert await day_sources() == [(1, "manual"), (2, "manual")]
+
+        for bad in ([new_stops[-1]], [new_stops[1], new_stops[0]], [str(uuid4())]):
+            refused = await client.put(
+                f"/api/v1/routes/{route_id}/days",
+                headers=headers,
+                json={"ends_after_stop_ids": bad},
+            )
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == "invalid_day_breaks"
+
+        foreign = await client.put(
+            f"/api/v1/routes/{route_id}/days",
+            headers={"Authorization": f"Bearer {other['access_token']}"},
+            json={"ends_after_stop_ids": []},
+        )
+        assert foreign.status_code == 404
+
+        reset = await client.delete(f"/api/v1/routes/{route_id}/days", headers=headers)
+        assert reset.status_code == 200, reset.text
+        assert {d["boundary_source"] for d in reset.json()} == {"auto"}
+        assert await day_sources() == [(d["day_index"], "auto") for d in reset.json()]
+    finally:
+        await engine.dispose()

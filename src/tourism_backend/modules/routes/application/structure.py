@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -32,6 +32,7 @@ from tourism_backend.modules.routes.application.structure_rules import (
     PlannedDay,
     PlannedSegment,
     base_mode_for,
+    days_from_breaks,
     implies_public_transport,
     plan_segments,
     segment_mode_for,
@@ -99,10 +100,18 @@ def _as_planned_day(row: RouteDay) -> PlannedDay:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RouteStructure:
+    segments: list[PlannedSegment]
+    days: list[PlannedDay]
+    #: Days the norms give, whatever the author set (spec 14, D20).
+    auto_day_count: int
+
+
 async def refresh_route_structure(
     session: AsyncSession,
     route: Route,
-) -> tuple[list[PlannedSegment], list[PlannedDay]]:
+) -> RouteStructure:
     """Bring the route's segments and days up to date; return them in order.
 
     Rows are rewritten only when something changed, so a run start on an
@@ -124,6 +133,7 @@ async def refresh_route_structure(
                 RouteStop.time_of_day,
                 ST_X(geom),
                 ST_Y(geom),
+                RouteStop.place_id,
             )
             .join(Place, Place.id == RouteStop.place_id)
             .where(RouteStop.route_id == route.id)
@@ -191,16 +201,12 @@ async def refresh_route_structure(
                 )
             )
 
-    stop_set = set(stop_ids)
-    manual_intact = (
-        route.days_manual
-        and existing_days
-        and all(d.first_stop_id in stop_set and d.last_stop_id in stop_set for d in existing_days)
-    )
+    automatic = _auto_days(route, stop_rows, segments)
     days = (
-        [_as_planned_day(row) for row in existing_days]
-        if manual_intact
-        else _auto_days(route, stop_rows, segments)
+        # Kept by place: the stops are new rows after every author save.
+        days_from_breaks([(row[0], row[6], row[1]) for row in stop_rows], route.day_breaks or [])
+        if route.days_manual and stop_rows
+        else automatic
     )
     if [_as_planned_day(row) for row in existing_days] != days:
         await session.execute(delete(RouteDay).where(RouteDay.route_id == route.id))
@@ -218,7 +224,7 @@ async def refresh_route_structure(
                 )
             )
     await session.flush()
-    return segments, days
+    return RouteStructure(segments=segments, days=days, auto_day_count=len(automatic))
 
 
 def _auto_days(
