@@ -52,6 +52,7 @@ from tourism_backend.modules.routes.application.schemas import (
     RoutePublicationStatus,
     RouteQualityStatus,
     RouteRoutingOut,
+    RouteSegmentOut,
     RouteSource,
     RouteStopOut,
     UserRouteDraftIn,
@@ -569,14 +570,59 @@ async def _route_detail_from_model(
         **base.model_dump(),
         description=route.description,
         budget_notes=route.budget_notes,
-        accessibility=route.accessibility,
+        accessibility=_without_segment_shapes(route.accessibility),
         freshness_status=route.freshness_status,
         geometry=geometry,
         routing=routing,
         stops=stops,
         media=media,
         static_map_url=f"/api/v1/maps/static/route/{route.id}/{get_settings().map_source_version}",
+        base_mode=route.base_mode,
+        needs_public_transport=route.needs_public_transport,
+        segments=await _segments_for_route(session, route.id),
     )
+
+
+def _without_segment_shapes(accessibility: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The encoded segment lines are served as ``segments``; not twice."""
+    if not isinstance(accessibility, dict):
+        return accessibility
+    routing = accessibility.get("routing")
+    if not isinstance(routing, dict) or "segments" not in routing:
+        return accessibility
+    return {**accessibility, "routing": {k: v for k, v in routing.items() if k != "segments"}}
+
+
+async def _segments_for_route(session: AsyncSession, route_id: UUID) -> list[RouteSegmentOut]:
+    rows = (
+        await session.execute(
+            select(RouteSegment, ST_AsGeoJSON(RouteSegment.geometry))
+            .where(RouteSegment.route_id == route_id)
+            .order_by(RouteSegment.leg_index, RouteSegment.seq)
+        )
+    ).all()
+    segments: list[RouteSegmentOut] = []
+    for segment, raw in rows:
+        geometry = None
+        if raw:
+            coordinates = json.loads(raw).get("coordinates") or []
+            geometry = RouteGeometryOut(
+                coordinates=[(float(x), float(y)) for x, y, *_ in coordinates]
+            )
+        segments.append(
+            RouteSegmentOut(
+                leg_index=segment.leg_index,
+                seq=segment.seq,
+                mode=segment.mode,
+                role=segment.role,
+                origin=segment.origin,
+                distance_meters=segment.distance_meters,
+                duration_seconds=segment.duration_seconds,
+                elevation_gain_meters=segment.elevation_gain_meters,
+                geometry=geometry,
+            )
+        )
+    return segments
 
 
 async def _geometry_for_route(

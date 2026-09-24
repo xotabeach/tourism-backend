@@ -260,6 +260,24 @@ class RouteListItemOut(BaseModel):
     rating_count: int = 0
 
 
+class RouteSegmentOut(BaseModel):
+    """One stretch of a leg travelled one way (spec 14).
+
+    ``role`` is ``main``, ``approach`` (walk from the car park up to a stop)
+    or ``return`` (the same walk back to the car).
+    """
+
+    leg_index: int = Field(ge=0)
+    seq: int = Field(ge=0)
+    mode: str
+    role: str
+    origin: str
+    distance_meters: int | None = None
+    duration_seconds: int | None = None
+    elevation_gain_meters: int | None = None
+    geometry: RouteGeometryOut | None = None
+
+
 class RouteDetailOut(RouteListItemOut):
     description: str | None
     budget_notes: str | None
@@ -270,6 +288,12 @@ class RouteDetailOut(RouteListItemOut):
     stops: list[RouteStopOut] = Field(default_factory=list)
     media: list[RouteMediaOut] = Field(default_factory=list)
     static_map_url: str | None = None
+    #: ``walk``, ``car`` or ``mixed``; ``transport_mode`` keeps the stored
+    #: spelling older apps understand (spec 14, R4).
+    base_mode: str = "walk"
+    needs_public_transport: bool = False
+    #: Every leg's segments in order; empty until the route has them.
+    segments: list[RouteSegmentOut] = Field(default_factory=list)
 
 
 class RouteListOut(BaseModel):

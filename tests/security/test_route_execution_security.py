@@ -683,3 +683,32 @@ async def test_run_start_keeps_the_route_days_and_segments_in_its_snapshot(
         await live_client.post(
             f"/api/v1/route-executions/{execution['id']}/cancel", headers=headers
         )
+
+
+@pytest.mark.asyncio
+async def test_route_detail_serves_segments_once(live_client: AsyncClient) -> None:
+    """Spec 14b: segments in their own field, not again inside accessibility."""
+
+    tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    assert started.status_code == 201, started.text
+    try:
+        detail = await live_client.get(f"/api/v1/routes/{route_id}")
+        assert detail.status_code == 200, detail.text
+        body = detail.json()
+        assert body["base_mode"] in {"walk", "car", "mixed"}
+        legs = {segment["leg_index"] for segment in body["segments"]}
+        assert legs == set(range(len(body["stops"]) - 1))
+        for segment in body["segments"]:
+            assert segment["mode"] in {"walk", "car"}
+            assert segment["role"] in {"main", "approach", "return"}
+        routing = (body.get("accessibility") or {}).get("routing") or {}
+        assert "segments" not in routing
+    finally:
+        await live_client.post(
+            f"/api/v1/route-executions/{started.json()['id']}/cancel", headers=headers
+        )
