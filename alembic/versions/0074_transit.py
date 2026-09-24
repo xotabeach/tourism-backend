@@ -34,6 +34,7 @@ def upgrade() -> None:
         sa.Column("suspend_reason", sa.Text(), nullable=True),
         sa.Column("needs_mapping", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.Column("data_version", sa.String(length=32), nullable=True),
+        sa.Column("speed_kmh", sa.SmallInteger(), nullable=True),
         *_timestamps(),
         sa.CheckConstraint(
             "kind IN ('bus', 'trolleybus', 'tram', 'train', 'share_taxi', 'ferry', 'cable_car')",
@@ -41,6 +42,9 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "status IN ('active', 'suspended', 'missing')", name="ck_transit_lines_status"
+        ),
+        sa.CheckConstraint(
+            "speed_kmh IS NULL OR speed_kmh BETWEEN 3 AND 150", name="ck_transit_lines_speed"
         ),
         sa.PrimaryKeyConstraint("id", name="pk_transit_lines"),
         sa.UniqueConstraint("osm_id", name="uq_transit_lines_osm_id"),

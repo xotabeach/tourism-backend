@@ -39,6 +39,7 @@ class TransitLine(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="kind",
         ),
         CheckConstraint("status IN ('active', 'suspended', 'missing')", name="status"),
+        CheckConstraint("speed_kmh IS NULL OR speed_kmh BETWEEN 3 AND 150", name="speed"),
     )
 
     # «m<relation>» for an OSM route_master, «v<relation>» for a lone route,
@@ -61,6 +62,9 @@ class TransitLine(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Boolean, nullable=False, default=False, server_default=text("false")
     )
     data_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Average speed for the time between stops; empty means the kind's
+    # default (spec 12b, section 2). An editor sets it for a slow line.
+    speed_kmh: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
 
 class TransitVariant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
