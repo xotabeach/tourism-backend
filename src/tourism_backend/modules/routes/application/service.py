@@ -42,6 +42,7 @@ from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
+    RouteDayOut,
     RouteDetailOut,
     RouteDraftPreviewIn,
     RouteDraftPreviewOut,
@@ -65,6 +66,7 @@ from tourism_backend.modules.routes.application.seaside import is_seaside as sto
 from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
 from tourism_backend.modules.routes.infrastructure.models import (
     Route,
+    RouteDay,
     RouteReview,
     RouteSegment,
     RouteStop,
@@ -580,6 +582,19 @@ async def _route_detail_from_model(
         base_mode=route.base_mode,
         needs_public_transport=route.needs_public_transport,
         segments=await _segments_for_route(session, route.id),
+        days=[
+            RouteDayOut(
+                day_index=day.day_index,
+                first_stop_id=day.first_stop_id,
+                last_stop_id=day.last_stop_id,
+                boundary_source=day.boundary_source,
+                overnight_note=day.overnight_note,
+                overloaded=day.overloaded,
+            )
+            for day in await session.scalars(
+                select(RouteDay).where(RouteDay.route_id == route.id).order_by(RouteDay.day_index)
+            )
+        ],
     )
 
 

@@ -9,23 +9,32 @@ for existing routes.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 from uuid import UUID, uuid4
 
-from geoalchemy2 import WKTElement
-from sqlalchemy import delete, select
+from geoalchemy2 import Geometry, WKTElement
+from geoalchemy2.functions import ST_X, ST_Y
+from sqlalchemy import cast, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.route_builder.application.polyline import decode_polyline6
 from tourism_backend.modules.route_builder.application.routing import RoutingError
+from tourism_backend.modules.routes.application.day_split import (
+    DayStop,
+    day_norm_minutes,
+    split_days,
+)
 from tourism_backend.modules.routes.application.structure_rules import (
     PlannedDay,
     PlannedSegment,
     base_mode_for,
     implies_public_transport,
     plan_segments,
-    plan_single_day,
+    segment_mode_for,
     segment_shapes,
 )
 from tourism_backend.modules.routes.infrastructure.models import (
@@ -34,6 +43,12 @@ from tourism_backend.modules.routes.infrastructure.models import (
     RouteSegment,
     RouteStop,
 )
+
+# A stop with no visit time given, as the AI chat assumes (generate_service).
+_DEFAULT_VISIT_MINUTES = 45
+# Straight-line guesses for legs the router has no numbers for.
+_WALK_MPS = 1.25
+_DRIVE_MPS = 11.1
 
 
 def _routing(route: Route) -> dict[str, Any]:
@@ -79,6 +94,8 @@ def _as_planned_day(row: RouteDay) -> PlannedDay:
         first_stop_id=row.first_stop_id,
         last_stop_id=row.last_stop_id,
         boundary_source=row.boundary_source,  # type: ignore[arg-type]
+        overloaded=row.overloaded,
+        overnight_note=row.overnight_note,
     )
 
 
@@ -97,15 +114,23 @@ async def refresh_route_structure(
     if implies_public_transport(route.transport_mode):
         route.needs_public_transport = True
 
-    stop_ids = list(
-        (
-            await session.scalars(
-                select(RouteStop.id)
-                .where(RouteStop.route_id == route.id)
-                .order_by(RouteStop.position)
+    geom = cast(Place.location, Geometry)
+    stop_rows = (
+        await session.execute(
+            select(
+                RouteStop.id,
+                Place.name,
+                RouteStop.visit_duration_minutes,
+                RouteStop.time_of_day,
+                ST_X(geom),
+                ST_Y(geom),
             )
-        ).all()
-    )
+            .join(Place, Place.id == RouteStop.place_id)
+            .where(RouteStop.route_id == route.id)
+            .order_by(RouteStop.position)
+        )
+    ).all()
+    stop_ids = [row[0] for row in stop_rows]
     existing_segments = list(
         (
             await session.scalars(
@@ -175,7 +200,7 @@ async def refresh_route_structure(
     days = (
         [_as_planned_day(row) for row in existing_days]
         if manual_intact
-        else plan_single_day(stop_ids)
+        else _auto_days(route, stop_rows, segments)
     )
     if [_as_planned_day(row) for row in existing_days] != days:
         await session.execute(delete(RouteDay).where(RouteDay.route_id == route.id))
@@ -188,7 +213,85 @@ async def refresh_route_structure(
                     first_stop_id=day.first_stop_id,
                     last_stop_id=day.last_stop_id,
                     boundary_source=day.boundary_source,
+                    overloaded=day.overloaded,
+                    overnight_note=day.overnight_note,
                 )
             )
     await session.flush()
     return segments, days
+
+
+def _auto_days(
+    route: Route,
+    stop_rows: Sequence[Any],
+    segments: Sequence[PlannedSegment],
+) -> list[PlannedDay]:
+    """Days by the route's norms and daylight (spec 14a, section 1)."""
+    if not stop_rows:
+        return []
+    accessibility = route.accessibility if isinstance(route.accessibility, dict) else {}
+    first_lng, first_lat = stop_rows[0][4], stop_rows[0][5]
+    driven = segment_mode_for(route.base_mode) == "car"
+    norm = day_norm_minutes(
+        pace=accessibility.get("travel_pace")
+        if isinstance(accessibility.get("travel_pace"), str)
+        else None,
+        driven=driven,
+        with_children=accessibility.get("with_children") is True,
+        lat=float(first_lat) if first_lat is not None else None,
+        lng=float(first_lng) if first_lng is not None else None,
+        seasons=route.seasonality,
+    )
+    stops = [
+        DayStop(
+            stop_id=row[0],
+            name=row[1],
+            visit_minutes=max(5, row[2] or _DEFAULT_VISIT_MINUTES),
+            time_of_day=row[3] or "any",
+        )
+        for row in stop_rows
+    ]
+    return [
+        PlannedDay(
+            day_index=day.day_index,
+            first_stop_id=day.first_stop_id,
+            last_stop_id=day.last_stop_id,
+            overloaded=day.overloaded,
+            overnight_note=day.overnight_note,
+        )
+        for day in split_days(stops, _leg_minutes(stop_rows, segments, driven), norm_minutes=norm)
+    ]
+
+
+def _leg_minutes(
+    stop_rows: Sequence[Any], segments: Sequence[PlannedSegment], driven: bool
+) -> list[int]:
+    """Minutes of each leg: its segments' times, else a straight-line guess."""
+    by_leg: dict[int, int] = {}
+    known: set[int] = set()
+    for segment in segments:
+        if segment.duration_seconds is not None:
+            by_leg[segment.leg_index] = by_leg.get(segment.leg_index, 0) + segment.duration_seconds
+            known.add(segment.leg_index)
+    speed = _DRIVE_MPS if driven else _WALK_MPS
+    minutes: list[int] = []
+    for index in range(len(stop_rows) - 1):
+        if index in known:
+            minutes.append(math.ceil(by_leg[index] / 60))
+            continue
+        a, b = stop_rows[index], stop_rows[index + 1]
+        if None in (a[4], a[5], b[4], b[5]):
+            minutes.append(0)
+            continue
+        meters = _haversine(float(a[4]), float(a[5]), float(b[4]), float(b[5])) * 1.3
+        minutes.append(math.ceil(meters / speed / 60))
+    return minutes
+
+
+def _haversine(lng1: float, lat1: float, lng2: float, lat2: float) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    h = (
+        math.sin((p2 - p1) / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lng2 - lng1) / 2) ** 2
+    )
+    return 2 * 6_371_000 * math.asin(min(1.0, math.sqrt(h)))
