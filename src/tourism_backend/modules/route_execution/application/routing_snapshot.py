@@ -150,6 +150,7 @@ def routing_snapshot_fingerprint(
         "distance_meters": route.distance_meters,
         "estimated_duration_minutes": route.estimated_duration_minutes,
         "difficulty": route.difficulty,
+        "difficulty_reward": route.difficulty_reward,
         "suitable_for_children": route.suitable_for_children,
         "pets_allowed": route.pets_allowed,
         "seasonality": route.seasonality or [],
@@ -321,6 +322,12 @@ async def ensure_routing_snapshot(
         captured_at=captured,
         created_at=captured,
         difficulty=_bounded_string(route.difficulty, max_length=32),
+        # Paid by the estimate only when it rests on real ground data; a rough
+        # one (straight line, terrain not fetched yet) keeps the old rule
+        # rather than underpaying hard routes (spec 17, section 6).
+        difficulty_reward=(
+            route.difficulty_reward if route.difficulty_confidence == "high" else None
+        ),
         base_mode=route.base_mode,
         auto_day_count=auto_day_count,
     )

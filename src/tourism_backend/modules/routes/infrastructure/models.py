@@ -93,6 +93,18 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     estimated_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     distance_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
     difficulty: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Spec 17: the estimate from the route's own days, the estimate from the
+    # days the norms give (points and achievements), the author's or the
+    # editors' rating, and what people see. ``difficulty`` above is the word
+    # older clients read, kept in step with ``difficulty_level``.
+    difficulty_auto: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    difficulty_reward: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    difficulty_manual: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # author / editorial / legacy (a rating from before spec 17, shown as is)
+    difficulty_manual_by: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    difficulty_level: Mapped[int | None] = mapped_column(SmallInteger, nullable=True, index=True)
+    difficulty_confidence: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    difficulty_formula_version: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     budget_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     seasonality: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     transport_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -201,6 +213,7 @@ class RouteDay(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Boolean, nullable=False, default=False, server_default=text("false")
     )
     difficulty: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    difficulty_level: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
 
 class RouteSegment(Base, UUIDPrimaryKeyMixin, TimestampMixin):

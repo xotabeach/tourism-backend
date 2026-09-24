@@ -1008,6 +1008,7 @@ async def _award_completion_points(
             max_road_angle_degrees=snapshot.max_road_angle_degrees if snapshot else None,
             transport_mode=snapshot.transport_mode if snapshot else None,
             difficulty=difficulty,
+            difficulty_level=snapshot.difficulty_reward if snapshot else None,
             segments=segments,
             day_count=day_count,
         )
