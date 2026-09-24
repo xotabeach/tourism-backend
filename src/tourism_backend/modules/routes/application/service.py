@@ -992,7 +992,16 @@ async def get_user_route_for_edit(
             for item in media
         ],
         updated_at=route.updated_at,
+        day_breaks=[UUID(value) for value in route.day_breaks or [] if _is_uuid(value)],
     )
+
+
+def _is_uuid(value: object) -> bool:
+    try:
+        UUID(str(value))
+    except ValueError:
+        return False
+    return True
 
 
 _DRAFT_CLOCK_TOLERANCE = timedelta(milliseconds=5)
@@ -1117,8 +1126,16 @@ async def save_user_route_draft(
         "pending_review" if previous_status in {"pending_review", "published"} else "draft"
     )
     route.difficulty = _difficulty_name(payload.difficulty)
-    route.transport_mode = "walking"
+    # The author's «На машине» tag drives the route, with walks to what a car
+    # cannot reach (spec 14b); anything else is walked, as before.
+    driven = CAR_TAG in payload.filters
+    route_mode: TransportMode = "car" if driven else "walk"
+    route.transport_mode = "car" if driven else "walking"
     route.suitable_for_children = "С детьми" in payload.filters
+    if payload.day_breaks is not None:
+        # Empty is «split by the norms again»; kept by place (spec 14a).
+        route.day_breaks = [str(place_id) for place_id in payload.day_breaks] or None
+        route.days_manual = bool(payload.day_breaks)
     accessibility: dict[str, Any] = {
         "travel_pace": payload.pace,
         "filters": payload.filters,
@@ -1139,6 +1156,7 @@ async def save_user_route_draft(
     unchanged = (
         isinstance(previous_routing, dict)
         and previous_routing.get("place_ids") == stops_key
+        and previous_routing.get("transport_mode", "walk") == route_mode
         and route.geometry is not None
     )
     if unchanged:
@@ -1152,11 +1170,16 @@ async def save_user_route_draft(
             places=places,
             place_ids=payload.place_ids,
             redis=redis,
+            transport_mode=route_mode,
         )
         if routed is not None:
             geometry_wkt, routing_meta = routed
             route.geometry = WKTElement(geometry_wkt, srid=4326)
-            accessibility["routing"] = {**routing_meta, "place_ids": stops_key}
+            accessibility["routing"] = {
+                **routing_meta,
+                "place_ids": stops_key,
+                "transport_mode": route_mode,
+            }
     route.accessibility = accessibility
     route.updated_at = now
 
@@ -1538,6 +1561,7 @@ async def _route_geometry_for_places(
     places: list[Place],
     place_ids: Sequence[UUID],
     redis: Redis | None = None,
+    transport_mode: TransportMode = "walk",
 ) -> tuple[str, dict[str, Any]] | None:
     """Road line and its provenance for an ordered list of places.
 
@@ -1573,10 +1597,12 @@ async def _route_geometry_for_places(
     ]
     if len(waypoints) < 2:
         return None
-    return await routing_line_for_waypoints(waypoints, redis=redis)
+    return await routing_line_for_waypoints(waypoints, redis=redis, transport_mode=transport_mode)
 
 
 _ROUTING_CACHE_KEY = "route-routing:"
+# The author's tag for a driven route (route_publish tags in the app).
+CAR_TAG = "На машине"
 _ROUTING_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
@@ -1647,6 +1673,7 @@ async def routing_line_for_waypoints(
     waypoints: list[RouteWaypoint],
     *,
     redis: Redis | None = None,
+    transport_mode: TransportMode = "walk",
 ) -> tuple[str, dict[str, Any]]:
     """Road line through [waypoints], with a plain line as the last resort.
 
@@ -1654,7 +1681,7 @@ async def routing_line_for_waypoints(
     to route it. Consults the shared routing cache first, so a save that
     follows a preview of the same points costs nothing.
     """
-    fingerprint = routing_fingerprint(waypoints, transport_mode="walk")
+    fingerprint = routing_fingerprint(waypoints, transport_mode=transport_mode)
     cached = await cached_routing_line(redis, fingerprint)
     if cached is not None:
         return cached
@@ -1663,14 +1690,14 @@ async def routing_line_for_waypoints(
     try:
         routing = await get_routing_provider(settings).route(
             waypoints=waypoints,
-            transport_mode="walk",
+            transport_mode=transport_mode,
         )
     except RoutingError:
         _logger.warning("route_draft_routing_failed", exc_info=True)
         try:
             routing = await StubRoutingProvider().route(
                 waypoints=waypoints,
-                transport_mode="walk",
+                transport_mode=transport_mode,
             )
         except RoutingError:
             # The stub refuses the same things the provider does — a walking
