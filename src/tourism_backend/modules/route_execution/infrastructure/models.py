@@ -223,6 +223,19 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # When the run entered its current 'paused' state; None otherwise. Used
     # only to compute paused_duration_seconds on resume.
     paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # «Закончить день» (spec 14a): a pause that ends a day of a multi-day run.
+    # The day the walker is on is ``night_pauses + 1``.
+    night_pauses: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    night_paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Cancelled before the last day, by the walker or for being idle: the
+    # finished days are still paid (spec 14, D21).
+    ended_early: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     # Total time spent paused across the whole run, so a completion summary
     # can report elapsed time net of pauses.
     paused_duration_seconds: Mapped[int] = mapped_column(
@@ -331,7 +344,7 @@ class RouteExecutionEvent(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (
         CheckConstraint(
             "action IN ('complete_stop', 'uncomplete_stop', 'complete', 'cancel', 'pause', "
-            "'resume')",
+            "'resume', 'end_day', 'finish_early')",
             name="action",
         ),
         UniqueConstraint(

@@ -719,3 +719,111 @@ async def test_route_detail_serves_segments_once(live_client: AsyncClient) -> No
         await live_client.post(
             f"/api/v1/route-executions/{started.json()['id']}/cancel", headers=headers
         )
+
+
+async def _second_catalog_route(client: AsyncClient, other_than: str) -> str:
+    response = await client.get("/api/v1/routes", params={"limit": 5})
+    return next(item["id"] for item in response.json()["items"] if item["id"] != other_than)
+
+
+@pytest.mark.asyncio
+async def test_ending_a_day_is_a_night_pause_and_the_next_day_follows(
+    live_client: AsyncClient,
+) -> None:
+    """Spec 14a, section 5: «Закончить день», «День N», the start conflict."""
+    tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    assert started.status_code == 201, started.text
+    execution_id = started.json()["id"]
+    assert (started.json()["current_day"], started.json()["night_paused"]) == (1, False)
+    try:
+        ended = await live_client.post(
+            f"/api/v1/route-executions/{execution_id}/end-day", headers=headers
+        )
+        assert ended.status_code == 200, ended.text
+        body = ended.json()
+        assert (body["status"], body["night_paused"], body["current_day"]) == ("paused", True, 2)
+
+        other = await _second_catalog_route(live_client, route_id)
+        blocked = await live_client.post(
+            "/api/v1/route-executions", json={"route_id": other}, headers=headers
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["details"]["night_paused"] is True
+
+        resumed = await live_client.post(
+            f"/api/v1/route-executions/{execution_id}/resume", headers=headers
+        )
+        assert resumed.status_code == 200, resumed.text
+        assert (resumed.json()["status"], resumed.json()["night_paused"]) == ("active", False)
+        assert resumed.json()["current_day"] == 2
+    finally:
+        await live_client.post(f"/api/v1/route-executions/{execution_id}/cancel", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_finishing_early_pays_only_for_days_walked_in_full(
+    live_client: AsyncClient,
+) -> None:
+    tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    execution_id = started.json()["id"]
+    finished = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/finish-early", headers=headers
+    )
+    assert finished.status_code == 200, finished.text
+    body = finished.json()
+    assert (body["status"], body["ended_early"]) == ("cancelled", True)
+    # No stop marked: no day walked in full, nothing paid.
+    assert body["awarded_points"] == 0
+    again = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/finish-early", headers=headers
+    )
+    assert again.status_code == 200
+    assert again.json()["ended_early"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_multi_day_run_closes_itself_and_frees_the_start(
+    live_client: AsyncClient,
+) -> None:
+    tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    execution_id = started.json()["id"]
+    await live_client.post(f"/api/v1/route-executions/{execution_id}/end-day", headers=headers)
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE route_executions SET updated_at = now() - interval '8 days' "
+                    "WHERE id = :id"
+                ),
+                {"id": execution_id},
+            )
+        active = await live_client.get("/api/v1/route-executions/active", headers=headers)
+        assert active.status_code in (200, 204), active.text
+        assert not active.content or active.json() is None
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    text("SELECT status, ended_early FROM route_executions WHERE id = :id"),
+                    {"id": execution_id},
+                )
+            ).one()
+        assert tuple(row) == ("cancelled", True)
+    finally:
+        await engine.dispose()

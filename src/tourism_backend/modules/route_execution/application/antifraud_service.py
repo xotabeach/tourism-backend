@@ -616,7 +616,7 @@ async def settle_completion_points(
                     execution=execution,
                     moment=completed_at,
                 ),
-                cap=settings.daily_points_cap,
+                cap=settings.daily_points_cap * _calendar_days(execution, completed_at),
             )
             if capped < points:
                 final, reason = capped, "daily_cap"
@@ -675,3 +675,18 @@ async def deliver_pushes(session: AsyncSession, pushes: list[PendingPush]) -> No
             target_type="inbox",
             target_id=push.user_id,
         )
+
+
+def _calendar_days(execution: RouteExecution, end: datetime) -> int:
+    """Moscow calendar days a multi-day run was walked on, for the daily cap.
+
+    A run walked over several days is paid once at its end; the daily cap
+    counts each of its days, not only the last one (spec 14, D20). A
+    one-day run always counts one day.
+    """
+    if execution.night_pauses <= 0:
+        return 1
+    first, _ = moscow_day_bounds(execution.started_at)
+    last, _ = moscow_day_bounds(end)
+    spanned = (last - first).days + 1
+    return max(1, min(spanned, execution.night_pauses + 1))

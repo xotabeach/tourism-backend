@@ -13,7 +13,14 @@ from tourism_backend.modules.routes.application.schemas import (
 
 RouteExecutionStatus = Literal["active", "paused", "completed", "cancelled"]
 RouteExecutionEventAction = Literal[
-    "complete_stop", "uncomplete_stop", "complete", "cancel", "pause", "resume"
+    "complete_stop",
+    "uncomplete_stop",
+    "complete",
+    "cancel",
+    "pause",
+    "resume",
+    "end_day",
+    "finish_early",
 ]
 PointsStatus = Literal["none", "awarded", "held", "rejected"]
 PaceVerdictOut = Literal["ok", "too_fast", "ahead", "unknown", "skipped"]
@@ -164,6 +171,14 @@ class RouteExecutionOut(BaseModel):
     # A finished run whose route this person already reviewed: the home card
     # does not ask for a review then. FRONTEND-34.
     my_review_exists: bool = False
+    # Multi-day runs (spec 14a): «День current_day из planned_days». The
+    # walker may take longer than planned: current_day can exceed it.
+    planned_days: int = Field(default=1, ge=1)
+    current_day: int = Field(default=1, ge=1)
+    # Resting after «Закончить день»; resume starts the next day.
+    night_paused: bool = False
+    # Cancelled before the last day; the finished days were paid (D21).
+    ended_early: bool = False
     sync: RouteExecutionSyncOut | None = None
     created_at: datetime
     updated_at: datetime
