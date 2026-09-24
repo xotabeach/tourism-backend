@@ -478,12 +478,13 @@ async def start_execution(
             status_code=409,
         )
 
-    segments, days = await refresh_route_structure(session, route)
+    structure = await refresh_route_structure(session, route)
     routing_snapshot = await ensure_routing_snapshot(
         session,
         route=route,
-        segments=segments,
-        days=days,
+        segments=structure.segments,
+        days=structure.days,
+        auto_day_count=structure.auto_day_count,
         stop_signature=[
             (route_stop.id, route_stop.position, place.id) for route_stop, place, _lng, _lat in rows
         ],
@@ -960,6 +961,9 @@ async def _award_completion_points(
             )
             or 1
         )
+        # Days set by hand never raise the cap above what the norms give (D20).
+        if snapshot.auto_day_count:
+            day_count = min(day_count, snapshot.auto_day_count)
 
     points = travel_points_for_effort(
         RouteEffort(

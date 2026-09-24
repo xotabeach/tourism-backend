@@ -292,6 +292,12 @@ class RouteDayOut(BaseModel):
     overloaded: bool = False
 
 
+class RouteDaysIn(BaseModel):
+    """Stops after which a day ends, in route order; empty for one day."""
+
+    ends_after_stop_ids: list[UUID] = Field(default_factory=list, max_length=21)
+
+
 class RouteDetailOut(RouteListItemOut):
     description: str | None
     budget_notes: str | None

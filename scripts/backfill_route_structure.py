@@ -53,7 +53,8 @@ async def main() -> None:
         async with factory() as session:
             routes = list((await session.scalars(select(Route).order_by(Route.created_at))).all())
             for route in routes:
-                segments, days = await refresh_route_structure(session, route)
+                structure = await refresh_route_structure(session, route)
+                segments, days = structure.segments, structure.days
                 modes[route.base_mode] += 1
                 origins.update(segment.origin for segment in segments)
                 if len(days) > 1 or any(day.overloaded for day in days):

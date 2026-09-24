@@ -220,6 +220,46 @@ def plan_segments(
     return segments
 
 
+def days_from_breaks(
+    stops: Sequence[tuple[UUID, UUID, str]],
+    breaks: Sequence[str],
+) -> list[PlannedDay]:
+    """Manual days: a day ends after each stop whose place is the next break.
+
+    ``stops`` are (stop_id, place_id, name) in order. Breaks are matched in
+    order, so a place visited twice ends the day at the visit it was set on;
+    a break whose place left the route is dropped. The last stop never ends
+    a day early.
+    """
+    if not stops:
+        return []
+    days: list[PlannedDay] = []
+    pending = [str(b) for b in breaks]
+    first = 0
+    for index, (_stop_id, place_id, name) in enumerate(stops[:-1]):
+        if pending and str(place_id) == pending[0]:
+            pending.pop(0)
+            days.append(
+                PlannedDay(
+                    day_index=len(days) + 1,
+                    first_stop_id=stops[first][0],
+                    last_stop_id=stops[index][0],
+                    boundary_source="manual",
+                    overnight_note=f"Ночлег в районе: {name}",
+                )
+            )
+            first = index + 1
+    days.append(
+        PlannedDay(
+            day_index=len(days) + 1,
+            first_stop_id=stops[first][0],
+            last_stop_id=stops[-1][0],
+            boundary_source="manual",
+        )
+    )
+    return days
+
+
 def plan_single_day(stop_ids: Sequence[UUID]) -> list[PlannedDay]:
     if not stop_ids:
         return []

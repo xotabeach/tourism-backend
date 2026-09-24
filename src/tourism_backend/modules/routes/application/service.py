@@ -63,6 +63,7 @@ from tourism_backend.modules.routes.application.schemas import (
     UserRouteMediaOut,
 )
 from tourism_backend.modules.routes.application.seaside import is_seaside as stops_are_seaside
+from tourism_backend.modules.routes.application.structure import refresh_route_structure
 from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
 from tourism_backend.modules.routes.infrastructure.models import (
     Route,
@@ -582,20 +583,80 @@ async def _route_detail_from_model(
         base_mode=route.base_mode,
         needs_public_transport=route.needs_public_transport,
         segments=await _segments_for_route(session, route.id),
-        days=[
-            RouteDayOut(
-                day_index=day.day_index,
-                first_stop_id=day.first_stop_id,
-                last_stop_id=day.last_stop_id,
-                boundary_source=day.boundary_source,
-                overnight_note=day.overnight_note,
-                overloaded=day.overloaded,
-            )
-            for day in await session.scalars(
-                select(RouteDay).where(RouteDay.route_id == route.id).order_by(RouteDay.day_index)
-            )
-        ],
+        days=await _days_for_route(session, route.id),
     )
+
+
+async def _days_for_route(session: AsyncSession, route_id: UUID) -> list[RouteDayOut]:
+    return [
+        RouteDayOut(
+            day_index=day.day_index,
+            first_stop_id=day.first_stop_id,
+            last_stop_id=day.last_stop_id,
+            boundary_source=day.boundary_source,
+            overnight_note=day.overnight_note,
+            overloaded=day.overloaded,
+        )
+        for day in await session.scalars(
+            select(RouteDay).where(RouteDay.route_id == route_id).order_by(RouteDay.day_index)
+        )
+    ]
+
+
+async def set_user_route_days(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    owner_user_id: UUID,
+    ends_after_stop_ids: Sequence[UUID],
+) -> list[RouteDayOut]:
+    """The author ends days after these stops («закончить день здесь», D7).
+
+    The boundaries are kept by place, so they survive the author's next save
+    of the stops; from now on the days are not recomputed (D8).
+    """
+    route = await _owned_editable_route(session, route_id=route_id, owner_user_id=owner_user_id)
+    stops = (
+        await session.execute(
+            select(RouteStop.id, RouteStop.place_id)
+            .where(RouteStop.route_id == route.id)
+            .order_by(RouteStop.position)
+        )
+    ).all()
+    order = {stop_id: index for index, (stop_id, _place) in enumerate(stops)}
+    chosen = [order.get(stop_id) for stop_id in ends_after_stop_ids]
+    if (
+        any(index is None for index in chosen)
+        or chosen != sorted(set(chosen))  # type: ignore[type-var]
+        or (chosen and chosen[-1] == len(stops) - 1)
+    ):
+        raise AppError(
+            code="invalid_day_breaks",
+            message="Дни заканчиваются после точек маршрута по порядку, кроме последней",
+            status_code=422,
+        )
+    route.day_breaks = [str(stops[index][1]) for index in chosen if index is not None]
+    route.days_manual = True
+    route.updated_at = datetime.now(UTC)
+    await refresh_route_structure(session, route)
+    await session.commit()
+    return await _days_for_route(session, route.id)
+
+
+async def reset_user_route_days(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    owner_user_id: UUID,
+) -> list[RouteDayOut]:
+    """«Разделить заново»: back to the days the route's norms give (D8)."""
+    route = await _owned_editable_route(session, route_id=route_id, owner_user_id=owner_user_id)
+    route.day_breaks = None
+    route.days_manual = False
+    route.updated_at = datetime.now(UTC)
+    await refresh_route_structure(session, route)
+    await session.commit()
+    return await _days_for_route(session, route.id)
 
 
 def _without_segment_shapes(accessibility: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1111,6 +1172,10 @@ async def save_user_route_draft(
                 updated_at=now,
             )
         )
+    await session.flush()
+    # The stops are new rows: rebuild days and segments now, keeping the
+    # author's day boundaries by place (spec 14a).
+    await refresh_route_structure(session, route)
     await session.commit()
     await session.refresh(route)
     return UserRouteDraftOut(

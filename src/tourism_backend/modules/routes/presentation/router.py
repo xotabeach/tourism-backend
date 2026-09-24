@@ -18,6 +18,8 @@ from tourism_backend.modules.routes.application.review_schemas import (
 )
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
+    RouteDayOut,
+    RouteDaysIn,
     RouteDetailOut,
     RouteDraftPreviewIn,
     RouteDraftPreviewOut,
@@ -196,6 +198,34 @@ async def upload_route_draft_media(
         owner_user_id=user_id,
         position=position,
         saved=saved,
+    )
+
+
+@router.put("/routes/{route_id}/days", response_model=list[RouteDayOut])
+async def set_route_days(
+    route_id: UUID,
+    payload: RouteDaysIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> list[RouteDayOut]:
+    """«Закончить день здесь»: the author's own day boundaries (spec 14a)."""
+    return await routes_service.set_user_route_days(
+        session,
+        route_id=route_id,
+        owner_user_id=user_id,
+        ends_after_stop_ids=payload.ends_after_stop_ids,
+    )
+
+
+@router.delete("/routes/{route_id}/days", response_model=list[RouteDayOut])
+async def reset_route_days(
+    route_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> list[RouteDayOut]:
+    """«Разделить заново»: days by the route's norms again."""
+    return await routes_service.reset_user_route_days(
+        session, route_id=route_id, owner_user_id=user_id
     )
 
 

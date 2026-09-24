@@ -226,6 +226,7 @@ async def ensure_routing_snapshot(
     captured_at: datetime | None = None,
     segments: Sequence[PlannedSegment] = (),
     days: Sequence[PlannedDay] = (),
+    auto_day_count: int | None = None,
 ) -> RouteRoutingSnapshot:
     """Reuse the current revision or append a new immutable snapshot.
 
@@ -321,6 +322,7 @@ async def ensure_routing_snapshot(
         created_at=captured,
         difficulty=_bounded_string(route.difficulty, max_length=32),
         base_mode=route.base_mode,
+        auto_day_count=auto_day_count,
     )
     session.add(snapshot)
     await session.flush()
