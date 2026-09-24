@@ -15,9 +15,12 @@ from starlette.responses import RedirectResponse
 from tourism_backend.config import Settings
 from tourism_backend.modules.admin.application.audit import record_audit
 from tourism_backend.modules.admin.application.passwords import verify_password
+from tourism_backend.modules.admin.application.permissions import effective_permissions
 from tourism_backend.modules.admin.infrastructure.models import (
+    AdminPermissionOverride,
     AdminPrincipal,
     AdminRoleBinding,
+    AdminRolePermission,
 )
 
 _SESSION_PRINCIPAL = "admin_principal_id"
@@ -116,6 +119,27 @@ class AdminAuthBackend(AuthenticationBackend):
             if principal is None or not principal.is_active:
                 request.session.clear()
                 return False
+            role_rows = await session.execute(
+                select(AdminRoleBinding.role).where(AdminRoleBinding.principal_id == principal_id)
+            )
+            roles = list(role_rows.scalars().all())
+            if not roles:
+                request.session.clear()
+                return False
+            grant_rows = await session.execute(
+                select(AdminRolePermission.permission).where(AdminRolePermission.role.in_(roles))
+            )
+            override_rows = await session.execute(
+                select(AdminPermissionOverride.permission, AdminPermissionOverride.effect).where(
+                    AdminPermissionOverride.principal_id == principal_id
+                )
+            )
+            request.state.admin_roles = roles
+            request.state.admin_permissions = effective_permissions(
+                roles, grant_rows.scalars().all(), override_rows.tuples().all()
+            )
+            if request.session.get(_SESSION_ROLES) != roles:
+                request.session[_SESSION_ROLES] = roles
         return True
 
 
@@ -130,6 +154,9 @@ def session_principal_id(request: Request) -> UUID | None:
 
 
 def session_roles(request: Request) -> list[str]:
+    current = getattr(request.state, "admin_roles", None)
+    if isinstance(current, list):
+        return current
     roles = request.session.get(_SESSION_ROLES) or []
     if isinstance(roles, list):
         return [str(r) for r in roles]
@@ -138,6 +165,12 @@ def session_roles(request: Request) -> list[str]:
 
 def require_admin_role(request: Request) -> bool:
     return "admin" in session_roles(request)
+
+
+def require_permission(request: Request, permission: str) -> bool:
+    """Only fresh, request-scoped permissions authorize actions."""
+    permissions: frozenset[str] = getattr(request.state, "admin_permissions", frozenset())
+    return permission in permissions
 
 
 async def redirect_login(request: Request) -> RedirectResponse:

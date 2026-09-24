@@ -1,6 +1,6 @@
 {% extends "sqladmin/layout.html" %}
 {% block content %}
-<div class="card"><div class="card-body">
+<div class="col-12"><div class="card"><div class="card-body">
 <h2>Дни и парковки маршрута</h2>
 <form method="get" class="mb-3">
 <label class="form-label">ID маршрута<input class="form-control" name="route_id" value="{{ route.id if route else '' }}" required></label>
@@ -9,7 +9,7 @@
 {% if route %}
 <p><b>{{ route.name }}</b> · способ: {{ route.base_mode }} · дней: {{ days|length }} ({{ "заданы вручную" if manual else "по нормам" }})</p>
 <form method="post">
-<table class="table">
+<div class="table-responsive ct-route-structure-table"><table class="table">
 <thead><tr><th>№</th><th>Точка</th><th>Переход к ней</th><th>Конец дня</th><th>Своя парковка (широта, долгота)</th></tr></thead>
 <tbody>
 {% for row in rows %}
@@ -17,15 +17,15 @@
 <td>{{ row.position }}</td>
 <td>{{ row.name }}{% if row.day and row.day.overnight_note %}<br><small class="text-muted">{{ row.day.overnight_note }}</small>{% endif %}{% if row.day and row.day.overloaded %}<br><small class="text-warning">День перегружен</small>{% endif %}</td>
 <td><small>{{ row.leg }}</small></td>
-<td>{% if not row.last %}<input type="checkbox" class="form-check-input" name="break_{{ row.place_id }}" {% if row.ends_day %}checked{% endif %}>{% endif %}</td>
-<td><input class="form-control form-control-sm" name="parking_{{ row.place_id }}" value="{{ row.parking }}" placeholder="например 44.742, 33.92"></td>
+<td>{% if not row.last %}<input type="checkbox" class="form-check-input" name="break_{{ row.place_id }}" aria-label="Конец дня после точки {{ row.name }}" {% if row.ends_day %}checked{% endif %}>{% endif %}</td>
+<td><input class="form-control form-control-sm" name="parking_{{ row.place_id }}" aria-label="Парковка для точки {{ row.name }}" value="{{ row.parking }}" placeholder="например 44.742, 33.92"></td>
 </tr>
 {% endfor %}
 </tbody>
-</table>
+</table></div>
 <p class="text-muted">Без отмеченных концов дня маршрут делится на дни по нормам. Своя парковка работает у машинных маршрутов: машина едет до неё, дальше пешком. Сохранение пересобирает маршрут.</p>
 <button class="btn btn-primary" type="submit">Сохранить и пересобрать</button>
 </form>
 {% endif %}
-</div></div>
+</div></div></div>
 {% endblock %}

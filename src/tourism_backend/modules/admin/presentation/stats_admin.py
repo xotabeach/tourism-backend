@@ -8,16 +8,15 @@ from sqladmin import BaseView, expose
 from starlette.requests import Request
 from starlette.responses import Response
 
-from tourism_backend.modules.admin.presentation.auth import session_roles
+from tourism_backend.modules.admin.presentation.auth import require_permission
 from tourism_backend.modules.app_stats.application.common import moscow_today
 from tourism_backend.modules.app_stats.application.queries import build_report, normalize_period
 
-STATS_ALLOWED_ROLES = frozenset({"ops", "admin"})
 DEFAULT_NEW_FROM_BUILD = 1
 
 
 def stats_role_allowed(request: Request) -> bool:
-    return bool(STATS_ALLOWED_ROLES & set(session_roles(request)))
+    return require_permission(request, "statistics.read")
 
 
 def parse_build(raw: str | None) -> int:
@@ -30,6 +29,7 @@ def parse_build(raw: str | None) -> int:
 class StatsAdmin(BaseView):
     name = "Статистика"
     icon = "fa-solid fa-chart-column"
+    permission_scope = "statistics"
     session_maker: ClassVar[Any]
 
     def is_accessible(self, request: Request) -> bool:

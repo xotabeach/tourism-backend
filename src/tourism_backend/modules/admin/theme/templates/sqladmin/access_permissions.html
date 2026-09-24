@@ -1,0 +1,90 @@
+{% extends "sqladmin/layout.html" %}
+{% block content_header %}
+<div class="row align-items-center">
+  <div class="col">
+    <div class="page-pretitle">Доступ</div>
+    <h2 class="page-title">Права сотрудников</h2>
+  </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="col-12 col-xxl-10">
+  <p class="text-secondary">Права роли получают все её сотрудники. Персональное разрешение или запрет меняет доступ одного человека и действует со следующего запроса.</p>
+  <div class="card mb-3">
+    <div class="card-header"><h3 class="card-title">Права роли</h3></div>
+    <div class="card-body">
+      <form method="get" class="row g-2 align-items-end mb-3">
+        <div class="col-12 col-md-8">
+          <label class="form-label" for="role-picker">Роль</label>
+          <select id="role-picker" class="form-select" name="role">
+            {% for key, label in roles.items() %}
+            <option value="{{ key }}" {% if selected_role == key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% if selected_principal %}<input type="hidden" name="principal_id" value="{{ selected_principal.id }}">{% endif %}
+        <div class="col-auto"><button class="btn btn-outline-primary" type="submit">Открыть</button></div>
+      </form>
+      <form method="post" action="{{ url_for('admin:view-access-permissions') }}?role={{ selected_role }}{% if selected_principal %}&amp;principal_id={{ selected_principal.id }}{% endif %}">
+        <input type="hidden" name="kind" value="role">
+        <input type="hidden" name="role" value="{{ selected_role }}">
+        <div class="ct-permission-grid">
+          {% for key, label in permissions.items() %}
+          <label class="ct-permission-option">
+            <input class="form-check-input" type="checkbox" name="permissions" value="{{ key }}" {% if key in role_grants %}checked{% endif %}>
+            <span>{{ label }}</span>
+          </label>
+          {% endfor %}
+        </div>
+        <button class="btn btn-primary ct-btn-primary mt-3" type="submit">Сохранить права роли</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h3 class="card-title">Персональные исключения</h3></div>
+    <div class="card-body">
+      <form method="get" class="row g-2 align-items-end mb-3">
+        <input type="hidden" name="role" value="{{ selected_role }}">
+        <div class="col-12 col-md-4">
+          <label class="form-label" for="principal-search">Поиск по логину</label>
+          <input id="principal-search" class="form-control" type="search" name="q" value="{{ search }}" autocomplete="off">
+        </div>
+        <div class="col-12 col-md-8">
+          <label class="form-label" for="principal-picker">Сотрудник</label>
+          <select id="principal-picker" class="form-select" name="principal_id" required>
+            <option value="">Выберите сотрудника</option>
+            {% for principal in principals %}
+            <option value="{{ principal.id }}" {% if selected_principal and selected_principal.id == principal.id %}selected{% endif %}>{{ principal.login }}{% if not principal.is_active %} (отключён){% endif %}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-auto"><button class="btn btn-outline-primary" type="submit">Открыть</button></div>
+      </form>
+      {% if selected_principal %}
+        {% if selected_is_admin %}
+        <div class="alert alert-info">У администратора полный доступ. Чтобы ограничить его, назначьте другую роль в разделе «Роли».</div>
+        {% else %}
+        <form method="post" action="{{ url_for('admin:view-access-permissions') }}?role={{ selected_role }}&amp;principal_id={{ selected_principal.id }}">
+          <input type="hidden" name="kind" value="principal">
+          <input type="hidden" name="principal_id" value="{{ selected_principal.id }}">
+          <div class="ct-permission-grid">
+            {% for key, label in permissions.items() %}
+            <label class="ct-permission-option ct-permission-option-select">
+              <span>{{ label }}</span>
+              <select class="form-select form-select-sm" name="effect_{{ key }}" aria-label="Право: {{ label }}">
+                <option value="inherit" {% if key not in overrides %}selected{% endif %}>По роли</option>
+                <option value="allow" {% if overrides.get(key) == 'allow' %}selected{% endif %}>Разрешить</option>
+                <option value="deny" {% if overrides.get(key) == 'deny' %}selected{% endif %}>Запретить</option>
+              </select>
+            </label>
+            {% endfor %}
+          </div>
+          <button class="btn btn-primary ct-btn-primary mt-3" type="submit">Сохранить права сотрудника</button>
+        </form>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

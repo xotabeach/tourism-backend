@@ -8,8 +8,8 @@
 </div>
 {% endblock %}
 {% block content %}
-<div class="col-12 col-xl-10">
-  <form method="GET" class="row g-2 mb-3 align-items-end">
+<div class="col-12">
+  <form method="GET" class="row g-2 mb-3 align-items-end ct-stats-filters">
     <div class="col-auto">
       <label class="form-label" for="st-days">Период</label>
       <select id="st-days" class="form-select" name="days">
@@ -25,9 +25,32 @@
     <div class="col-auto"><button class="btn btn-primary ct-btn-primary" type="submit">Показать</button></div>
   </form>
 
+  <div class="ct-stat-kpis mb-3">
+    <div class="ct-stat-kpi"><span>Скачивания APK</span><strong>{{ report.downloads_total }}</strong><small>За {{ report.days }} дней</small></div>
+    {% if report.display_share %}
+    {% set last_share = report.display_share %}
+    <div class="ct-stat-kpi"><span>Активные пользователи</span><strong>{{ last_share.total }}</strong><small>{{ last_share.day.strftime("%d.%m.%Y") }}</small></div>
+    <div class="ct-stat-kpi"><span>На новой сборке</span><strong>{{ last_share.percent }}%</strong><small>Сборка ≥ {{ report.new_from_build }}</small></div>
+    {% else %}
+    <div class="ct-stat-kpi"><span>Активные пользователи</span><strong>0</strong><small>Пока нет данных</small></div>
+    <div class="ct-stat-kpi"><span>На новой сборке</span><strong>0%</strong><small>Пока нет данных</small></div>
+    {% endif %}
+  </div>
+
   <div class="card mb-3">
     <div class="card-header"><h3 class="card-title">Скачивания APK · всего {{ report.downloads_total }}</h3></div>
     <div class="card-body">
+      <div class="ct-stat-chart-scroll mb-4" role="img" aria-label="Скачивания APK по дням">
+        <div class="ct-stat-chart" style="min-width: max(100%, {{ report.days * 20 }}px)">
+          {% for day, n in report.downloads_by_day %}
+          <div class="ct-stat-chart-column" title="{{ day.strftime('%d.%m.%Y') }}: {{ n }}">
+            <span class="ct-stat-chart-number">{{ n }}</span>
+            <span class="ct-stat-chart-track"><span class="ct-stat-chart-fill" style="height: {{ (n * 100 // report.max_day_downloads) if report.max_day_downloads else 0 }}%"></span></span>
+            <span class="ct-stat-chart-date">{% if report.days == 7 or loop.index0 % 7 == 0 %}{{ day.strftime('%d.%m') }}{% endif %}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
       <div class="row">
         <div class="col-md-6">
           <div class="text-secondary mb-1">По источникам</div>
@@ -64,6 +87,19 @@
       <h3 class="card-title">Активные пользователи по версиям{% if report.share_day %} · {{ report.share_day.strftime("%d.%m.%Y") }}{% endif %}</h3>
     </div>
     <div class="card-body">
+      {% if report.share_series %}
+      <div class="ct-stat-chart-scroll mb-4" role="img" aria-label="Доля пользователей на новой сборке по дням">
+        <div class="ct-stat-chart ct-stat-chart-share" style="min-width: max(100%, {{ report.days * 20 }}px)">
+          {% for row in report.share_series %}
+          <div class="ct-stat-chart-column" title="{{ row.day.strftime('%d.%m.%Y') }}: {{ row.percent }}%">
+            <span class="ct-stat-chart-number">{{ row.percent }}%</span>
+            <span class="ct-stat-chart-track"><span class="ct-stat-chart-fill" style="height: {{ row.percent }}%"></span></span>
+            <span class="ct-stat-chart-date">{% if report.days == 7 or loop.index0 % 7 == 0 %}{{ row.day.strftime('%d.%m') }}{% endif %}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
       <div class="text-secondary mb-2">
         Пользователи без заголовка версии считаются на старой версии («unknown») и входят в знаменатель.
         Один пользователь на двух версиях учтён в обеих.
