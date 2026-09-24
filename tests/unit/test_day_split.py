@@ -153,3 +153,22 @@ def test_a_place_visited_twice_ends_the_day_at_the_visit_in_order() -> None:
     yalta = str(stops[0][1])
     days = days_from_breaks(stops, [yalta, yalta])
     assert [d.last_stop_id for d in days] == [stops[0][0], stops[2][0], stops[3][0]]
+
+
+def test_the_daily_cap_counts_every_calendar_day_of_a_multi_day_run() -> None:
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from tourism_backend.modules.route_execution.application.antifraud_service import (
+        _calendar_days,
+    )
+
+    started = datetime(2026, 9, 20, 7, 0, tzinfo=UTC)  # 10:00 Moscow
+    end = datetime(2026, 9, 22, 15, 0, tzinfo=UTC)
+    one_day = SimpleNamespace(started_at=started, night_pauses=0)
+    three_days = SimpleNamespace(started_at=started, night_pauses=2)
+    rested_once = SimpleNamespace(started_at=started, night_pauses=1)
+    assert _calendar_days(one_day, end) == 1  # type: ignore[arg-type]
+    assert _calendar_days(three_days, end) == 3  # type: ignore[arg-type]
+    # Never more days than the walker actually ended.
+    assert _calendar_days(rested_once, end) == 2  # type: ignore[arg-type]

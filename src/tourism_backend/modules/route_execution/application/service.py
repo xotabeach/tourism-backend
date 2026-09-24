@@ -1,7 +1,7 @@
 """Route execution state machine and ownership rules."""
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
@@ -174,7 +174,12 @@ async def _execution_out(
         # Runs started before FRONTEND-42 saved no cover when the route had no
         # own one; show the catalog's instead of a grey card.
         cover_url = (await route_cover_urls(session, [execution.route_id])).get(execution.route_id)
+    planned_days = len(await _snapshot_days(session, execution)) or 1
     return RouteExecutionOut(
+        planned_days=planned_days,
+        current_day=execution.night_pauses + 1,
+        night_paused=execution.night_paused,
+        ended_early=execution.ended_early,
         id=execution.id,
         route_id=execution.route_id,
         route_name=execution.route_name,
@@ -376,6 +381,10 @@ async def start_execution(
             RouteExecution.status.in_(("active", "paused")),
         )
     )
+    if active is not None and await _close_if_idle(session, active, now=datetime.now(UTC)):
+        # Closing committed and let go of the user row: take it again.
+        await session.scalar(select(User.id).where(User.id == user_id).with_for_update())
+        active = None
     if active is not None:
         if active.route_id == route_id:
             return await _execution_out(session, active)
@@ -389,6 +398,9 @@ async def start_execution(
                 "route_id": str(active.route_id) if active.route_id else None,
                 "route_name": active.route_name,
                 "status": active.status,
+                # Resting overnight in a multi-day run: the app offers
+                # «Завершить многодневный маршрут» (spec 14a).
+                "night_paused": active.night_paused,
             },
         )
 
@@ -578,6 +590,8 @@ async def get_active_execution(
             RouteExecution.status.in_(("active", "paused")),
         )
     )
+    if execution is not None and await _close_if_idle(session, execution, now=datetime.now(UTC)):
+        return None
     return None if execution is None else await _execution_out(session, execution)
 
 
@@ -901,8 +915,13 @@ async def _award_completion_points(
     user: User,
     settings: AntiFraudSettings,
     now: datetime,
+    finished_positions: set[int] | None = None,
+    finished_days: int | None = None,
 ) -> None:
     """Grant travel points once, sized by what the route actually demanded.
+
+    ``finished_positions`` limits the reward to the stops and legs of the
+    days walked in full, for a run ended before its last day (spec 14, D21).
 
     Reads the immutable snapshot captured at start, so editing the route
     afterwards cannot change an already-earned reward. Cooldown, the daily cap
@@ -925,6 +944,10 @@ async def _award_completion_points(
     if settings.enforcing:
         # A mark that followed the previous one too closely earns no stop points.
         required_done = required_done.where(RouteExecutionStop.mark_below_floor.is_(False))
+    if finished_positions is not None:
+        required_done = required_done.where(
+            RouteExecutionStop.position.in_(finished_positions or {-1})
+        )
     completed_required = int(await session.scalar(required_done) or 0)
     snapshot = (
         await session.get(RouteRoutingSnapshot, execution.routing_snapshot_id)
@@ -952,6 +975,8 @@ async def _award_completion_points(
                 .where(RoutingSnapshotSegment.snapshot_id == snapshot.id)
                 .order_by(RoutingSnapshotSegment.leg_index, RoutingSnapshotSegment.seq)
             )
+            # Leg i leads to the stop at position i + 2.
+            if finished_positions is None or row.leg_index + 2 in finished_positions
         )
         day_count = int(
             await session.scalar(
@@ -964,11 +989,21 @@ async def _award_completion_points(
         # Days set by hand never raise the cap above what the norms give (D20).
         if snapshot.auto_day_count:
             day_count = min(day_count, snapshot.auto_day_count)
+    if finished_days is not None:
+        day_count = min(day_count, max(1, finished_days))
+    if finished_positions is not None and not finished_positions:
+        # Not one day walked in full: nothing to pay for.
+        await antifraud_service.settle_completion_points(
+            session, execution=execution, user=user, points=0, settings=settings, now=now
+        )
+        return
 
     points = travel_points_for_effort(
         RouteEffort(
             completed_required_stops=completed_required,
-            distance_meters=snapshot.distance_meters if snapshot else None,
+            distance_meters=(
+                snapshot.distance_meters if snapshot and finished_positions is None else None
+            ),
             elevation_gain_meters=snapshot.elevation_gain_meters if snapshot else None,
             max_road_angle_degrees=snapshot.max_road_angle_degrees if snapshot else None,
             transport_mode=snapshot.transport_mode if snapshot else None,
@@ -1053,7 +1088,13 @@ async def pause_execution(
     user_id: UUID,
     execution_id: UUID,
     event: RouteExecutionEventIn | None = None,
+    night: bool = False,
 ) -> RouteExecutionOut:
+    """Pause a run; ``night`` is «Закончить день» of a multi-day run (spec 14a).
+
+    Only the walker ends a day: a pause put in by the server at sunset
+    would take walking time off the leg and read as «too fast» (D21).
+    """
     now = datetime.now(UTC)
     client_event_id = event.client_event_id if event is not None else None
     if client_event_id is not None:
@@ -1090,10 +1131,13 @@ async def pause_execution(
     execution.status = "paused"
     execution.paused_at = resolved.effective
     execution.updated_at = now
+    if night:
+        execution.night_paused = True
+        execution.night_pauses += 1
     return await _commit_event(
         session,
         execution=execution,
-        action="pause",
+        action="end_day" if night else "pause",
         resolved=resolved,
         now=now,
         applied=True,
@@ -1146,6 +1190,7 @@ async def resume_execution(
             (resolved.effective - execution.paused_at).total_seconds()
         )
     execution.paused_at = None
+    execution.night_paused = False
     execution.status = "active"
     execution.updated_at = now
     return await _commit_event(
@@ -1157,3 +1202,155 @@ async def resume_execution(
         applied=True,
         client_event_id=client_event_id,
     )
+
+
+# ---------------------------------------------------------- multi-day runs
+
+#: A multi-day run with no event for this long is closed (spec 14, D21):
+#: max(planned days + 3, 7) days.
+_IDLE_MIN_DAYS = 7
+_IDLE_EXTRA_DAYS = 3
+
+
+async def _snapshot_days(session: AsyncSession, execution: RouteExecution) -> list[tuple[int, int]]:
+    """(first, last) stop positions of each planned day, in order."""
+    if execution.routing_snapshot_id is None:
+        return []
+    rows = await session.execute(
+        select(RoutingSnapshotDay.first_position, RoutingSnapshotDay.last_position)
+        .where(RoutingSnapshotDay.snapshot_id == execution.routing_snapshot_id)
+        .order_by(RoutingSnapshotDay.day_index)
+    )
+    return [(int(first), int(last)) for first, last in rows]
+
+
+async def _finished_days(session: AsyncSession, execution: RouteExecution) -> tuple[set[int], int]:
+    """Stop positions of the days whose required stops are all marked."""
+    days = await _snapshot_days(session, execution)
+    stops = list(
+        await session.scalars(
+            select(RouteExecutionStop).where(RouteExecutionStop.execution_id == execution.id)
+        )
+    )
+    if not days and stops:
+        days = [(1, max(stop.position for stop in stops))]
+    positions: set[int] = set()
+    count = 0
+    for first, last in days:
+        in_day = [stop for stop in stops if first <= stop.position <= last]
+        if in_day and all(stop.completed_at is not None or stop.is_optional for stop in in_day):
+            positions.update(stop.position for stop in in_day)
+            count += 1
+    return positions, count
+
+
+async def _end_early(
+    session: AsyncSession,
+    *,
+    execution: RouteExecution,
+    user: User,
+    moment: datetime,
+    now: datetime,
+) -> None:
+    """Cancel a run before its last day and pay for the days walked in full."""
+    if execution.status == "paused" and execution.paused_at is not None:
+        execution.paused_duration_seconds += max(
+            0, int((moment - execution.paused_at).total_seconds())
+        )
+    execution.status = "cancelled"
+    execution.cancelled_at = moment
+    execution.paused_at = None
+    execution.night_paused = False
+    execution.ended_early = True
+    execution.updated_at = now
+    positions, count = await _finished_days(session, execution)
+    await _award_completion_points(
+        session,
+        execution=execution,
+        user=user,
+        settings=await load_settings(session),
+        now=now,
+        finished_positions=positions,
+        finished_days=count,
+    )
+
+
+async def finish_early_execution(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    execution_id: UUID,
+    event: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    """«Завершить многодневный маршрут»: stop here, keep the finished days.
+
+    No «прошёл маршрут» achievement or walker's review: the route was not
+    walked to the end (spec 14, D21).
+    """
+    now = datetime.now(UTC)
+    client_event_id = event.client_event_id if event is not None else None
+    if client_event_id is not None:
+        replayed = await _replayed_out(
+            session,
+            user_id=user_id,
+            execution_id=execution_id,
+            client_event_id=client_event_id,
+        )
+        if replayed is not None:
+            return replayed
+    user = await antifraud_service.lock_user(session, user_id)
+    execution = await _owned_execution(
+        session, user_id=user_id, execution_id=execution_id, for_update=True
+    )
+    if execution.status == "cancelled" and execution.ended_early:
+        return await _execution_out(session, execution)
+    if execution.status not in ("active", "paused"):
+        raise AppError(
+            code="route_execution_not_active",
+            message="Route execution is not active",
+            status_code=409,
+            details=terminal_conflict_details(execution.status),
+        )
+    resolved = resolve_event_time(
+        event.occurred_at if event is not None else None,
+        now=now,
+        not_before=execution.paused_at or execution.started_at,
+    )
+    await _end_early(session, execution=execution, user=user, moment=resolved.effective, now=now)
+    return await _commit_event(
+        session,
+        execution=execution,
+        action="finish_early",
+        resolved=resolved,
+        now=now,
+        applied=True,
+        client_event_id=client_event_id,
+    )
+
+
+async def _close_if_idle(
+    session: AsyncSession, execution: RouteExecution, *, now: datetime
+) -> bool:
+    """Close a multi-day run nobody came back to; True when it was closed.
+
+    Done lazily when its owner next asks for the active run or starts a
+    route, so an abandoned run never blocks them and no job is needed.
+    """
+    planned = len(await _snapshot_days(session, execution))
+    if planned <= 1 and execution.night_pauses == 0:
+        return False
+    idle_days = max(planned + _IDLE_EXTRA_DAYS, _IDLE_MIN_DAYS)
+    if now - execution.updated_at < timedelta(days=idle_days):
+        return False
+    user = await antifraud_service.lock_user(session, execution.user_id)
+    moment = execution.paused_at or execution.updated_at
+    await _end_early(session, execution=execution, user=user, moment=moment, now=now)
+    await _commit_event(
+        session,
+        execution=execution,
+        action="finish_early",
+        resolved=resolve_event_time(None, now=now, not_before=moment),
+        now=now,
+        applied=True,
+    )
+    return True

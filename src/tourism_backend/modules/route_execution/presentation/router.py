@@ -145,6 +145,39 @@ async def pause_route_execution(
     )
 
 
+@router.post("/{execution_id}/end-day", response_model=RouteExecutionOut)
+async def end_route_execution_day(
+    execution_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    """«Закончить день»: a night pause; resume starts the next day (spec 14a)."""
+    return await service.pause_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        event=payload,
+        night=True,
+    )
+
+
+@router.post("/{execution_id}/finish-early", response_model=RouteExecutionOut)
+async def finish_route_execution_early(
+    execution_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    """«Завершить многодневный маршрут»: the finished days are paid (spec 14a)."""
+    return await service.finish_early_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        event=payload,
+    )
+
+
 @router.post("/{execution_id}/resume", response_model=RouteExecutionOut)
 async def resume_route_execution(
     execution_id: UUID,
