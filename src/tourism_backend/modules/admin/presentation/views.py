@@ -1421,11 +1421,24 @@ class RouteAdmin(ModelView, model=Route):
     column_formatters = {
         Route.publication_status: format_route_publication_status,
         Route.owner_user_id: format_user_fk,
+        Route.source: choice_formatter(
+            "source",
+            {"editorial": "Редакция", "generated": "Сгенерирован", "user_created": "Пользователь"},
+        ),
+        Route.visibility: choice_formatter(
+            "visibility", {"private": "Личный", "unlisted": "По ссылке", "public": "Публичный"}
+        ),
+        Route.difficulty: choice_formatter(
+            "difficulty",
+            {
+                "easy": "Лёгкий",
+                "moderate": "Средний",
+                "hard": "Сложный",
+                "extreme": "Очень сложный",
+            },
+        ),
     }
-    column_formatters_detail = {
-        Route.publication_status: format_route_publication_status,
-        Route.owner_user_id: format_user_fk,
-    }
+    column_formatters_detail = column_formatters
     column_searchable_list = [Route.name, Route.description]
     column_sortable_list = [
         Route.publication_status,
@@ -2422,6 +2435,10 @@ class CountryAdmin(ModelView, model=Country):
         Country.status: "Статус",
         Country.timezone: "Часовой пояс",
     }
+    column_formatters = {
+        Country.status: choice_formatter("status", {"active": "Активна", "inactive": "Выключена"})
+    }
+    column_formatters_detail = column_formatters
     form_columns = [Country.name, Country.status, Country.timezone]
     column_searchable_list = [Country.name]
     can_create = False
@@ -2444,6 +2461,10 @@ class RegionAdmin(ModelView, model=Region):
         Region.status: "Статус",
         Region.timezone: "Часовой пояс",
     }
+    column_formatters = {
+        Region.status: choice_formatter("status", {"active": "Активен", "inactive": "Выключен"})
+    }
+    column_formatters_detail = column_formatters
     form_columns = [Region.name, Region.status, Region.timezone]
     column_searchable_list = [Region.name]
     can_create = False
@@ -2466,6 +2487,10 @@ class LocalityAdmin(ModelView, model=Locality):
         Locality.type: "Тип",
         Locality.status: "Статус",
     }
+    column_formatters = {
+        Locality.status: choice_formatter("status", {"active": "Активен", "inactive": "Выключен"})
+    }
+    column_formatters_detail = column_formatters
     form_columns = [Locality.name, Locality.type, Locality.status]
     column_searchable_list = [Locality.name]
     column_sortable_list = [Locality.name]
@@ -2498,6 +2523,10 @@ class CategoryAdmin(ModelView, model=Category):
         Category.description: "Описание",
         Category.icon_key: "Иконка",
     }
+    column_formatters = {
+        Category.status: choice_formatter("status", {"active": "Активна", "inactive": "Выключена"})
+    }
+    column_formatters_detail = column_formatters
     form_columns = [
         Category.name,
         Category.description,
@@ -2603,7 +2632,33 @@ class NotificationAdmin(ModelView, model=Notification):
         Notification.body: "Текст",
         Notification.is_read: "Прочитано",
     }
-    column_formatters = {Notification.user_id: format_user_fk}
+    column_formatters = {
+        Notification.user_id: format_user_fk,
+        Notification.kind: choice_formatter(
+            "kind",
+            {
+                "route_review": "Маршрут на проверке",
+                "route_published": "Маршрут опубликован",
+                "route_rejected": "Маршрут отклонён",
+                "review_published": "Отзыв опубликован",
+                "review_rejected": "Отзыв отклонён",
+                "profile_like": "Отметка профиля",
+                "achievement_unlocked": "Достижение получено",
+                "support_reply": "Ответ поддержки",
+                "review_reply": "Ответ на отзыв",
+                "expert_granted": "Статус эксперта выдан",
+                "expert_revoked": "Статус эксперта отозван",
+                "article_published": "Статья опубликована",
+                "article_rejected": "Статья отклонена",
+                "article_comment": "Комментарий к статье",
+                "article_about_your_route": "Статья о маршруте",
+                "antifraud_flagged": "Отметка антифрода",
+                "antifraud_blocked": "Блокировка антифрода",
+                "antifraud_points_decision": "Решение по очкам",
+            },
+        ),
+    }
+    column_formatters_detail = column_formatters
     column_sortable_list = [Notification.created_at]
     column_default_sort = (Notification.created_at, True)
     column_filters = [OperationColumnFilter(Notification.user_id, title="ID пользователя")]
@@ -2671,7 +2726,13 @@ class PlaceImageAdmin(ModelView, model=PlaceImage):
         PlaceImage.license: "Лицензия",
         PlaceImage.alt_text: "Alt-текст",
     }
-    column_formatters = {PlaceImage.place_id: format_place_fk}
+    column_formatters = {
+        PlaceImage.place_id: format_place_fk,
+        PlaceImage.status: choice_formatter(
+            "status", {"active": "Активно", "archived": "В архиве"}
+        ),
+    }
+    column_formatters_detail = column_formatters
     form_columns = [
         PlaceImage.alt_text,
         PlaceImage.sort_order,
@@ -2966,6 +3027,27 @@ class MediaAttachmentAdmin(ModelView, model=MediaAttachment):
         MediaAttachment.sort_order: "Порядок",
         MediaAttachment.public_path: "Путь",
     }
+    column_formatters = {
+        MediaAttachment.entity_type: choice_formatter(
+            "entity_type",
+            {
+                "user": "Пользователь",
+                "place": "Место",
+                "route": "Маршрут",
+                "review": "Отзыв о маршруте",
+                "place_review": "Отзыв о месте",
+                "support_ticket": "Обращение в поддержку",
+                "article": "Статья",
+            },
+        ),
+        MediaAttachment.role: choice_formatter(
+            "role", {"avatar": "Аватар", "cover": "Обложка", "gallery": "Галерея"}
+        ),
+        MediaAttachment.status: choice_formatter(
+            "status", {"active": "Активно", "archived": "В архиве"}
+        ),
+    }
+    column_formatters_detail = column_formatters
     column_sortable_list = [MediaAttachment.byte_size]
     column_filters = [OperationColumnFilter(MediaAttachment.entity_id, title="ID сущности")]
     form_columns = [MediaAttachment.status, MediaAttachment.sort_order, MediaAttachment.alt_text]
