@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from tourism_backend.modules.routes.application.difficulty import reward_multiplier
+
 BASE_POINTS = 10
 POINTS_PER_STOP = 3
 POINTS_PER_WALK_KM = 1.0
@@ -67,6 +69,9 @@ class RouteEffort:
     max_road_angle_degrees: float | None = None
     transport_mode: str | None = None
     difficulty: str | None = None
+    # Spec 17: the estimate at the run start, by the days the norms give.
+    # Runs started before it have none and are paid by the word above.
+    difficulty_level: int | None = None
     segments: tuple[SegmentEffort, ...] = ()
     day_count: int = 1
 
@@ -132,7 +137,10 @@ def travel_points_for_effort(effort: RouteEffort) -> int:
     angle = effort.max_road_angle_degrees or 0.0
     slope_bonus = STEEP_SLOPE_BONUS if walked and angle > STEEP_SLOPE_DEGREES else 0
 
-    raw = (BASE_POINTS + stops + distance + elevation + slope_bonus) * difficulty_multiplier(
-        effort.difficulty
+    multiplier = (
+        reward_multiplier(effort.difficulty_level)
+        if effort.difficulty_level is not None
+        else difficulty_multiplier(effort.difficulty)
     )
+    raw = (BASE_POINTS + stops + distance + elevation + slope_bonus) * multiplier
     return max(0, min(MAX_POINTS * days, round(raw)))

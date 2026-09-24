@@ -150,6 +150,7 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecutionStop,
 )
 from tourism_backend.modules.routes.application import review_service
+from tourism_backend.modules.routes.application.difficulty import level_from_legacy
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 from tourism_backend.modules.runtime_config.application.service import (
     AI_PROVIDER_KEY,
@@ -1459,6 +1460,20 @@ class RouteAdmin(ModelView, model=Route):
     can_delete = False
     can_export = False
     page_size = 50
+
+    async def on_model_change(
+        self, data: dict[str, Any], model: Any, is_created: bool, request: Request
+    ) -> None:
+        # Spec 17: a difficulty picked here is the editors' rating; the next
+        # recalculation keeps it instead of replacing it with the estimate.
+        if "difficulty" not in data:
+            return
+        level = level_from_legacy(data.get("difficulty"))
+        if level is None or level == model.difficulty_level:
+            return
+        model.difficulty_manual = level
+        model.difficulty_manual_by = "editorial"
+        model.difficulty_level = level
 
     async def list(self, request: Request) -> Any:
         pagination = await super().list(request)

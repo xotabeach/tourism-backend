@@ -25,6 +25,7 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteRoutingSnapshot,
     UserFraudState,
 )
+from tourism_backend.modules.routes.application.difficulty import MAX_LEVEL
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
 
 
@@ -43,10 +44,11 @@ async def collect(session: AsyncSession, user_id: UUID, *, historical: bool = Fa
         ).all()
     )
     facts.soon = {key for key, slugs in PLACE_SLUGS.items() if not slugs & available_slugs}
+    # Spec 17 (D17): the estimate, never an author's rating.
     extreme_exists = await session.scalar(
         select(Route.id)
         .where(
-            Route.difficulty == "extreme",
+            Route.difficulty_reward == MAX_LEVEL,
             Route.publication_status == "published",
             Route.visibility == "public",
             Route.lifecycle_status == "active",
@@ -250,6 +252,8 @@ async def collect(session: AsyncSession, user_id: UUID, *, historical: bool = Fa
         select(
             RouteExecution,
             RouteRoutingSnapshot.distance_meters,
+            RouteRoutingSnapshot.difficulty_reward,
+            RouteRoutingSnapshot.difficulty,
             Route,
             completion_times.c.recorded_at,
             RouteExecution.route_id.in_(beach_routes),
@@ -261,14 +265,21 @@ async def collect(session: AsyncSession, user_id: UUID, *, historical: bool = Fa
         .outerjoin(completion_times, completion_times.c.execution_id == RouteExecution.id)
         .where(RouteExecution.id.in_(eligible_runs))
     )
-    for run, meters, route, recorded, seaside in rows:
+    for run, meters, reward_level, snapshot_word, route, recorded, seaside in rows:
+        # The estimate the run started with; runs from before spec 17 go by
+        # the word their snapshot kept, else the route's (D17).
+        if reward_level is not None:
+            extreme = reward_level == MAX_LEVEL
+        else:
+            word = snapshot_word or (route.difficulty if route is not None else None)
+            extreme = word == "extreme"
         facts.runs.append(
             RunFact(
                 run.route_id,
                 recorded,
                 meters or 0,
                 bool(seaside),
-                route is not None and route.difficulty == "extreme",
+                extreme,
                 route is not None
                 and route.source == "generated"
                 and route.owner_user_id == user_id,

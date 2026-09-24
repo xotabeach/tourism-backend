@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -116,6 +117,8 @@ class RouteRoutingSnapshot(Base, UUIDPrimaryKeyMixin):
     # Taken at start so a later edit cannot raise the reward multiplier
     # (spec 14, R1). Snapshots before 0069 have none and read the route.
     difficulty: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Spec 17: the estimate points and achievements go by (D10, D17).
+    difficulty_reward: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     base_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Days the norms give; hand-set days never raise the points cap (D20).
     auto_day_count: Mapped[int | None] = mapped_column(Integer, nullable=True)

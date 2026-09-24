@@ -28,6 +28,14 @@ from tourism_backend.modules.routes.application.day_split import (
     day_norm_minutes,
     split_days,
 )
+from tourism_backend.modules.routes.application.difficulty import (
+    DayInput,
+    RouteDifficulty,
+    SegmentInput,
+    legacy_name,
+    route_difficulty,
+    shown_level,
+)
 from tourism_backend.modules.routes.application.structure_rules import (
     PlannedDay,
     PlannedSegment,
@@ -106,6 +114,9 @@ class RouteStructure:
     days: list[PlannedDay]
     #: Days the norms give, whatever the author set (spec 14, D20).
     auto_day_count: int
+    #: Estimate by the route's days, and by the days the norms give (spec 17).
+    difficulty: RouteDifficulty | None = None
+    reward_difficulty: RouteDifficulty | None = None
 
 
 async def refresh_route_structure(
@@ -224,7 +235,140 @@ async def refresh_route_structure(
                 )
             )
     await session.flush()
-    return RouteStructure(segments=segments, days=days, auto_day_count=len(automatic))
+
+    driven = segment_mode_for(route.base_mode) == "car"
+    leg_minutes = _leg_minutes(stop_rows, segments, driven)
+    synthetic = routing.get("synthetic") is not False
+    shown = route_difficulty(
+        _difficulty_days(route, stop_rows, segments, days, leg_minutes), synthetic=synthetic
+    )
+    reward = route_difficulty(
+        _difficulty_days(route, stop_rows, segments, automatic, leg_minutes), synthetic=synthetic
+    )
+    apply_difficulty(route, shown, reward)
+    day_rows = (
+        await session.scalars(
+            select(RouteDay).where(RouteDay.route_id == route.id).order_by(RouteDay.day_index)
+        )
+    ).all()
+    for day_row, scored in zip(day_rows, shown.days, strict=False):
+        if day_row.difficulty_level != scored.level:
+            day_row.difficulty_level = scored.level
+    await session.flush()
+    return RouteStructure(
+        segments=segments,
+        days=days,
+        auto_day_count=len(automatic),
+        difficulty=shown,
+        reward_difficulty=reward,
+    )
+
+
+def apply_difficulty(route: Route, shown: RouteDifficulty, reward: RouteDifficulty) -> None:
+    """Store the estimates and what people see; writes only what changed.
+
+    A manual rating stays; the author's is kept within one step below the
+    estimate, the editors' and a rating from before spec 17 show as they are
+    (D9, D13, section 9).
+    """
+    level = shown_level(
+        shown.level,
+        route.difficulty_manual,
+        editorial=route.difficulty_manual_by in ("editorial", "legacy"),
+    )
+    values: dict[str, Any] = {
+        "difficulty_auto": shown.level,
+        "difficulty_reward": reward.level,
+        "difficulty_confidence": shown.confidence,
+        "difficulty_formula_version": shown.formula_version,
+        "difficulty_level": level,
+        "difficulty": legacy_name(level),
+    }
+    for name, value in values.items():
+        if getattr(route, name) != value:
+            setattr(route, name, value)
+    accessibility = route.accessibility if isinstance(route.accessibility, dict) else {}
+    meta = shown.as_meta()
+    if accessibility.get("difficulty") != meta:
+        route.accessibility = {**accessibility, "difficulty": meta}
+
+
+def _difficulty_days(
+    route: Route,
+    stop_rows: Sequence[Any],
+    segments: Sequence[PlannedSegment],
+    days: Sequence[PlannedDay],
+    leg_minutes: Sequence[int],
+) -> list[DayInput]:
+    """Each day's segments and hours for the estimate (spec 17, section 2).
+
+    Leg i joins stop i to stop i + 1; the leg into a day's first stop is
+    that day's morning, so it belongs to the day it leads into.
+    """
+    if not stop_rows:
+        return []
+    index_of = {row[0]: index for index, row in enumerate(stop_rows)}
+    terrain = _terrain_by_segment(route)
+    routing = _routing(route)
+    # One number for the whole line until segments carry their own (17-3):
+    # only trusted for walking when nothing on the route is driven.
+    route_slope = routing.get("max_road_angle_degrees")
+    walk_only = all(segment.mode != "car" for segment in segments)
+    inputs: list[DayInput] = []
+    last_index = max(0, len(stop_rows) - 1)
+    spans = [
+        (index_of.get(day.first_stop_id, 0), index_of.get(day.last_stop_id, last_index))
+        for day in days
+    ] or [(0, last_index)]
+    for first, last in spans:
+        legs = range(max(0, first - 1), last)
+        day_segments = [s for s in segments if s.leg_index in legs]
+        visits = sum(
+            max(5, stop_rows[i][2] or _DEFAULT_VISIT_MINUTES) for i in range(first, last + 1)
+        )
+        inputs.append(
+            DayInput(
+                segments=[
+                    SegmentInput(
+                        mode=segment.mode,
+                        distance_meters=segment.distance_meters,
+                        duration_seconds=segment.duration_seconds,
+                        ascent_meters=segment.elevation_gain_meters,
+                        descent_meters=segment.elevation_loss_meters,
+                        max_slope_degrees=(
+                            float(route_slope)
+                            if walk_only and isinstance(route_slope, (int, float))
+                            else None
+                        ),
+                        terrain=terrain.get((segment.leg_index, segment.seq), {}),
+                        terrain_known=(segment.leg_index, segment.seq) in terrain,
+                    )
+                    for segment in day_segments
+                ],
+                total_minutes=sum(leg_minutes[i] for i in legs if i < len(leg_minutes)) + visits,
+            )
+        )
+    return inputs
+
+
+def _terrain_by_segment(route: Route) -> dict[tuple[int, int], dict[str, int]]:
+    """Metres by ground category per segment, once fetched (spec 17, 3)."""
+    accessibility = route.accessibility if isinstance(route.accessibility, dict) else {}
+    raw = accessibility.get("terrain")
+    if not isinstance(raw, dict):
+        return {}
+    found: dict[tuple[int, int], dict[str, int]] = {}
+    for item in raw.get("segments") or []:
+        if not isinstance(item, dict):
+            continue
+        leg, seq, meters = item.get("leg_index"), item.get("seq"), item.get("meters")
+        if isinstance(leg, int) and isinstance(seq, int) and isinstance(meters, dict):
+            found[(leg, seq)] = {
+                str(key): int(value)
+                for key, value in meters.items()
+                if isinstance(value, (int, float))
+            }
+    return found
 
 
 def _auto_days(
