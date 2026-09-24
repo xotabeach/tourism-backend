@@ -129,3 +129,12 @@ def test_walking_is_dashed_and_driving_is_solid():
     r, g, b = blue.getpixel((round(x * frame.scale), round(y * frame.scale)))
     assert b > r
     assert b > g
+
+
+def test_a_single_point_gets_a_place_zoom_not_the_closest():
+    """FRONTEND-44: the publish map with one point is framed like a place."""
+    frame = fit_frame([_LIVADIA], width=377, height=300, scale=2)
+    assert frame.zoom == 14
+    assert (frame.center_lng, frame.center_lat) == _LIVADIA
+    same_spot = fit_frame([_LIVADIA, _LIVADIA], width=377, height=300, scale=2)
+    assert same_spot.zoom == 14

@@ -1059,3 +1059,25 @@ async def test_the_editor_saves_day_breaks_and_the_car_tag_with_the_draft(
             assert refused.status_code == 422, refused.text
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_points_map_never_shows_unpublished_places(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """FRONTEND-44: the map of an author's points draws published places only."""
+    client, _app = publication_context
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            hidden = await conn.scalar(
+                text("SELECT id FROM places WHERE publication_status <> 'published' LIMIT 1")
+            )
+    finally:
+        await engine.dispose()
+    for ids in (str(uuid4()), "not-an-id", ",".join(str(uuid4()) for _ in range(23))):
+        response = await client.get(f"/api/v1/maps/static/points/osm2/{ids}")
+        assert response.status_code == 404, response.text
+    if hidden is not None:
+        response = await client.get(f"/api/v1/maps/static/points/osm2/{hidden}")
+        assert response.status_code == 404, response.text

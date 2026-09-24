@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw, ImageFont
 TILE_SIZE = 256
 MIN_ZOOM = 1
 MAX_ZOOM = 18
+SINGLE_POINT_ZOOM = 14
 # Breathing room around fitted points, as in the app's MapProjection.fit.
 FIT_PADDING = 56
 # OpenMapTiles schema (CC-BY) and OSM data (ODbL) both require a visible credit.
@@ -75,11 +76,17 @@ def world_xy(lng: float, lat: float, zoom: int) -> tuple[float, float]:
 
 
 def fit_frame(points: Sequence[Point], *, width: int, height: int, scale: int) -> MapFrame:
-    """Largest zoom that shows every point; same rule as the app's fit."""
+    """Largest zoom that shows every point; same rule as the app's fit.
+
+    A single point (or several on the same spot) gets SINGLE_POINT_ZOOM,
+    like a place's own map, not the closest zoom there is.
+    """
     lngs = [p[0] for p in points]
     lats = [p[1] for p in points]
     center_lat = (min(lats) + max(lats)) / 2
     center_lng = (min(lngs) + max(lngs)) / 2
+    if max(lngs) == min(lngs) and max(lats) == min(lats):
+        return MapFrame(center_lat, center_lng, SINGLE_POINT_ZOOM, width, height, scale)
     usable_w = max(width - FIT_PADDING * 2, 1)
     usable_h = max(height - FIT_PADDING * 2, 1)
     best = MIN_ZOOM

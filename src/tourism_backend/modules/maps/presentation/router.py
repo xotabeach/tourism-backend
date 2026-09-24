@@ -8,6 +8,9 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Query, Request, Response
+from geoalchemy2 import Geometry
+from geoalchemy2.functions import ST_X, ST_Y
+from sqlalchemy import cast, select
 
 from tourism_backend.api.deps import DbSession, SettingsDep
 from tourism_backend.api.errors import AppError
@@ -20,6 +23,7 @@ from tourism_backend.modules.maps.infrastructure.osm_static import (
     fit_frame,
 )
 from tourism_backend.modules.places.application import service as places_service
+from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.route_builder.infrastructure.two_gis_routing import (
     two_gis_routing_stats,
 )
@@ -472,6 +476,63 @@ async def place_static_map(
         ("pt", f"{place.lat:.6f},{place.lng:.6f}~k:p~c:rd~s:l"),
     ]
     return await _fetch(settings=settings, params=params, request=request)
+
+
+@router.get("/maps/static/points/{version}/{place_ids}")
+async def points_static_map(
+    version: str,
+    place_ids: str,
+    session: DbSession,
+    settings: SettingsDep,
+    request: Request,
+    width: int = Query(default=880, ge=120, le=1280),
+    height: int = Query(default=420, ge=90, le=1280),
+    scale: int = Query(default=2, ge=1, le=2),
+    center_lat: float | None = Query(default=None, ge=-90, le=90),
+    center_lng: float | None = Query(default=None, ge=-180, le=180),
+    zoom: int | None = Query(default=None, ge=1, le=18),
+    pins: str = Query(default="numbered", pattern="^(numbered|none)$"),
+) -> Response:
+    """Basemap with the places an author has put down, before any routing.
+
+    The publish form shows the real map from the first point on and draws
+    the road line over it once the preview is routed (FRONTEND-44). Only
+    published places are drawn: an unpublished id is left out, never shown.
+    """
+    del version  # busts caches only, like the route endpoint (D22)
+    try:
+        ids = [UUID(raw) for raw in place_ids.split(",") if raw.strip()]
+    except ValueError as exc:
+        raise AppError(
+            code="map_preview_unavailable", message="Invalid place ids", status_code=404
+        ) from exc
+    if not 1 <= len(ids) <= 22:
+        raise AppError(code="map_preview_unavailable", message="Invalid place ids", status_code=404)
+    geom = cast(Place.location, Geometry)
+    rows = (
+        await session.execute(
+            select(Place.id, ST_X(geom), ST_Y(geom)).where(
+                Place.id.in_(set(ids)), Place.publication_status == "published"
+            )
+        )
+    ).all()
+    by_id = {place_id: (float(lng), float(lat)) for place_id, lng, lat in rows}
+    points = [by_id[place_id] for place_id in ids if place_id in by_id]
+    if not points:
+        raise AppError(code="map_preview_unavailable", message="No places to show", status_code=404)
+    has_center = center_lat is not None and center_lng is not None
+    return await route_map_response(
+        settings=settings,
+        request=request,
+        line=(),
+        stops=points,
+        width=width,
+        height=height,
+        scale=scale,
+        center=(center_lat, center_lng) if has_center else None,  # type: ignore[arg-type]
+        zoom=zoom if has_center else None,
+        pins=pins,
+    )
 
 
 @router.get("/maps/two-gis/status")
