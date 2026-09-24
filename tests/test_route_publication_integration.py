@@ -981,3 +981,81 @@ async def test_author_day_boundaries_survive_a_save_and_can_be_reset(
         assert await day_sources() == [(d["day_index"], "auto") for d in reset.json()]
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_the_editor_saves_day_breaks_and_the_car_tag_with_the_draft(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """Spec 14a/14b: one save carries the author's days and their way of travel."""
+    client, _app = publication_context
+    tokens = await _login(client, f"+7909{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    places = await client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 3})
+    place_ids = [item["id"] for item in places.json()["items"][:3]]
+    payload = {
+        "name": "На машине с ночёвкой",
+        "description": "",
+        "place_ids": place_ids,
+        "filters": ["На машине"],
+        "day_breaks": [place_ids[1]],
+    }
+    saved = await client.post("/api/v1/routes/drafts", headers=headers, json=payload)
+    assert saved.status_code == 200, saved.text
+    route_id = saved.json()["id"]
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "SELECT transport_mode, base_mode, days_manual, "
+                        "accessibility->'routing'->>'transport_mode' FROM routes WHERE id = :id"
+                    ),
+                    {"id": route_id},
+                )
+            ).one()
+            days = (
+                await conn.execute(
+                    text(
+                        "SELECT day_index, boundary_source FROM route_days "
+                        "WHERE route_id = :id ORDER BY day_index"
+                    ),
+                    {"id": route_id},
+                )
+            ).all()
+        assert tuple(row) == ("car", "car", True, "car")
+        assert [tuple(d) for d in days] == [(1, "manual"), (2, "manual")]
+
+        editable = await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)
+        assert editable.status_code == 200, editable.text
+        assert editable.json()["day_breaks"] == [place_ids[1]]
+
+        # Without the key (an older app) the days stay; empty resets them.
+        kept = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**{k: v for k, v in payload.items() if k != "day_breaks"}, "route_id": route_id},
+        )
+        assert kept.status_code == 200, kept.text
+        editable = await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)
+        assert editable.json()["day_breaks"] == [place_ids[1]]
+        reset = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**payload, "route_id": route_id, "day_breaks": []},
+        )
+        assert reset.status_code == 200, reset.text
+        editable = await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)
+        assert editable.json()["day_breaks"] == []
+
+        for bad in ([place_ids[2]], [place_ids[1], place_ids[0]], [str(uuid4())]):
+            refused = await client.post(
+                "/api/v1/routes/drafts",
+                headers=headers,
+                json={**payload, "route_id": route_id, "day_breaks": bad},
+            )
+            assert refused.status_code == 422, refused.text
+    finally:
+        await engine.dispose()

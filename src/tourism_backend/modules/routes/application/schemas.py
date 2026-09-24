@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 RoutePublicationStatus = Literal[
     "draft",
@@ -47,6 +47,23 @@ class UserRouteDraftIn(BaseModel):
     filters: list[str] = Field(default_factory=list, max_length=20)
     pace: Literal["calm", "moderate", "active"] = "calm"
     difficulty: int = Field(default=3, ge=1, le=5)
+    # Places after which the author ends a day (spec 14a). Absent: keep the
+    # days as they are (older apps); empty: split by the norms again.
+    day_breaks: list[UUID] | None = Field(default=None, max_length=21)
+
+    @model_validator(mode="after")
+    def breaks_follow_the_stops(self) -> "UserRouteDraftIn":
+        if not self.day_breaks:
+            return self
+        order = {place_id: index for index, place_id in enumerate(self.place_ids)}
+        positions = [order.get(place_id) for place_id in self.day_breaks]
+        if (
+            any(position is None for position in positions)
+            or positions != sorted(set(positions))  # type: ignore[type-var]
+            or positions[-1] == len(self.place_ids) - 1
+        ):
+            raise ValueError("day_breaks must be route places in order, before the last one")
+        return self
 
     @field_validator("client_draft_id")
     @classmethod
@@ -125,6 +142,8 @@ class UserRouteEditableOut(BaseModel):
     difficulty: int
     media: list["UserRouteMediaOut"]
     updated_at: datetime
+    #: Places after which the author ended a day; empty when split by norms.
+    day_breaks: list[UUID] = Field(default_factory=list)
 
 
 class UserRouteMediaSyncIn(BaseModel):
