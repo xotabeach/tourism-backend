@@ -267,3 +267,27 @@ async def test_a_walk_with_one_pathless_pair_keeps_its_other_legs() -> None:
     assert route.warnings == ["leg_not_routed:0"]
     assert not route.result.synthetic
     assert len(route.result.legs) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_editors_car_park_wins_over_the_nearest_one() -> None:
+    chosen = (33.9170, 44.7450)
+    fortress = RouteWaypoint(lng=_FORTRESS[0], lat=_FORTRESS[1], parking=chosen)
+    route = await build_driven_route(
+        [RouteWaypoint(lng=_PALACE[0], lat=_PALACE[1]), fortress],
+        router=_FakeRouter(),
+        parkings=_car_parks,
+    )
+    drive, approach = route.segments
+    assert drive.points[-1] == chosen
+    assert approach.points == (chosen, _FORTRESS)
+
+
+def test_car_park_coordinates_are_read_as_copied_from_a_map() -> None:
+    from tourism_backend.modules.admin.presentation.route_structure_admin import parse_point
+
+    assert parse_point("44.742, 33.92") == (33.92, 44.742)
+    assert parse_point(" 44.742 ; 33.92 ") == (33.92, 44.742)
+    for bad in ("44.742", "a, b", "95, 33", "44.7, 33.9, 1"):
+        with pytest.raises(ValueError, match="."):
+            parse_point(bad)

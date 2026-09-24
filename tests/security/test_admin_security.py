@@ -1026,3 +1026,87 @@ def test_help_views_are_registered_and_their_template_exists() -> None:
     )
     env = Environment(loader=FileSystemLoader(str(templates)), autoescape=True)
     env.parse((templates / "sqladmin/support_help_index.html").read_text(encoding="utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_editors_set_days_and_car_parks_of_a_route(admin_client: AsyncClient) -> None:
+    """Spec 14a/14b: the admin page stores day breaks and car parks by place."""
+    headers = {"Origin": "http://test"}
+    phone = f"+7910{uuid4().int % 10_000_000:07d}"
+    await admin_client.post(
+        "/api/v1/auth/otp/request", json={"display_name": "Автор", "phone": phone}
+    )
+    verified = await admin_client.post(
+        "/api/v1/auth/otp/verify",
+        json={
+            "phone": phone,
+            "code": "1234",
+            "privacy_accepted": True,
+            "personal_data_accepted": True,
+        },
+    )
+    user_headers = {"Authorization": f"Bearer {verified.json()['access_token']}"}
+    places = await admin_client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 3})
+    place_ids = [item["id"] for item in places.json()["items"][:3]]
+    saved = await admin_client.post(
+        "/api/v1/routes/drafts",
+        headers=user_headers,
+        json={"name": "Для редакции", "place_ids": place_ids, "filters": ["На машине"]},
+    )
+    route_id = saved.json()["id"]
+
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+    page = await admin_client.get(f"/admin/route-structure?route_id={route_id}", headers=headers)
+    assert page.status_code == 200, page.text
+    assert "Для редакции" in page.text
+
+    bad = await admin_client.post(
+        f"/admin/route-structure?route_id={route_id}",
+        data={f"parking_{place_ids[1]}": "не координаты"},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert bad.status_code == 303
+    saved_form = await admin_client.post(
+        f"/admin/route-structure?route_id={route_id}",
+        data={f"break_{place_ids[0]}": "on", f"parking_{place_ids[1]}": "44.742, 33.92"},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert saved_form.status_code == 303, saved_form.text
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "SELECT day_breaks, parking_overrides, days_manual "
+                        "FROM routes WHERE id = :id"
+                    ),
+                    {"id": route_id},
+                )
+            ).one()
+            days = await conn.scalar(
+                text("SELECT count(*) FROM route_days WHERE route_id = :id"), {"id": route_id}
+            )
+            audit = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM admin_audit_events "
+                    "WHERE action = 'route.structure.update' AND entity_id = :id"
+                ),
+                {"id": route_id},
+            )
+        assert row.day_breaks == [place_ids[0]]
+        assert row.parking_overrides == {place_ids[1]: [33.92, 44.742]}
+        assert row.days_manual is True
+        assert days == 2
+        assert audit == 1
+    finally:
+        await engine.dispose()

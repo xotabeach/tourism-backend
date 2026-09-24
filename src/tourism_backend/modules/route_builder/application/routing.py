@@ -16,6 +16,9 @@ class RouteWaypoint:
     lat: float
     place_id: UUID | None = None
     label: str | None = None
+    # A car park an editor chose for this stop (spec 14b): a drive ends there
+    # and the walk starts, whatever the nearest street is.
+    parking: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)

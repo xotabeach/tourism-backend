@@ -24,9 +24,8 @@ import argparse
 import asyncio
 from typing import Any
 
-from geoalchemy2 import Geometry, WKTElement
-from geoalchemy2.functions import ST_X, ST_Y
-from sqlalchemy import cast, select, text
+from geoalchemy2 import WKTElement
+from sqlalchemy import select, text
 
 from tourism_backend.config import get_settings
 from tourism_backend.db.redis import create_redis_client
@@ -35,7 +34,6 @@ from tourism_backend.modules.admin.infrastructure import models as _admin_models
 from tourism_backend.modules.favorites.infrastructure import models as _favorites  # noqa: F401
 from tourism_backend.modules.geography.infrastructure import models as _geography  # noqa: F401
 from tourism_backend.modules.identity.infrastructure import models as _identity  # noqa: F401
-from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.recommendations.infrastructure import (
     models as _recommendations,  # noqa: F401
 )
@@ -44,15 +42,15 @@ from tourism_backend.modules.route_builder.application.routing import (
     RoutingError,
     RoutingResult,
     TransportMode,
-    routing_details,
 )
 from tourism_backend.modules.route_builder.infrastructure.routing_factory import (
     get_routing_provider,
 )
 from tourism_backend.modules.route_execution.infrastructure.models import RouteRoutingSnapshot
+from tourism_backend.modules.routes.application.rerouting import route_waypoints, store_routing
 from tourism_backend.modules.routes.application.structure import refresh_route_structure
 from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
-from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
+from tourism_backend.modules.routes.infrastructure.models import Route
 from tourism_backend.modules.subscriptions.infrastructure import (
     models as _subscription_models,  # noqa: F401
 )
@@ -65,66 +63,6 @@ def _mode(route: Route) -> TransportMode:
     # Car and mixed routes are driven with walks to what a car cannot reach
     # (spec 14b); the provider builds those segments.
     return segment_mode_for(route.transport_mode)
-
-
-async def _waypoints(session: Any, route_id: Any) -> list[RouteWaypoint]:
-    geom = cast(Place.location, Geometry)
-    rows = (
-        await session.execute(
-            select(Place.id, ST_X(geom), ST_Y(geom))
-            .join(RouteStop, RouteStop.place_id == Place.id)
-            .where(RouteStop.route_id == route_id)
-            .order_by(RouteStop.position)
-        )
-    ).all()
-    return [
-        RouteWaypoint(lng=float(lng), lat=float(lat), place_id=place_id)
-        for place_id, lng, lat in rows
-        if lng is not None and lat is not None
-    ]
-
-
-def _straight(waypoints: list[RouteWaypoint]) -> str:
-    return "LINESTRING(" + ", ".join(f"{p.lng:.6f} {p.lat:.6f}" for p in waypoints) + ")"
-
-
-def _store_route(
-    route: Route,
-    waypoints: list[RouteWaypoint],
-    result: RoutingResult | None,
-    data_version: str | None,
-) -> None:
-    meta = dict((route.accessibility or {}).get("routing") or {})
-    for stale in ("legs", "segments", "steep_segment", "backfilled", "road_types"):
-        meta.pop(stale, None)
-    if result is None or not result.geometry_wkt:
-        route.geometry = WKTElement(_straight(waypoints), srid=4326)
-        meta.update(
-            {
-                "provider": None,
-                "synthetic": True,
-                "geometry_available": False,
-                "quality_status": "unverified",
-                "provider_version": data_version,
-            }
-        )
-    else:
-        route.geometry = WKTElement(result.geometry_wkt, srid=4326)
-        route.distance_meters = result.total_distance_meters
-        meta.update(
-            {
-                "provider": result.provider,
-                "synthetic": False,
-                "geometry_available": True,
-                "distance_meters": result.total_distance_meters,
-                "movement_duration_seconds": result.total_duration_seconds,
-                "road_types": list(result.road_types),
-                **routing_details(result, stop_count=len(waypoints), data_version=data_version),
-            }
-        )
-    accessibility = dict(route.accessibility or {})
-    accessibility["routing"] = meta
-    route.accessibility = accessibility
 
 
 async def _clear_routing_cache(settings: Any) -> None:
@@ -167,7 +105,7 @@ async def main() -> None:
                 ).all()
             )
             for route in routes:
-                waypoints = await _waypoints(session, route.id)
+                waypoints = await route_waypoints(session, route)
                 if len(waypoints) < 2:
                     continue
                 old_provider = ((route.accessibility or {}).get("routing") or {}).get("provider")
@@ -189,7 +127,7 @@ async def main() -> None:
                         f"{result.total_distance_meters / 1000:.1f} km (was {old_provider})"
                     )
                 if args.apply:
-                    _store_route(route, waypoints, result, version)
+                    store_routing(route, waypoints, result, version)
                     await refresh_route_structure(session, route)
 
             # Routes first, in their own transaction: snapshots are guarded
