@@ -1139,7 +1139,7 @@ async def test_editors_suspend_lines_and_keep_timetables(admin_client: AsyncClie
         assert listing.status_code == 200, listing.text
         assert "Троллейбус для теста" in listing.text
         # The menu opens the list; the line page has no entry of its own.
-        assert "/admin/transit\"" in listing.text
+        assert '/admin/transit"' in listing.text
         assert "Линия транспорта" not in listing.text
         page = f"/admin/transit/line?id={line_id}"
 
