@@ -87,6 +87,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
 )
 from tourism_backend.modules.admin.presentation.route_structure_admin import RouteStructureAdmin
 from tourism_backend.modules.admin.presentation.stats_admin import StatsAdmin
+from tourism_backend.modules.admin.presentation.transit_admin import TransitAdmin, TransitLineAdmin
 from tourism_backend.modules.content.application import article_comment_service, article_service
 from tourism_backend.modules.content.infrastructure.models import (
     Article,
@@ -3795,6 +3796,8 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(AdminAuditEventAdmin)
     admin.add_view(AchievementsOperationsAdmin)
     admin.add_view(RouteStructureAdmin)
+    admin.add_view(TransitAdmin)
+    admin.add_view(TransitLineAdmin)
     admin.add_view(AchievementAdmin)
     admin.add_view(AchievementActionAdmin)
     admin.add_view(UserAchievementAdmin)
@@ -3833,5 +3836,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         AntiFraudConfigAdmin.session_maker = session_maker
         AchievementsOperationsAdmin.session_maker = session_maker
         RouteStructureAdmin.session_maker = session_maker
+        TransitAdmin.session_maker = session_maker
+        TransitLineAdmin.session_maker = session_maker
         StatsAdmin.session_maker = session_maker
         SupportHelpIndexAdmin.session_maker = session_maker

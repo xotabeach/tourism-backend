@@ -203,6 +203,19 @@ class DeepSeekProvider:
             clarification_reason=structured.clarification_reason,
         )
 
+    async def complete_text(self, *, system: str, user: str, max_tokens: int) -> str:
+        """One bounded JSON request for admin helpers (spec 12b, D8)."""
+        async with self._client() as client:
+            return await self._complete(
+                client,
+                messages=[
+                    ChatMessage(role="system", content=system),
+                    ChatMessage(role="user", content=user),
+                ],
+                max_tokens=max_tokens,
+                json_mode=True,
+            )
+
     async def draft_place_content(
         self,
         *,

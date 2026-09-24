@@ -1110,3 +1110,125 @@ async def test_editors_set_days_and_car_parks_of_a_route(admin_client: AsyncClie
         assert audit == 1
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_editors_suspend_lines_and_keep_timetables(admin_client: AsyncClient) -> None:
+    """Spec 12b, section 2: line status and timetable periods from the admin."""
+    headers = {"Origin": "http://test"}
+    line_id = uuid4()
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO transit_lines (id, osm_id, kind, ref, name, status, "
+                    "needs_mapping, created_at, updated_at) VALUES (:id, :osm, 'trolleybus', "
+                    "'51', 'Троллейбус для теста', 'active', false, now(), now())"
+                ),
+                {"id": line_id, "osm": f"manual-{line_id.hex[:20]}"},
+            )
+        login = await admin_client.post(
+            "/admin/login",
+            data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert login.status_code in {302, 303}, login.text
+        listing = await admin_client.get("/admin/transit?q=для теста", headers=headers)
+        assert listing.status_code == 200, listing.text
+        assert "Троллейбус для теста" in listing.text
+        # The menu opens the list; the line page has no entry of its own.
+        assert "/admin/transit\"" in listing.text
+        assert "Линия транспорта" not in listing.text
+        page = f"/admin/transit/line?id={line_id}"
+
+        no_reason = await admin_client.post(
+            page,
+            data={"action": "line", "status": "suspended"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert no_reason.status_code == 303
+        suspended = await admin_client.post(
+            page,
+            data={
+                "action": "line",
+                "status": "suspended",
+                "suspend_reason": "Ремонт",
+                "speed_kmh": "18",
+            },
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert suspended.status_code == 303
+        bad_period = await admin_client.post(
+            page,
+            data={"action": "schedule", "title": "Будни", "day_0": "on"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert bad_period.status_code == 303
+        period = await admin_client.post(
+            page,
+            data={
+                "action": "schedule",
+                "title": "Будни",
+                "day_0": "on",
+                "day_1": "on",
+                "headway_minutes": "20",
+                "first_departure": "06:00",
+                "last_departure": "22:00",
+                "source": "звонок перевозчику",
+                "checked_at": "2026-09-01",
+            },
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert period.status_code == 303
+        shown = await admin_client.get(page, headers=headers)
+        assert shown.status_code == 200, shown.text
+        assert "каждые 20 мин" in shown.text
+
+        async with engine.connect() as conn:
+            line = (
+                await conn.execute(
+                    text(
+                        "SELECT status, suspend_reason, speed_kmh FROM transit_lines WHERE id = :id"
+                    ),
+                    {"id": line_id},
+                )
+            ).one()
+            schedule_id = await conn.scalar(
+                text("SELECT id FROM transit_schedules WHERE line_id = :id"), {"id": line_id}
+            )
+        assert (line.status, line.suspend_reason, line.speed_kmh) == ("suspended", "Ремонт", 18)
+        assert schedule_id is not None
+
+        edit = await admin_client.get(f"{page}&edit={schedule_id}", headers=headers)
+        assert 'value="20"' in edit.text
+        removed = await admin_client.post(
+            page,
+            data={"action": "delete", "schedule_id": str(schedule_id)},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert removed.status_code == 303
+        async with engine.connect() as conn:
+            left = await conn.scalar(
+                text("SELECT count(*) FROM transit_schedules WHERE line_id = :id"),
+                {"id": line_id},
+            )
+            audit = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM admin_audit_events WHERE action LIKE 'transit.%' "
+                    "AND (entity_id = :line OR entity_id = :schedule)"
+                ),
+                {"line": str(line_id), "schedule": str(schedule_id)},
+            )
+        assert left == 0
+        assert audit == 3
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM transit_lines WHERE id = :id"), {"id": line_id})
+        await engine.dispose()

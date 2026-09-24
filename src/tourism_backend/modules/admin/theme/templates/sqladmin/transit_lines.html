@@ -1,0 +1,40 @@
+{% extends "sqladmin/layout.html" %}
+{% block content %}
+<div class="card"><div class="card-body">
+<h2>Линии и расписания</h2>
+<form method="get" class="row g-2 mb-3">
+<div class="col-auto"><input class="form-control" name="q" value="{{ filters.q }}" placeholder="Номер, название, перевозчик"></div>
+<div class="col-auto"><select class="form-select" name="kind"><option value="">Все виды</option>
+{% for key, label in kinds.items() %}<option value="{{ key }}" {% if filters.kind == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+</select></div>
+<div class="col-auto"><select class="form-select" name="status"><option value="">Любой статус</option>
+{% for key, label in statuses.items() %}<option value="{{ key }}" {% if filters.status == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+</select></div>
+<div class="col-auto"><select class="form-select" name="attention"><option value="">Все линии</option>
+<option value="no_schedule" {% if filters.attention == "no_schedule" %}selected{% endif %}>Без расписания</option>
+<option value="stale" {% if filters.attention == "stale" %}selected{% endif %}>Проверка старше 90 дней</option>
+<option value="mapping" {% if filters.attention == "mapping" %}selected{% endif %}>Нужна разметка</option>
+</select></div>
+<div class="col-auto"><button class="btn btn-secondary" type="submit">Показать</button></div>
+</form>
+<p class="text-muted">Найдено: {{ total }}{% if total > lines|length %}, показаны первые {{ lines|length }}{% endif %}.</p>
+<table class="table table-sm">
+<thead><tr><th>Вид</th><th>Номер</th><th>Название</th><th>Перевозчик</th><th>Статус</th><th>Расписание</th></tr></thead>
+<tbody>
+{% for row in lines %}
+<tr>
+<td>{{ row.kind }}</td>
+<td><b>{{ row.line.ref or "" }}</b></td>
+<td><a href="{{ url_for('admin:view-transit-line') }}?id={{ row.line.id }}">{{ row.line.name }}</a>
+{% if row.line.needs_mapping %}<br><small class="text-warning">нужна разметка остановок</small>{% endif %}</td>
+<td><small>{{ row.line.operator or "" }}</small></td>
+<td>{{ row.status }}{% if row.line.suspend_reason %}<br><small class="text-muted">{{ row.line.suspend_reason }}</small>{% endif %}</td>
+<td>{% if row.periods %}периодов: {{ row.periods }}, проверено {{ row.checked_at }}
+{% if row.stale %}<br><small class="text-danger">проверка старше 90 дней</small>{% endif %}
+{% else %}<small class="text-muted">нет</small>{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div></div>
+{% endblock %}
