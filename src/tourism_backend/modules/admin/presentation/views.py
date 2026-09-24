@@ -74,6 +74,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_review_media_gallery,
     format_review_status,
     format_route_fk,
+    format_route_name_with_structure,
     format_route_publication_status,
     format_sms_delivery_status,
     format_ticket_awaiting,
@@ -84,6 +85,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_user_fk,
     format_user_id_peek,
 )
+from tourism_backend.modules.admin.presentation.route_structure_admin import RouteStructureAdmin
 from tourism_backend.modules.admin.presentation.stats_admin import StatsAdmin
 from tourism_backend.modules.content.application import article_comment_service, article_service
 from tourism_backend.modules.content.infrastructure.models import (
@@ -1414,6 +1416,7 @@ class RouteAdmin(ModelView, model=Route):
     column_formatters_detail = {
         Route.publication_status: format_route_publication_status,
         Route.owner_user_id: format_user_fk,
+        Route.name: format_route_name_with_structure,
     }
     column_searchable_list = [Route.name, Route.description]
     column_sortable_list = [
@@ -3791,6 +3794,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(AdminRoleBindingAdmin)
     admin.add_view(AdminAuditEventAdmin)
     admin.add_view(AchievementsOperationsAdmin)
+    admin.add_view(RouteStructureAdmin)
     admin.add_view(AchievementAdmin)
     admin.add_view(AchievementActionAdmin)
     admin.add_view(UserAchievementAdmin)
@@ -3828,5 +3832,6 @@ def register_views(admin: Any, settings: Settings) -> None:
         SmsConfigAdmin.session_maker = session_maker
         AntiFraudConfigAdmin.session_maker = session_maker
         AchievementsOperationsAdmin.session_maker = session_maker
+        RouteStructureAdmin.session_maker = session_maker
         StatsAdmin.session_maker = session_maker
         SupportHelpIndexAdmin.session_maker = session_maker

@@ -133,6 +133,9 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     # Place ids after which the author or an editor ended a day, in route
     # order; stops themselves are recreated on every save (spec 14a).
     day_breaks: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    # Car parks editors chose, {place_id: [lng, lat]} (spec 14b); kept by
+    # place so they survive the stops being recreated.
+    parking_overrides: Mapped[dict[str, list[float]] | None] = mapped_column(JSONB, nullable=True)
     has_hard_day: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )

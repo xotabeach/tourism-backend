@@ -165,6 +165,8 @@ async def _routed(
 
 async def _access(router: SegmentRouter, parkings: ParkingLookup, stop: RouteWaypoint) -> _Access:
     here = (stop.lng, stop.lat)
+    if stop.parking is not None:
+        return await _access_from(router, stop.parking, here)
     try:
         snapped = await router.locate_car(stop)
     except RoutingError:
@@ -188,6 +190,17 @@ async def _access(router: SegmentRouter, parkings: ParkingLookup, stop: RouteWay
         return _Access(point=start, walk=guess, needs_review=True)
     distance, parking = min(reachable)
     if distance < APPROACH_MIN_METERS:
+        return _Access(point=parking)
+    walk = await _routed(router, parking, here, mode="walk", role="approach")
+    if walk is None:
+        walk = _straight(parking, here, leg_index=0, seq=0, mode="walk", role="approach")
+        return _Access(point=parking, walk=walk, needs_review=True)
+    return _Access(point=parking, walk=walk)
+
+
+async def _access_from(router: SegmentRouter, parking: _Point, here: _Point) -> _Access:
+    """The editor's car park for a stop: drive there, walk the rest."""
+    if _meters(parking, here) < APPROACH_MIN_METERS:
         return _Access(point=parking)
     walk = await _routed(router, parking, here, mode="walk", role="approach")
     if walk is None:
