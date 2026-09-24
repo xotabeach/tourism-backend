@@ -38,6 +38,7 @@ from tourism_backend.modules.subscriptions.infrastructure import (
 )
 from tourism_backend.modules.support.infrastructure import help_models as support_help_models
 from tourism_backend.modules.support.infrastructure import models as support_models
+from tourism_backend.modules.transit.infrastructure import models as transit_models
 
 config = context.config
 
@@ -68,6 +69,7 @@ _ = (
     moderation_models,
     runtime_config_models,
     content_models,
+    transit_models,
 )
 target_metadata = Base.metadata
 
