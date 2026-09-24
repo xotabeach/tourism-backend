@@ -633,7 +633,10 @@ async def test_run_start_keeps_the_route_days_and_segments_in_its_snapshot(
             )
             route_days = (
                 await conn.execute(
-                    text("SELECT day_index, boundary_source FROM route_days WHERE route_id = :id"),
+                    text(
+                        "SELECT day_index, boundary_source FROM route_days "
+                        "WHERE route_id = :id ORDER BY day_index"
+                    ),
                     {"id": route_id},
                 )
             ).all()
@@ -660,13 +663,17 @@ async def test_run_start_keeps_the_route_days_and_segments_in_its_snapshot(
                 {"id": snapshot_id},
             )
         assert route_segments == stop_count - 1
-        assert [tuple(row) for row in route_days] == [(1, "auto")]
+        # Days follow the route's norms (spec 14a): numbered 1..n, all automatic.
+        assert [row.day_index for row in route_days] == list(range(1, len(route_days) + 1))
+        assert {row.boundary_source for row in route_days} == {"auto"}
         assert [row.leg_index for row in snapshot_segments] == list(range(stop_count - 1))
         assert {row.role for row in snapshot_segments} <= {"main"}
         assert {row.mode for row in snapshot_segments} <= {"walk", "car"}
-        assert len(snapshot_days) == 1
-        assert snapshot_days[0].day_index == 1
-        assert snapshot_days[0].last_position >= snapshot_days[0].first_position
+        assert len(snapshot_days) == len(route_days)
+        ordered = sorted(snapshot_days, key=lambda day: day.day_index)
+        assert ordered[0].first_position == 1
+        for before, after in zip(ordered, ordered[1:], strict=False):
+            assert after.first_position == before.last_position + 1
         assert base_mode in {"walk", "car", "mixed"}
 
         with pytest.raises(DBAPIError):

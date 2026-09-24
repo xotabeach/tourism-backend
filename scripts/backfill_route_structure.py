@@ -6,7 +6,8 @@ the legs its routing already has; the router is not called. A run start does
 the same for its route, so this only saves the first start of each route the
 work, and lets the admin and the API see the rows at once.
 
-Dry-run by default: prints the counts per base mode.
+Dry-run by default: prints every route of more than one day and the counts
+per base mode.
 
   uv run python scripts/backfill_route_structure.py
   uv run python scripts/backfill_route_structure.py --apply
@@ -52,9 +53,15 @@ async def main() -> None:
         async with factory() as session:
             routes = list((await session.scalars(select(Route).order_by(Route.created_at))).all())
             for route in routes:
-                segments, _days = await refresh_route_structure(session, route)
+                segments, days = await refresh_route_structure(session, route)
                 modes[route.base_mode] += 1
                 origins.update(segment.origin for segment in segments)
+                if len(days) > 1 or any(day.overloaded for day in days):
+                    overloaded = sum(day.overloaded for day in days)
+                    print(
+                        f"  {route.name}: {len(days)} дн."
+                        + (f", перегружено {overloaded}" if overloaded else "")
+                    )
             if args.apply:
                 await session.commit()
             else:

@@ -278,6 +278,20 @@ class RouteSegmentOut(BaseModel):
     geometry: RouteGeometryOut | None = None
 
 
+class RouteDayOut(BaseModel):
+    """A continuous run of stops walked or driven in one day (spec 14a)."""
+
+    day_index: int = Field(ge=1)
+    first_stop_id: UUID
+    last_stop_id: UUID
+    #: ``auto`` from the route's norms, ``manual`` once someone moved it.
+    boundary_source: str = "auto"
+    #: «Ночлег в районе: …»; none on the last day.
+    overnight_note: str | None = None
+    #: A leg longer than a whole day leads into it (spec 14, D4).
+    overloaded: bool = False
+
+
 class RouteDetailOut(RouteListItemOut):
     description: str | None
     budget_notes: str | None
@@ -294,6 +308,8 @@ class RouteDetailOut(RouteListItemOut):
     needs_public_transport: bool = False
     #: Every leg's segments in order; empty until the route has them.
     segments: list[RouteSegmentOut] = Field(default_factory=list)
+    #: Days in order; empty until the route has them, one for a short route.
+    days: list[RouteDayOut] = Field(default_factory=list)
 
 
 class RouteListOut(BaseModel):

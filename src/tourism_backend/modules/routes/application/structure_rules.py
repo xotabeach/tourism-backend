@@ -99,6 +99,8 @@ class PlannedDay:
     first_stop_id: UUID
     last_stop_id: UUID
     boundary_source: Literal["auto", "manual"] = "auto"
+    overloaded: bool = False
+    overnight_note: str | None = None
 
 
 def _leg_numbers(item: object) -> tuple[int, int] | None:
