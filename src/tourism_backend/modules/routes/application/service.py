@@ -1800,24 +1800,34 @@ async def preview_user_route_draft(
             )
         except RoutingError:
             _logger.warning("route_draft_preview_routing_failed", exc_info=True)
-            routing = await StubRoutingProvider().route(
-                waypoints=waypoints,
-                transport_mode=transport_mode,
-            )
+            try:
+                routing = await StubRoutingProvider().route(
+                    waypoints=waypoints,
+                    transport_mode=transport_mode,
+                )
+            except RoutingError:
+                # Before D24 a walk leg over 25 km was refused here as well,
+                # and the preview answered 500 (FRONTEND-44): never again.
+                _logger.warning("route_draft_preview_unavailable", exc_info=True)
+                routing = None
         straight = ", ".join(f"{point.lng:.6f} {point.lat:.6f}" for point in waypoints)
-        geometry_wkt = routing.geometry_wkt or f"LINESTRING({straight})"
-        meta = {
-            "provider": routing.provider,
-            "synthetic": routing.synthetic,
-            "distance_meters": routing.total_distance_meters,
-            "movement_duration_seconds": routing.total_duration_seconds,
-            "warnings": list(routing.warnings),
-            "road_types": list(routing.road_types),
-            "quality_status": "unverified",
-            **routing_details(
-                routing, stop_count=len(waypoints), data_version=settings.osm_data_version
-            ),
-        }
+        geometry_wkt = (routing.geometry_wkt if routing else None) or f"LINESTRING({straight})"
+        meta = (
+            {"provider": None, "synthetic": True, "quality_status": "unverified"}
+            if routing is None
+            else {
+                "provider": routing.provider,
+                "synthetic": routing.synthetic,
+                "distance_meters": routing.total_distance_meters,
+                "movement_duration_seconds": routing.total_duration_seconds,
+                "warnings": list(routing.warnings),
+                "road_types": list(routing.road_types),
+                "quality_status": "unverified",
+                **routing_details(
+                    routing, stop_count=len(waypoints), data_version=settings.osm_data_version
+                ),
+            }
+        )
         await store_routing_line(
             redis,
             fingerprint,
