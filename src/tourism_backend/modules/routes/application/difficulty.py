@@ -337,3 +337,45 @@ def reward_multiplier(level: int | None) -> float:
     if level is None:
         return 1.0
     return REWARD_MULTIPLIERS[_clamp(level)]
+
+
+# The profile's difficulty is a ceiling on the 1..5 scale (spec 17, D16).
+PROFILE_CEILINGS: dict[str, int] = {"easy": 2, "moderate": 3, "hard": 4}
+# «На транспорте» (by car) people are matched by how much they must walk.
+CAR_PROFILE_WALK_CEILING = 2
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileFit:
+    score: float
+    reason: str | None
+    #: Two steps or more above the ceiling: left out of matching (D12).
+    excluded: bool
+
+
+def profile_fit(
+    *,
+    preferred_difficulty: str | None,
+    preferred_transport: str | None,
+    level: int | None,
+    walk_level: int | None,
+) -> ProfileFit | None:
+    """How a route's difficulty suits a profile; None when the profile has
+    nothing to say about it (D12, D16)."""
+    wanted = (preferred_difficulty or "").casefold().strip()
+    if wanted in PROFILE_CEILINGS:
+        ceiling, compared, may_exclude = PROFILE_CEILINGS[wanted], level, True
+    elif (preferred_transport or "").casefold().strip() == "car":
+        ceiling, compared, may_exclude = CAR_PROFILE_WALK_CEILING, walk_level, False
+    else:
+        return None
+    if compared is None:
+        return ProfileFit(0.5, None, False)
+    over = compared - ceiling
+    if over >= 2:
+        return ProfileFit(0.0, None, may_exclude)
+    if over == 1:
+        return ProfileFit(0.4, "сложнее, чем вы любите", False)
+    if compared <= ceiling - 2:
+        return ProfileFit(0.7, None, False)
+    return ProfileFit(1.0, "сложность из профиля", False)

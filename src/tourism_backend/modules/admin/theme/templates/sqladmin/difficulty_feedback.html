@@ -1,0 +1,30 @@
+{% extends "sqladmin/layout.html" %}
+{% block content %}
+<div class="card mb-3"><div class="card-body">
+<h2>Сложность: отзывы после прохождения</h2>
+<p class="text-muted">Ответов всего: {{ answers }}. Уровень берётся из расчёта на момент старта прохождения; «без расчёта» у прохождений, начатых до спеки 17 или по маршрутам с неполными данными.</p>
+<table class="table table-sm">
+<thead><tr><th>Уровень</th><th>Ответов</th>{% for key, label in labels.items() %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% for row in levels %}
+<tr><td>{{ row.level or "без расчёта" }}</td><td>{{ row.total }}</td>
+{% for key in labels %}<td>{{ row[key] }}{% if row.total %} <small class="text-muted">({{ (100 * row[key] / row.total) | round | int }}%)</small>{% endif %}</td>{% endfor %}</tr>
+{% endfor %}
+</tbody>
+</table>
+</div></div>
+<div class="card"><div class="card-body">
+<h3>Маршруты, которые чаще оказываются сложнее</h3>
+<p class="text-muted">Больше 40% ответов «Сложнее» при пяти и более ответах. Формула сама не меняется: проверьте маршрут и при необходимости поставьте редакционную оценку.</p>
+{% if flagged %}
+<table class="table table-sm">
+<thead><tr><th>Маршрут</th><th>Уровень</th><th>Ответов</th><th>Сложнее</th></tr></thead>
+<tbody>
+{% for row in flagged %}
+<tr><td>{{ row.name }}</td><td>{{ row.level or "—" }}</td><td>{{ row.total }}</td><td>{{ row.harder }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}<p>Пока таких нет.</p>{% endif %}
+</div></div>
+{% endblock %}

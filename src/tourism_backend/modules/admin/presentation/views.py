@@ -50,6 +50,7 @@ from tourism_backend.modules.admin.presentation.datetime_fmt import (
     ADMIN_COLUMN_TYPE_FORMATTERS,
     format_moscow_plain,
 )
+from tourism_backend.modules.admin.presentation.difficulty_admin import DifficultyFeedbackAdmin
 from tourism_backend.modules.admin.presentation.filters import (
     AwaitingOperatorReplyFilter,
     OtpLinkedUserIdFilter,
@@ -3811,6 +3812,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(AdminAuditEventAdmin)
     admin.add_view(AchievementsOperationsAdmin)
     admin.add_view(RouteStructureAdmin)
+    admin.add_view(DifficultyFeedbackAdmin)
     admin.add_view(TransitAdmin)
     admin.add_view(TransitLineAdmin)
     admin.add_view(AchievementAdmin)
@@ -3851,6 +3853,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         AntiFraudConfigAdmin.session_maker = session_maker
         AchievementsOperationsAdmin.session_maker = session_maker
         RouteStructureAdmin.session_maker = session_maker
+        DifficultyFeedbackAdmin.session_maker = session_maker
         TransitAdmin.session_maker = session_maker
         TransitLineAdmin.session_maker = session_maker
         StatsAdmin.session_maker = session_maker

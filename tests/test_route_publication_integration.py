@@ -430,6 +430,7 @@ async def test_route_is_editable_from_another_device_and_requeues_when_live(
             "filters": ["Природа", "С детьми"],
             "pace": "moderate",
             "difficulty": 4,
+            "difficulty_manual": True,
         },
     )
     assert saved.status_code == 200, saved.text
@@ -447,7 +448,11 @@ async def test_route_is_editable_from_another_device_and_requeues_when_live(
     assert all(item["name"] for item in body["places"])
     assert body["filters"] == ["Природа", "С детьми"]
     assert body["pace"] == "moderate"
+    # Spec 17: the author's rating, next to the estimate and its breakdown.
     assert body["difficulty"] == 4
+    assert body["difficulty_manual"] is True
+    assert body["difficulty_auto"] is not None
+    assert body["difficulty_breakdown"]["level"] == body["difficulty_auto"]
 
     # Someone else's route is not editable, and does not leak its content.
     assert (
@@ -1081,3 +1086,60 @@ async def test_points_map_never_shows_unpublished_places(
     if hidden is not None:
         response = await client.get(f"/api/v1/maps/static/points/osm2/{hidden}")
         assert response.status_code == 404, response.text
+
+
+@pytest.mark.asyncio
+async def test_author_difficulty_rules_and_older_apps(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """Spec 17: «Авто» by default, not below the estimate, older apps harmless."""
+    client, app = publication_context
+    tokens = await _login(client, f"+7913{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    place_ids = await _two_place_ids(client)
+    base = {"name": "Сложность", "place_ids": place_ids, "filters": [], "pace": "calm"}
+
+    # An older app always sends a number and no flag: the route stays on auto.
+    saved = await client.post(
+        "/api/v1/routes/drafts", headers=headers, json={**base, "difficulty": 5}
+    )
+    route_id = saved.json()["id"]
+    body = (await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)).json()
+    estimate = body["difficulty_auto"]
+    assert body["difficulty_manual"] is False
+    assert body["difficulty"] == estimate
+
+    if estimate >= 3:
+        low = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**base, "route_id": route_id, "difficulty": 1, "difficulty_manual": True},
+        )
+        assert low.status_code == 422
+        assert low.json()["error"]["code"] == "difficulty_below_estimate"
+
+    rated = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json={**base, "route_id": route_id, "difficulty": 5, "difficulty_manual": True},
+    )
+    assert rated.status_code == 200, rated.text
+    # The older app sends back what it was shown: the rating stays.
+    again = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json={**base, "route_id": route_id, "difficulty": 5},
+    )
+    assert again.status_code == 200, again.text
+    body = (await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)).json()
+    assert (body["difficulty"], body["difficulty_manual"]) == (5, True)
+
+    back = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json={**base, "route_id": route_id, "difficulty": 5, "difficulty_manual": False},
+    )
+    assert back.status_code == 200, back.text
+    body = (await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)).json()
+    assert (body["difficulty"], body["difficulty_manual"]) == (estimate, False)
+    await _delete_drafts(app, route_id)

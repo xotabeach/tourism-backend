@@ -1232,3 +1232,49 @@ async def test_editors_suspend_lines_and_keep_timetables(admin_client: AsyncClie
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM transit_lines WHERE id = :id"), {"id": line_id})
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_difficulty_feedback_report_renders(admin_client: AsyncClient) -> None:
+    """Spec 17, section 7: the admin report of post-run answers opens."""
+    headers = {"Origin": "http://test"}
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+    page = await admin_client.get("/admin/difficulty-feedback", headers=headers)
+    assert page.status_code == 200, page.text
+    assert "Сложность: отзывы после прохождения" in page.text
+
+
+@pytest.mark.asyncio
+async def test_difficulty_feedback_only_for_own_finished_runs(admin_client: AsyncClient) -> None:
+    phone = f"+7914{uuid4().int % 10_000_000:07d}"
+    await admin_client.post(
+        "/api/v1/auth/otp/request", json={"display_name": "Путник", "phone": phone}
+    )
+    verified = await admin_client.post(
+        "/api/v1/auth/otp/verify",
+        json={
+            "phone": phone,
+            "code": "1234",
+            "privacy_accepted": True,
+            "personal_data_accepted": True,
+        },
+    )
+    headers = {"Authorization": f"Bearer {verified.json()['access_token']}"}
+    missing = await admin_client.post(
+        f"/api/v1/route-executions/{uuid4()}/difficulty-feedback",
+        json={"answer": "harder"},
+        headers=headers,
+    )
+    assert missing.status_code == 404
+    wrong = await admin_client.post(
+        f"/api/v1/route-executions/{uuid4()}/difficulty-feedback",
+        json={"answer": "too hard"},
+        headers=headers,
+    )
+    assert wrong.status_code == 422

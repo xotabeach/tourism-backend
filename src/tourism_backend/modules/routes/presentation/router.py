@@ -276,6 +276,8 @@ async def get_routes(
     place_id: UUID | None = None,
     transport_mode: str | None = Query(default=None, max_length=32),
     difficulty: str | None = Query(default=None, max_length=32),
+    # Spec 17: «не сложнее N» on the 1..5 scale.
+    difficulty_max: int | None = Query(default=None, ge=1, le=5),
     q: str | None = Query(default=None, max_length=200),
     source: RouteSource | None = None,
     sort: RouteCatalogSort = "default",
@@ -289,6 +291,7 @@ async def get_routes(
         place_id=place_id,
         transport_mode=transport_mode,
         difficulty=difficulty,
+        difficulty_max=difficulty_max,
         q=q,
         source=source,
         sort=sort,

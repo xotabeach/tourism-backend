@@ -9,7 +9,7 @@ import pytest
 from tourism_backend.modules.achievements.facts import Facts, RunFact, StopFact, progress
 from tourism_backend.modules.achievements.rules import RULES
 from tourism_backend.modules.achievements.solar import sunrise_sunset
-from tourism_backend.modules.routes.application.service import _difficulty_name
+from tourism_backend.modules.routes.application.difficulty import legacy_name
 
 NOW = datetime(2026, 9, 22, 15, tzinfo=UTC)
 RUN = RunFact(uuid4(), NOW, 1000, False, False, False)
@@ -90,7 +90,7 @@ def test_beach_extreme_and_generated_flags():
     values = progress(Facts(runs=runs), NOW)
     assert values["water"] == values["sea-breeze"] == 5
     assert values["navigator"] == values["legend-path"] == values["first-step"] == 1
-    assert [_difficulty_name(i) for i in range(1, 6)] == [
+    assert [legacy_name(i) for i in range(1, 6)] == [
         "easy",
         "easy",
         "moderate",

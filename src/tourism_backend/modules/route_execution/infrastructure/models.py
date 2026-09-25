@@ -239,6 +239,11 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     ended_early: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # Spec 17: the walker's one-tap answer on the finish screen.
+    difficulty_feedback: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    difficulty_feedback_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Total time spent paused across the whole run, so a completion summary
     # can report elapsed time net of pauses.
     paused_duration_seconds: Mapped[int] = mapped_column(

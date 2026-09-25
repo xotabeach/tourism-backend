@@ -4,14 +4,14 @@ import logging
 import math
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from typing import cast as type_cast
 from uuid import UUID, uuid4
 
 from geoalchemy2 import Geometry, WKTElement
 from geoalchemy2.functions import ST_X, ST_Y, ST_AsGeoJSON
 from redis.asyncio import Redis
-from sqlalchemy import Select, cast, delete, exists, func, or_, select, update
+from sqlalchemy import ColumnElement, Select, cast, delete, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Exists
@@ -38,6 +38,10 @@ from tourism_backend.modules.route_builder.infrastructure.routing_factory import
 )
 from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
     StubRoutingProvider,
+)
+from tourism_backend.modules.routes.application.difficulty import (
+    level_from_legacy,
+    lowest_manual_level,
 )
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
 from tourism_backend.modules.routes.application.schemas import (
@@ -279,6 +283,13 @@ def _to_list_item(
         estimated_duration_minutes=route.estimated_duration_minutes,
         distance_meters=route.distance_meters,
         difficulty=route.difficulty,
+        difficulty_level=route.difficulty_level,
+        difficulty_auto=route.difficulty_auto,
+        difficulty_source=type_cast(
+            Literal["auto", "author", "editorial", "legacy"],
+            route.difficulty_manual_by if route.difficulty_manual is not None else "auto",
+        ),
+        difficulty_confidence=route.difficulty_confidence,
         transport_mode=route.transport_mode,
         is_round_trip=route.is_round_trip,
         suitable_for_children=route.suitable_for_children,
@@ -431,6 +442,7 @@ async def list_routes(
     source: RouteSource | None,
     sort: RouteCatalogSort,
     seaside: bool | None = None,
+    difficulty_max: int | None = None,
     limit: int,
     offset: int,
 ) -> RouteListOut:
@@ -446,7 +458,11 @@ async def list_routes(
     if transport_mode:
         stmt = stmt.where(Route.transport_mode == transport_mode)
     if difficulty:
-        stmt = stmt.where(Route.difficulty == difficulty)
+        # Older apps filter by the word: its range on the 1..5 scale, so a
+        # level 5 route still shows under «сложный» (spec 17, D22).
+        stmt = stmt.where(_difficulty_word_filter(difficulty))
+    if difficulty_max is not None:
+        stmt = stmt.where(Route.difficulty_level <= difficulty_max)
     if q:
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(Route.name.ilike(pattern))
@@ -596,6 +612,7 @@ async def _days_for_route(session: AsyncSession, route_id: UUID) -> list[RouteDa
             boundary_source=day.boundary_source,
             overnight_note=day.overnight_note,
             overloaded=day.overloaded,
+            difficulty_level=day.difficulty_level,
         )
         for day in await session.scalars(
             select(RouteDay).where(RouteDay.route_id == route_id).order_by(RouteDay.day_index)
@@ -881,14 +898,32 @@ async def get_owned_route(
 _EDITABLE_ROUTE_STATUSES = frozenset({"draft", "rejected", "pending_review", "published"})
 
 
-def _difficulty_name(value: int) -> str:
-    if value <= 2:
-        return "easy"
-    if value == 3:
-        return "moderate"
-    if value >= 5:
-        return "extreme"
-    return "hard"
+def _difficulty_word_filter(word: str) -> ColumnElement[bool]:
+    level = level_from_legacy(word)
+    if level is None:
+        return Route.difficulty == word
+    if level <= 2:
+        return Route.difficulty_level <= 2
+    if level == 3:
+        return Route.difficulty_level == 3
+    return Route.difficulty_level >= 4
+
+
+def _take_manual_difficulty(
+    route: Route, payload: UserRouteDraftIn, *, shown_before: int | None
+) -> None:
+    """The author's rating from an editor save (spec 17, D9, D15)."""
+    if payload.difficulty_manual is True:
+        route.difficulty_manual = payload.difficulty
+        route.difficulty_manual_by = "author"
+    elif payload.difficulty_manual is False:
+        if route.difficulty_manual_by != "editorial":
+            route.difficulty_manual = None
+            route.difficulty_manual_by = None
+    elif route.difficulty_manual_by == "author" and payload.difficulty != shown_before:
+        # An older app: it always sends a number, a changed one is the
+        # author's new rating. On «Авто» its default 3 means nothing.
+        route.difficulty_manual = payload.difficulty
 
 
 async def _owned_editable_route(
@@ -950,7 +985,6 @@ async def get_user_route_for_edit(
         else []
     )
     pace = accessibility.get("travel_pace")
-    difficulty = accessibility.get("difficulty_level")
     media = list(
         (
             await session.scalars(
@@ -981,7 +1015,16 @@ async def get_user_route_for_edit(
         ],
         filters=filters,
         pace=pace if pace in {"calm", "moderate", "active"} else "calm",
-        difficulty=difficulty if isinstance(difficulty, int) and 1 <= difficulty <= 5 else 3,
+        # The shown level: what an older editor sends back unchanged (D15).
+        difficulty=route.difficulty_level or 3,
+        difficulty_manual=route.difficulty_manual is not None
+        and route.difficulty_manual_by == "author",
+        difficulty_auto=route.difficulty_auto,
+        difficulty_breakdown=(
+            accessibility.get("difficulty")
+            if isinstance(accessibility.get("difficulty"), dict)
+            else None
+        ),
         media=[
             UserRouteMediaOut(
                 id=item.id,
@@ -1125,7 +1168,8 @@ async def save_user_route_draft(
     route.publication_status = (
         "pending_review" if previous_status in {"pending_review", "published"} else "draft"
     )
-    route.difficulty = _difficulty_name(payload.difficulty)
+    shown_before = route.difficulty_level
+    _take_manual_difficulty(route, payload, shown_before=shown_before)
     # The author's «На машине» tag drives the route, with walks to what a car
     # cannot reach (spec 14b); anything else is walked, as before.
     driven = CAR_TAG in payload.filters
@@ -1139,7 +1183,6 @@ async def save_user_route_draft(
     accessibility: dict[str, Any] = {
         "travel_pace": payload.pace,
         "filters": payload.filters,
-        "difficulty_level": payload.difficulty,
     }
     # Road geometry is computed once and read from the database ever after:
     # opening a route redraws it without spending a routing call, and the
@@ -1203,6 +1246,26 @@ async def save_user_route_draft(
     # The stops are new rows: rebuild days and segments now, keeping the
     # author's day boundaries by place (spec 14a).
     await refresh_route_structure(session, route)
+    if (
+        payload.difficulty_manual is True
+        and route.difficulty_manual is not None
+        and route.difficulty_auto is not None
+        and route.difficulty_manual < lowest_manual_level(route.difficulty_auto)
+    ):
+        # Nothing is saved: the author sees the estimate and why (D9).
+        raise AppError(
+            code="difficulty_below_estimate",
+            message=(
+                f"Сложность не может быть ниже {lowest_manual_level(route.difficulty_auto)}: "
+                f"по расчёту маршрут {route.difficulty_auto} из 5"
+            ),
+            status_code=422,
+            details={
+                "estimate": route.difficulty_auto,
+                "lowest": lowest_manual_level(route.difficulty_auto),
+                "breakdown": (route.accessibility or {}).get("difficulty"),
+            },
+        )
     await session.commit()
     await session.refresh(route)
     return UserRouteDraftOut(

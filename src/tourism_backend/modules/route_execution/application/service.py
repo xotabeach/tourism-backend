@@ -1355,3 +1355,26 @@ async def _close_if_idle(
         applied=True,
     )
     return True
+
+
+async def record_difficulty_feedback(
+    session: AsyncSession, *, user_id: UUID, execution_id: UUID, answer: str
+) -> None:
+    """Keep the walker's «легче / как ожидал / сложнее» (spec 17, section 7).
+
+    Only for a run that is over; a second answer replaces the first.
+    """
+    execution = await session.get(RouteExecution, execution_id)
+    if execution is None or execution.user_id != user_id:
+        raise AppError(
+            code="route_execution_not_found", message="Прохождение не найдено", status_code=404
+        )
+    if execution.status not in ("completed", "cancelled"):
+        raise AppError(
+            code="route_execution_not_finished",
+            message="Оценить сложность можно после прохождения",
+            status_code=409,
+        )
+    execution.difficulty_feedback = answer
+    execution.difficulty_feedback_at = datetime.now(UTC)
+    await session.commit()

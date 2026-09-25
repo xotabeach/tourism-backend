@@ -27,6 +27,11 @@ from tourism_backend.modules.recommendations.application.policy import (
     normalize_difficulty,
 )
 from tourism_backend.modules.route_builder.application.scoring import categories_for_interest
+from tourism_backend.modules.routes.application.difficulty import (
+    ProfileFit,
+    level_from_legacy,
+    profile_fit,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +46,8 @@ class RecommendationCandidate:
     favorite_count: int
     seasonality: tuple[str, ...]
     quality_status: str = "unknown"
+    # Spec 17: shown level 1..5.
+    difficulty_level: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,18 +275,26 @@ def _explicit_profile(
         # against a multi-slug mapping (Море → beach+viewpoint) would let
         # popularity and exploration bury the thing the user asked for.
         parts.append(1.0 if overlap else 0.15)
-    wanted = normalize_difficulty(profile.preferred_difficulty)
-    actual = normalize_difficulty(candidate.difficulty)
-    if wanted:
-        if actual is None:
-            parts.append(0.5)
-        elif actual == wanted:
-            parts.append(1.0)
-        else:
-            parts.append(0.25)
+    fit = _difficulty_fit(candidate, profile)
+    if fit is not None:
+        parts.append(fit.score)
     if not parts:
         return 0.5
     return sum(parts) / len(parts)
+
+
+def _difficulty_fit(
+    candidate: RecommendationCandidate, profile: RecommendationProfile
+) -> ProfileFit | None:
+    """The profile's difficulty as a ceiling on the 1..5 scale (spec 17)."""
+    wanted = normalize_difficulty(profile.preferred_difficulty)
+    return profile_fit(
+        preferred_difficulty=wanted,
+        preferred_transport=None,
+        level=candidate.difficulty_level
+        or level_from_legacy(normalize_difficulty(candidate.difficulty)),
+        walk_level=None,
+    )
 
 
 def _content_affinity(
@@ -328,9 +343,8 @@ def _completion_likelihood(
     profile: RecommendationProfile,
 ) -> float:
     score = 0.5
-    wanted = normalize_difficulty(profile.preferred_difficulty)
-    actual = normalize_difficulty(candidate.difficulty)
-    if wanted and actual == wanted:
+    fit = _difficulty_fit(candidate, profile)
+    if fit is not None and fit.score >= 1.0:
         score = 0.8
     if profile.travels_with_kids and candidate.suitable_for_children is True:
         score = min(1.0, score + 0.15)

@@ -47,6 +47,10 @@ class UserRouteDraftIn(BaseModel):
     filters: list[str] = Field(default_factory=list, max_length=20)
     pace: Literal["calm", "moderate", "active"] = "calm"
     difficulty: int = Field(default=3, ge=1, le=5)
+    # Spec 17: True keeps ``difficulty`` as the author's rating, False is
+    # «Авто». Older apps leave it out and always send a number (default 3):
+    # their number changes a rating only when the author changed it (D15).
+    difficulty_manual: bool | None = None
     # Places after which the author ends a day (spec 14a). Absent: keep the
     # days as they are (older apps); empty: split by the norms again.
     day_breaks: list[UUID] | None = Field(default=None, max_length=21)
@@ -140,6 +144,11 @@ class UserRouteEditableOut(BaseModel):
     filters: list[str]
     pace: Literal["calm", "moderate", "active"]
     difficulty: int
+    #: Spec 17: whether ``difficulty`` is the author's rating or the estimate.
+    difficulty_manual: bool = False
+    difficulty_auto: int | None = None
+    #: The estimate's breakdown for the editor's hint.
+    difficulty_breakdown: dict[str, object] | None = None
     media: list["UserRouteMediaOut"]
     updated_at: datetime
     #: Places after which the author ended a day; empty when split by norms.
@@ -258,6 +267,12 @@ class RouteListItemOut(BaseModel):
     estimated_duration_minutes: int | None
     distance_meters: int | None
     difficulty: str | None
+    #: Spec 17: shown level 1..5, the estimate, whose rating is shown and how
+    #: sure the estimate is. ``difficulty`` stays the word older apps read.
+    difficulty_level: int | None = None
+    difficulty_auto: int | None = None
+    difficulty_source: Literal["auto", "author", "editorial", "legacy"] = "auto"
+    difficulty_confidence: str | None = None
     transport_mode: str | None
     is_round_trip: bool
     suitable_for_children: bool | None
@@ -309,6 +324,8 @@ class RouteDayOut(BaseModel):
     overnight_note: str | None = None
     #: A leg longer than a whole day leads into it (spec 14, D4).
     overloaded: bool = False
+    #: The day's estimated difficulty 1..5 (spec 17).
+    difficulty_level: int | None = None
 
 
 class RouteDaysIn(BaseModel):
