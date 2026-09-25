@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     sms_sender: str = Field(default="КРЫМТРИП", min_length=2, max_length=64)
     sms_otp_template: str = Field(default="Код подтверждения: {code}", min_length=2, max_length=640)
     sms_poll_interval_seconds: float = Field(default=20, ge=1, le=300)
+    # Spec 17: how often to look for routes whose ground is not fetched yet.
+    terrain_poll_interval_seconds: float = Field(default=60, ge=5, le=3600)
     sms_max_attempts: int = Field(default=3, ge=1, le=10)
     sms_daily_soft_budget: int = Field(default=500, ge=1)
 

@@ -28,6 +28,7 @@ from tourism_backend.modules.route_builder.application.scoring import (
     ScoredMatch,
     UserPreferenceSignals,
     band_of,
+    difficulty_fit,
     legacy_bands,
     match_percent,
     requested_signal_count,
@@ -66,9 +67,18 @@ async def match_routes(
     preferences = UserPreferenceSignals(
         categories=frozenset(user.preferred_categories or ()),
         difficulty=user.preferred_difficulty,
+        transport=user.preferred_transport,
         travels_with_kids=user.travels_with_kids,
         travels_with_pets=user.travels_with_pets,
     )
+    # Two steps harder than the profile likes is left out (spec 17, D12);
+    # a chat request stays free to ask for anything.
+    if confirmed_fields is None:
+        candidates = [
+            candidate
+            for candidate in candidates
+            if not ((fit := difficulty_fit(preferences, candidate)) is not None and fit.excluded)
+        ]
     if confirmed_fields is not None:
         # Chat discovery must not silently apply unconfirmed form defaults.
         optional = {
@@ -275,9 +285,17 @@ async def _load_candidates(
                 typical_crowding=route.typical_crowding,
                 price_min_amount=route.price_min_amount,
                 is_seaside=route.is_seaside,
+                difficulty_level=route.difficulty_level,
+                walk_level=_walk_level(route),
             )
         )
     return out
+
+
+def _walk_level(route: Route) -> int | None:
+    breakdown = (route.accessibility or {}).get("difficulty")
+    level = breakdown.get("walk_level") if isinstance(breakdown, dict) else None
+    return level if isinstance(level, int) else None
 
 
 async def _list_items_by_ids(

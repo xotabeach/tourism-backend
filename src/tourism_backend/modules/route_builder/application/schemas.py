@@ -355,6 +355,9 @@ class RouteProposalPreviewOut(BaseModel):
     # How the line is travelled, for its look on the map (spec 14, D23).
     # Proposals stored before it have none and were walked or driven alike.
     line_mode: Literal["walk", "car"] = "walk"
+    # Spec 17 (D22): a quick estimate from the line's length and climb, shown
+    # on the card instead of the pace; the saved route gets the full one.
+    difficulty_level: int | None = Field(default=None, ge=1, le=5)
 
 
 class ProposalTripDateIn(BaseModel):

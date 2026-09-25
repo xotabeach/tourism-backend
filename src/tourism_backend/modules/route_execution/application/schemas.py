@@ -189,3 +189,9 @@ class RouteExecutionListOut(BaseModel):
     total: int = Field(ge=0)
     limit: int = Field(ge=1)
     offset: int = Field(ge=0)
+
+
+class DifficultyFeedbackIn(BaseModel):
+    """«Легче / Как ожидал / Сложнее» after a run (spec 17, section 7)."""
+
+    answer: Literal["easier", "as_expected", "harder"]

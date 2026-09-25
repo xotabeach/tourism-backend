@@ -314,6 +314,24 @@ def _difficulty_days(
     # only trusted for walking when nothing on the route is driven.
     route_slope = routing.get("max_road_angle_degrees")
     walk_only = all(segment.mode != "car" for segment in segments)
+    # A walking route keeps its climb for the whole line only; share it out
+    # by length so each day gets its part (spec 17, section 2).
+    shared_climb: dict[tuple[int, int], tuple[int, int]] = {}
+    route_gain, route_loss = (
+        routing.get("elevation_gain_meters"),
+        routing.get("elevation_loss_meters"),
+    )
+    total_walk = sum(s.distance_meters or 0 for s in segments if s.mode == "walk")
+    if (
+        walk_only
+        and total_walk > 0
+        and isinstance(route_gain, int)
+        and all(s.elevation_gain_meters is None for s in segments)
+    ):
+        loss = route_loss if isinstance(route_loss, int) else route_gain
+        for s in segments:
+            share = (s.distance_meters or 0) / total_walk
+            shared_climb[(s.leg_index, s.seq)] = (round(route_gain * share), round(loss * share))
     inputs: list[DayInput] = []
     last_index = max(0, len(stop_rows) - 1)
     spans = [
@@ -333,8 +351,16 @@ def _difficulty_days(
                         mode=segment.mode,
                         distance_meters=segment.distance_meters,
                         duration_seconds=segment.duration_seconds,
-                        ascent_meters=segment.elevation_gain_meters,
-                        descent_meters=segment.elevation_loss_meters,
+                        ascent_meters=(
+                            segment.elevation_gain_meters
+                            if segment.elevation_gain_meters is not None
+                            else shared_climb.get((segment.leg_index, segment.seq), (None, None))[0]
+                        ),
+                        descent_meters=(
+                            segment.elevation_loss_meters
+                            if segment.elevation_loss_meters is not None
+                            else shared_climb.get((segment.leg_index, segment.seq), (None, None))[1]
+                        ),
                         max_slope_degrees=(
                             float(route_slope)
                             if walk_only and isinstance(route_slope, (int, float))
