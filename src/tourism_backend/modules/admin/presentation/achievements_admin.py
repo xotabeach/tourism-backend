@@ -13,7 +13,7 @@ from tourism_backend.api.errors import AppError
 from tourism_backend.modules.achievements.admin_actions import apply
 from tourism_backend.modules.achievements.queries import collect
 from tourism_backend.modules.achievements.rules import RULES
-from tourism_backend.modules.admin.presentation.auth import require_admin_role, session_principal_id
+from tourism_backend.modules.admin.presentation.auth import require_permission, session_principal_id
 from tourism_backend.modules.identity.infrastructure.models import Achievement, UserAchievement
 
 
@@ -24,15 +24,16 @@ class AchievementsOperationsAdmin(BaseView):
     session_maker: ClassVar[Any]
 
     def is_accessible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return require_permission(request, "achievements.read")
 
     def is_visible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return self.is_accessible(request)
 
     @expose("/achievement-operations", methods=["GET", "POST"], identity="achievement-operations")
     async def operations(self, request: Request) -> Response:
         admin_id = session_principal_id(request)
-        if admin_id is None or not require_admin_role(request):
+        needed = "achievements.write" if request.method == "POST" else "achievements.read"
+        if admin_id is None or not require_permission(request, needed):
             return Response(status_code=403)
         async with self.session_maker(expire_on_commit=False) as session:
             if request.method == "POST":

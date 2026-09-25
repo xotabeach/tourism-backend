@@ -1,30 +1,32 @@
 {% extends "sqladmin/layout.html" %}
 {% block content %}
-<div class="card mb-3"><div class="card-body">
+<div class="col-12"><div class="card mb-3"><div class="card-body">
 <p><a href="{{ url_for('admin:view-transit') }}">Все линии</a></p>
 <h2>{{ kind }} {{ line.ref or "" }}: {{ line.name }}</h2>
 <p class="text-muted">{{ line.operator or "перевозчик не указан" }} · OSM {{ line.osm_id }} · данные {{ line.data_version or "вручную" }} · статус: {{ status }}</p>
 {% if line.needs_mapping %}<p class="text-warning">Ни у одного направления нет надёжного порядка остановок (нет PTv2 или меньше двух остановок). В планирование линия не пойдёт, пока её не поправят в OSM.</p>{% endif %}
 {% if line.status == "missing" %}<p class="text-danger">Линии нет в последней выгрузке OSM. Расписание сохранено, в планирование она не идёт.</p>{% endif %}
+{% if admin_has_permission(request, 'transit.write') %}
 <form method="post" class="row g-2 align-items-end">
 <input type="hidden" name="action" value="line">
-<div class="col-auto"><label class="form-label">Статус
+<div class="col-12 col-md-auto"><label class="form-label">Статус
 <select class="form-select" name="status" {% if line.status == "missing" %}disabled{% endif %}>
 <option value="active" {% if line.status != "suspended" %}selected{% endif %}>Работает</option>
 <option value="suspended" {% if line.status == "suspended" %}selected{% endif %}>Приостановлена</option>
 </select></label></div>
 <div class="col"><label class="form-label w-100">Причина приостановки
 <input class="form-control" name="suspend_reason" value="{{ line.suspend_reason or '' }}" placeholder="например, ремонт моста до 1 ноября"></label></div>
-<div class="col-auto"><label class="form-label">Скорость, км/ч
+<div class="col-12 col-md-auto"><label class="form-label">Скорость, км/ч
 <input class="form-control" name="speed_kmh" value="{{ line.speed_kmh or '' }}" placeholder="{{ default_speed }}" size="6"></label></div>
-<div class="col-auto"><button class="btn btn-primary" type="submit">Сохранить линию</button></div>
+<div class="col-12 col-md-auto"><button class="btn btn-primary" type="submit">Сохранить линию</button></div>
 </form>
 <p class="text-muted mt-2"><small>Скорость задаёт время в пути между остановками. Пусто: по умолчанию для вида транспорта ({{ default_speed }} км/ч).</small></p>
+{% endif %}
 </div></div>
 
 <div class="card mb-3"><div class="card-body">
 <h3>Направления</h3>
-<table class="table table-sm">
+<div class="table-responsive"><table class="table table-sm">
 <thead><tr><th>Направление</th><th>Остановок</th><th>Из OSM</th></tr></thead>
 <tbody>
 {% for row in variants %}
@@ -37,13 +39,13 @@
 </tr>
 {% endfor %}
 </tbody>
-</table>
+</table></div>
 </div></div>
 
 <div class="card mb-3"><div class="card-body">
 <h3>Расписание</h3>
 {% if schedules %}
-<table class="table table-sm">
+<div class="table-responsive"><table class="table table-sm">
 <thead><tr><th>Период</th><th>Дни</th><th>Рейсы</th><th>Источник</th><th></th></tr></thead>
 <tbody>
 {% for row in schedules %}
@@ -53,21 +55,23 @@
 <td>{{ row.days }}</td>
 <td>{% if row.schedule.headway_minutes %}каждые {{ row.schedule.headway_minutes }} мин, {{ row.schedule.first_departure.strftime("%H:%M") }} … {{ row.schedule.last_departure.strftime("%H:%M") }}{% else %}<small>{{ row.departures }}</small>{% endif %}</td>
 <td><small>{{ row.schedule.source }}<br>проверено {{ row.schedule.checked_at }}</small>{% if row.stale %}<br><small class="text-danger">старше 90 дней</small>{% endif %}</td>
-<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?id={{ line.id }}&edit={{ row.schedule.id }}">Править</a>
-<form method="post" class="d-inline"><input type="hidden" name="action" value="delete"><input type="hidden" name="schedule_id" value="{{ row.schedule.id }}"><button class="btn btn-sm btn-outline-danger" type="submit">Удалить</button></form></td>
+<td class="text-nowrap">{% if admin_has_permission(request, 'transit.write') %}<a class="btn btn-sm btn-outline-secondary" href="?id={{ line.id }}&edit={{ row.schedule.id }}">Править</a>
+<form method="post" class="d-inline"><input type="hidden" name="action" value="delete"><input type="hidden" name="schedule_id" value="{{ row.schedule.id }}"><button class="btn btn-sm btn-outline-danger" type="submit">Удалить</button></form>
+{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>
-</table>
+</table></div>
 {% else %}<p class="text-muted">Расписания нет: по времени линия не планируется.</p>{% endif %}
 
+{% if admin_has_permission(request, 'transit.write') %}
 <h4 class="mt-4">ИИ-помощник</h4>
 <form method="post">
 <input type="hidden" name="action" value="draft">
 <textarea class="form-control mb-2" name="source_text" rows="5" maxlength="{{ max_source_chars }}" placeholder="Вставьте текст расписания с сайта перевозчика или автовокзала"></textarea>
 <div class="row g-2">
 <div class="col"><input class="form-control" name="direction" placeholder="Направление, если в тексте их несколько (например, из Симферополя)"></div>
-<div class="col-auto"><button class="btn btn-secondary" type="submit">Заполнить форму</button></div>
+<div class="col-12 col-md-auto"><button class="btn btn-secondary" type="submit">Заполнить форму</button></div>
 </div>
 <p class="text-muted mt-1"><small>ИИ только заполняет форму ниже. Сохраняет редактор после проверки.</small></p>
 </form>
@@ -95,5 +99,6 @@
 {% if editing %}<a class="btn btn-link mt-2" href="?id={{ line.id }}">Отмена</a>{% endif %}
 </form>
 {% endfor %}
-</div></div>
+{% endif %}
+</div></div></div>
 {% endblock %}

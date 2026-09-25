@@ -952,7 +952,7 @@ def test_article_admin_views_are_registered_and_write_gated() -> None:
     assert ArticleBlock.media_attachment_id in ArticleBlockAdmin.column_list
 
 
-def test_help_admin_is_admin_only_and_never_edits_article_text() -> None:
+def test_help_admin_requires_support_permission_and_never_edits_article_text() -> None:
     """Publication belongs in the admin; rewriting the text does not.
 
     Search matches embeddings on the article's `content_hash`, and the
@@ -984,14 +984,17 @@ def test_help_admin_is_admin_only_and_never_edits_article_text() -> None:
     assert SupportHelpRevision.status in SupportHelpRevisionAdmin.column_formatters
     assert SupportHelpRevision.review_until in SupportHelpRevisionAdmin.column_formatters
 
-    def _request(roles: list[str]) -> Request:
-        scope = {"type": "http", "session": {"admin_roles": roles}}
-        return Request(scope)  # type: ignore[arg-type]
+    def _request(permissions: set[str]) -> Request:
+        scope = {"type": "http", "session": {}}
+        request = Request(scope)  # type: ignore[arg-type]
+        request.state.admin_permissions = frozenset(permissions)
+        return request
 
     for view in (SupportHelpRevisionAdmin, SupportHelpIndexAdmin):
-        assert view.is_accessible(view, _request(["admin"])) is True  # type: ignore[arg-type]
-        assert view.is_accessible(view, _request(["ops"])) is False  # type: ignore[arg-type]
-        assert view.is_visible(view, _request(["ops"])) is False  # type: ignore[arg-type]
+        instance = view()
+        assert instance.is_accessible(_request({"support.read"})) is True
+        assert instance.is_accessible(_request(set())) is False
+        assert instance.is_visible(_request(set())) is False
 
 
 def test_help_views_are_registered_and_their_template_exists() -> None:

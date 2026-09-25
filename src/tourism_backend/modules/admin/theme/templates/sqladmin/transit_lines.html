@@ -1,24 +1,24 @@
 {% extends "sqladmin/layout.html" %}
 {% block content %}
-<div class="card"><div class="card-body">
+<div class="col-12"><div class="card"><div class="card-body">
 <h2>Линии и расписания</h2>
 <form method="get" class="row g-2 mb-3">
-<div class="col-auto"><input class="form-control" name="q" value="{{ filters.q }}" placeholder="Номер, название, перевозчик"></div>
-<div class="col-auto"><select class="form-select" name="kind"><option value="">Все виды</option>
+<div class="col-12 col-md-auto"><input class="form-control" name="q" value="{{ filters.q }}" placeholder="Номер, название, перевозчик" aria-label="Поиск линии"></div>
+<div class="col-12 col-md-auto"><select class="form-select" name="kind" aria-label="Вид транспорта"><option value="">Все виды</option>
 {% for key, label in kinds.items() %}<option value="{{ key }}" {% if filters.kind == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
 </select></div>
-<div class="col-auto"><select class="form-select" name="status"><option value="">Любой статус</option>
+<div class="col-12 col-md-auto"><select class="form-select" name="status" aria-label="Статус линии"><option value="">Любой статус</option>
 {% for key, label in statuses.items() %}<option value="{{ key }}" {% if filters.status == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
 </select></div>
-<div class="col-auto"><select class="form-select" name="attention"><option value="">Все линии</option>
+<div class="col-12 col-md-auto"><select class="form-select" name="attention" aria-label="Требует внимания"><option value="">Все линии</option>
 <option value="no_schedule" {% if filters.attention == "no_schedule" %}selected{% endif %}>Без расписания</option>
 <option value="stale" {% if filters.attention == "stale" %}selected{% endif %}>Проверка старше 90 дней</option>
 <option value="mapping" {% if filters.attention == "mapping" %}selected{% endif %}>Нужна разметка</option>
 </select></div>
-<div class="col-auto"><button class="btn btn-secondary" type="submit">Показать</button></div>
+<div class="col-12 col-md-auto"><button class="btn btn-secondary" type="submit">Показать</button></div>
 </form>
 <p class="text-muted">Найдено: {{ total }}{% if total > lines|length %}, показаны первые {{ lines|length }}{% endif %}.</p>
-<table class="table table-sm">
+<div class="table-responsive"><table class="table table-sm">
 <thead><tr><th>Вид</th><th>Номер</th><th>Название</th><th>Перевозчик</th><th>Статус</th><th>Расписание</th></tr></thead>
 <tbody>
 {% for row in lines %}
@@ -35,6 +35,6 @@
 </tr>
 {% endfor %}
 </tbody>
-</table>
-</div></div>
+</table></div>
+</div></div></div>
 {% endblock %}

@@ -13,7 +13,7 @@ from starlette.responses import RedirectResponse, Response
 
 from tourism_backend.modules.admin.application.audit import record_audit
 from tourism_backend.modules.admin.presentation.auth import (
-    require_admin_role,
+    require_permission,
     session_principal_id,
 )
 from tourism_backend.modules.places.infrastructure.models import Place
@@ -47,14 +47,15 @@ class RouteStructureAdmin(BaseView):
     session_maker: ClassVar[Any]
 
     def is_accessible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return require_permission(request, "routes.read")
 
     def is_visible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return self.is_accessible(request)
 
     @expose("/route-structure", methods=["GET", "POST"], identity="route-structure")
     async def structure(self, request: Request) -> Response:
-        if not require_admin_role(request):
+        needed = "routes.write" if request.method == "POST" else "routes.read"
+        if not require_permission(request, needed):
             return Response(status_code=403)
         raw_id = request.query_params.get("route_id", "").strip()
         route_id: UUID | None = None

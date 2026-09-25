@@ -1,8 +1,8 @@
 {% extends "sqladmin/layout.html" %}
 {% block content %}
-<div class="card"><div class="card-body">
+<div class="col-12"><div class="card"><div class="card-body">
 <h2>Выдать или отозвать достижение</h2>
-<form method="post">
+<form method="post" class="ct-compact-form">
 <label class="form-label">ID пользователя<input class="form-control" name="user_id" required></label>
 <label class="form-label">Достижение<select class="form-select" name="achievement_id" required>
 {% for item in catalog %}<option value="{{ item.id }}">{{ item.title }} ({{ item.status }})</option>{% endfor %}
@@ -12,7 +12,7 @@
 <button class="btn btn-primary" type="submit">Применить</button>
 </form>
 </div></div>
-<table class="table"><thead><tr><th>Достижение</th><th>Правило</th><th>Владельцев</th></tr></thead><tbody>
+<div class="table-responsive mt-3"><table class="table"><thead><tr><th>Достижение</th><th>Правило</th><th>Владельцев</th></tr></thead><tbody>
 {% for item in catalog %}<tr><td>{{ item.title }}</td><td>{{ item.status }}</td><td>{{ item.count }}</td></tr>{% endfor %}
-</tbody></table>
+</tbody></table></div></div>
 {% endblock %}
