@@ -176,3 +176,29 @@ def test_breakdown_is_serialisable() -> None:
 def test_ungraded_dirt_trail_is_level_two() -> None:
     assert route_difficulty([DayInput([_walk(3, terrain={"dirt": 1500})])]).level == 2
     assert route_difficulty([DayInput([_walk(3, terrain={"dirt": 600})])]).level == 1
+
+
+def test_quick_estimate_before_saving() -> None:
+    from tourism_backend.modules.routes.application.difficulty import quick_estimate
+
+    assert (
+        quick_estimate(
+            mode="walk",
+            distance_meters=9000,
+            duration_seconds=10_800,
+            elevation_gain_meters=500,
+            elevation_loss_meters=500,
+        )
+        == 3
+    )
+    assert (
+        quick_estimate(
+            mode="walk",
+            distance_meters=9000,
+            duration_seconds=None,
+            elevation_gain_meters=None,
+            elevation_loss_meters=None,
+            synthetic=True,
+        )
+        is None
+    )

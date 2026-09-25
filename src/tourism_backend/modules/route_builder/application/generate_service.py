@@ -71,11 +71,7 @@ from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
 from tourism_backend.modules.route_builder.infrastructure.tsp_factory import (
     get_tsp_provider,
 )
-from tourism_backend.modules.routes.application.difficulty import (
-    DayInput,
-    SegmentInput,
-    route_difficulty,
-)
+from tourism_backend.modules.routes.application.difficulty import quick_estimate
 from tourism_backend.modules.routes.application.schemas import RouteGeometryOut, RouteStopOut
 from tourism_backend.modules.routes.application.structure import refresh_route_structure
 from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
@@ -943,32 +939,16 @@ async def _build_preview(
 
 
 def _quick_difficulty(routing: RoutingResult, mode: str) -> int | None:
-    """Estimate before the route exists: one day, no ground data (spec 17, D22)."""
-    if routing.synthetic or routing.total_distance_meters <= 0:
-        return None
-    segments = [
-        SegmentInput(
-            mode=str(item.get("mode") or mode),
-            distance_meters=_int_or_none(item.get("distance_meters")),
-            duration_seconds=_int_or_none(item.get("duration_seconds")),
-            ascent_meters=_int_or_none(item.get("elevation_gain_meters")),
-            descent_meters=_int_or_none(item.get("elevation_loss_meters")),
-        )
-        for item in routing.segments
-    ] or [
-        SegmentInput(
-            mode=mode,
-            distance_meters=routing.total_distance_meters,
-            duration_seconds=routing.total_duration_seconds,
-            ascent_meters=routing.elevation_gain_meters if mode == "walk" else None,
-            descent_meters=routing.elevation_loss_meters if mode == "walk" else None,
-        )
-    ]
-    return route_difficulty([DayInput(segments)]).level
-
-
-def _int_or_none(value: object) -> int | None:
-    return int(value) if isinstance(value, (int, float)) else None
+    """Estimate before the route exists (spec 17, D22)."""
+    return quick_estimate(
+        mode=mode,
+        distance_meters=routing.total_distance_meters,
+        duration_seconds=routing.total_duration_seconds,
+        elevation_gain_meters=routing.elevation_gain_meters,
+        elevation_loss_meters=routing.elevation_loss_meters,
+        segments=routing.segments,
+        synthetic=routing.synthetic,
+    )
 
 
 async def proposal_preview(

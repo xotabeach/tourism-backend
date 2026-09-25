@@ -42,6 +42,7 @@ from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
 from tourism_backend.modules.routes.application.difficulty import (
     level_from_legacy,
     lowest_manual_level,
+    quick_estimate,
 )
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
 from tourism_backend.modules.routes.application.schemas import (
@@ -1933,7 +1934,20 @@ async def preview_user_route_draft(
         # it as roads.
         provider=str(meta.get("provider") or "none"),
         synthetic=bool(meta.get("synthetic")),
+        difficulty_level=quick_estimate(
+            mode=transport_mode,
+            distance_meters=_int_value(meta.get("distance_meters")),
+            duration_seconds=_int_value(meta.get("movement_duration_seconds")),
+            elevation_gain_meters=_int_value(meta.get("elevation_gain_meters")),
+            elevation_loss_meters=_int_value(meta.get("elevation_loss_meters")),
+            segments=[item for item in meta.get("segments") or [] if isinstance(item, dict)],
+            synthetic=bool(meta.get("synthetic")),
+        ),
     )
+
+
+def _int_value(value: object) -> int | None:
+    return int(value) if isinstance(value, (int, float)) else None
 
 
 async def draft_preview_shape(
