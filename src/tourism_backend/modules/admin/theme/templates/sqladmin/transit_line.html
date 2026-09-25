@@ -6,6 +6,7 @@
 <p class="text-muted">{{ line.operator or "перевозчик не указан" }} · OSM {{ line.osm_id }} · данные {{ line.data_version or "вручную" }} · статус: {{ status }}</p>
 {% if line.needs_mapping %}<p class="text-warning">Ни у одного направления нет надёжного порядка остановок (нет PTv2 или меньше двух остановок). В планирование линия не пойдёт, пока её не поправят в OSM.</p>{% endif %}
 {% if line.status == "missing" %}<p class="text-danger">Линии нет в последней выгрузке OSM. Расписание сохранено, в планирование она не идёт.</p>{% endif %}
+{% if admin_has_permission(request, 'transit.write') %}
 <form method="post" class="row g-2 align-items-end">
 <input type="hidden" name="action" value="line">
 <div class="col-12 col-md-auto"><label class="form-label">Статус
@@ -20,6 +21,7 @@
 <div class="col-12 col-md-auto"><button class="btn btn-primary" type="submit">Сохранить линию</button></div>
 </form>
 <p class="text-muted mt-2"><small>Скорость задаёт время в пути между остановками. Пусто: по умолчанию для вида транспорта ({{ default_speed }} км/ч).</small></p>
+{% endif %}
 </div></div>
 
 <div class="card mb-3"><div class="card-body">
@@ -53,14 +55,16 @@
 <td>{{ row.days }}</td>
 <td>{% if row.schedule.headway_minutes %}каждые {{ row.schedule.headway_minutes }} мин, {{ row.schedule.first_departure.strftime("%H:%M") }} … {{ row.schedule.last_departure.strftime("%H:%M") }}{% else %}<small>{{ row.departures }}</small>{% endif %}</td>
 <td><small>{{ row.schedule.source }}<br>проверено {{ row.schedule.checked_at }}</small>{% if row.stale %}<br><small class="text-danger">старше 90 дней</small>{% endif %}</td>
-<td class="text-nowrap"><a class="btn btn-sm btn-outline-secondary" href="?id={{ line.id }}&edit={{ row.schedule.id }}">Править</a>
-<form method="post" class="d-inline"><input type="hidden" name="action" value="delete"><input type="hidden" name="schedule_id" value="{{ row.schedule.id }}"><button class="btn btn-sm btn-outline-danger" type="submit">Удалить</button></form></td>
+<td class="text-nowrap">{% if admin_has_permission(request, 'transit.write') %}<a class="btn btn-sm btn-outline-secondary" href="?id={{ line.id }}&edit={{ row.schedule.id }}">Править</a>
+<form method="post" class="d-inline"><input type="hidden" name="action" value="delete"><input type="hidden" name="schedule_id" value="{{ row.schedule.id }}"><button class="btn btn-sm btn-outline-danger" type="submit">Удалить</button></form>
+{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>
 </table></div>
 {% else %}<p class="text-muted">Расписания нет: по времени линия не планируется.</p>{% endif %}
 
+{% if admin_has_permission(request, 'transit.write') %}
 <h4 class="mt-4">ИИ-помощник</h4>
 <form method="post">
 <input type="hidden" name="action" value="draft">
@@ -95,5 +99,6 @@
 {% if editing %}<a class="btn btn-link mt-2" href="?id={{ line.id }}">Отмена</a>{% endif %}
 </form>
 {% endfor %}
+{% endif %}
 </div></div></div>
 {% endblock %}
