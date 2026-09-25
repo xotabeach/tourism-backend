@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from starlette.requests import Request
 from starlette.responses import Response
 
-from tourism_backend.modules.admin.presentation.auth import require_admin_role
+from tourism_backend.modules.admin.presentation.auth import require_permission
 from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecution,
     RouteRoutingSnapshot,
@@ -55,14 +55,14 @@ class DifficultyFeedbackAdmin(BaseView):
     session_maker: ClassVar[Any]
 
     def is_accessible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return require_permission(request, "routes.read")
 
     def is_visible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return self.is_accessible(request)
 
     @expose("/difficulty-feedback", methods=["GET"], identity="difficulty-feedback")
     async def report(self, request: Request) -> Response:
-        if not require_admin_role(request):
+        if not require_permission(request, "routes.read"):
             return Response(status_code=403)
         async with self.session_maker() as session:
             rows = (

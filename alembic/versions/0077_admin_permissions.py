@@ -7,8 +7,8 @@ from uuid import uuid4
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0074_admin_permissions"
-down_revision: str | Sequence[str] | None = "0073_parking_overrides"
+revision: str = "0077_admin_permissions"
+down_revision: str | Sequence[str] | None = "0076_difficulty_feedback"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -23,6 +23,8 @@ _DEFAULT_GRANTS = {
         "places.write",
         "geography.read",
         "geography.write",
+        "transit.read",
+        "transit.write",
         "reviews.read",
         "reviews.write",
         "recommendations.read",

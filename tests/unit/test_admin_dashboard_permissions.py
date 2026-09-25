@@ -18,7 +18,9 @@ from tourism_backend.modules.admin.application.permissions import (
     effective_permissions,
 )
 from tourism_backend.modules.admin.presentation.auth import AdminAuthBackend, require_permission
+from tourism_backend.modules.admin.presentation.difficulty_admin import DifficultyFeedbackAdmin
 from tourism_backend.modules.admin.presentation.permissions import PermissionedAdmin
+from tourism_backend.modules.admin.presentation.transit_admin import TransitAdmin, TransitLineAdmin
 from tourism_backend.modules.admin.presentation.views import AdminRoleBindingAdmin, RouteAdmin
 from tourism_backend.modules.app_stats.application.queries import StatsReport, VersionShareDay
 
@@ -45,6 +47,17 @@ def test_route_screen_requires_fresh_route_permission() -> None:
     assert route_view.is_accessible(request) is False
     request.state.admin_permissions = frozenset({"routes.read"})
     assert route_view.is_accessible(request) is True
+
+
+def test_new_route_related_screens_follow_route_manager_permissions() -> None:
+    request = Request({"type": "http", "session": {}})  # type: ignore[arg-type]
+    request.state.admin_permissions = frozenset({"routes.read", "transit.read"})
+    assert DifficultyFeedbackAdmin().is_accessible(request)
+    assert TransitAdmin().is_accessible(request)
+    assert TransitLineAdmin().is_accessible(request)
+    request.state.admin_permissions = frozenset({"support.read"})
+    assert not DifficultyFeedbackAdmin().is_accessible(request)
+    assert not TransitAdmin().is_accessible(request)
 
 
 def test_stats_cards_use_selected_day_not_incomplete_today() -> None:

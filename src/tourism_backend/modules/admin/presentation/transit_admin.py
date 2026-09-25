@@ -15,7 +15,7 @@ from starlette.responses import RedirectResponse, Response
 
 from tourism_backend.modules.admin.application.audit import record_audit
 from tourism_backend.modules.admin.presentation.auth import (
-    require_admin_role,
+    require_permission,
     session_principal_id,
 )
 from tourism_backend.modules.route_builder.infrastructure.ai_factory import (
@@ -88,14 +88,14 @@ class TransitAdmin(BaseView):
     session_maker: ClassVar[Any]
 
     def is_accessible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return require_permission(request, "transit.read")
 
     def is_visible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return self.is_accessible(request)
 
     @expose("/transit", methods=["GET"], identity="transit")
     async def lines(self, request: Request) -> Response:
-        if not require_admin_role(request):
+        if not require_permission(request, "transit.read"):
             return Response(status_code=403)
         params = request.query_params
         kind = params.get("kind", "")
@@ -171,14 +171,14 @@ class TransitLineAdmin(BaseView):
     session_maker: ClassVar[Any]
 
     def is_accessible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return require_permission(request, "transit.read")
 
     def is_visible(self, request: Request) -> bool:
         return False
 
     @expose("/transit/line", methods=["GET", "POST"], identity="transit-line")
     async def line(self, request: Request) -> Response:
-        if not require_admin_role(request):
+        if not require_permission(request, "transit.read"):
             return Response(status_code=403)
         try:
             line_id = UUID(request.query_params.get("id", ""))

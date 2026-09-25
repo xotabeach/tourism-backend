@@ -26,6 +26,7 @@ _CATEGORY_SCOPE = {
     "Достижения": "achievements",
     "Рекомендации": "recommendations",
     "География": "geography",
+    "Транспорт": "transit",
     "Уведомления": "notifications",
     "Медиа": "media",
     "Контент": "content",

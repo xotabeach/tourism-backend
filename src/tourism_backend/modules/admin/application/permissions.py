@@ -17,6 +17,8 @@ PERMISSION_LABELS = {
     "places.write": "Места: изменения",
     "geography.read": "География: просмотр",
     "geography.write": "География: изменения",
+    "transit.read": "Транспорт: просмотр",
+    "transit.write": "Транспорт: изменения",
     "reviews.read": "Отзывы: просмотр",
     "reviews.write": "Отзывы: модерация",
     "recommendations.read": "Рекомендации: просмотр",
