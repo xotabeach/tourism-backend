@@ -86,7 +86,7 @@ def test_palaces_by_car_stay_easy() -> None:
 
 def test_driving_levels() -> None:
     assert day_difficulty(DayInput([_drive(4)])).level == 2
-    assert day_difficulty(DayInput([_drive(1, serpentine=3000)])).level == 2
+    assert day_difficulty(DayInput([_drive(1, serpentine=6000)])).level == 2
     assert day_difficulty(DayInput([_drive(6)])).level == 3
     assert day_difficulty(DayInput([_drive(1, unpaved=1200)])).level == 3
     assert day_difficulty(DayInput([_drive(1, unpaved=7000)])).level == 4
@@ -171,3 +171,8 @@ def test_breakdown_is_serialisable() -> None:
         "ascent_m": 500,
         "descent_m": 500,
     }
+
+
+def test_ungraded_dirt_trail_is_level_two() -> None:
+    assert route_difficulty([DayInput([_walk(3, terrain={"dirt": 1500})])]).level == 2
+    assert route_difficulty([DayInput([_walk(3, terrain={"dirt": 600})])]).level == 1

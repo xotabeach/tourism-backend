@@ -1159,6 +1159,10 @@ async def save_user_route_draft(
         and previous_routing.get("transport_mode", "walk") == route_mode
         and route.geometry is not None
     )
+    if isinstance(route.accessibility, dict) and "terrain" in route.accessibility:
+        # The ground fetched for these stops; the terrain job fetches it
+        # again when they change (spec 17, D20).
+        accessibility["terrain"] = route.accessibility["terrain"]
     if unchanged:
         accessibility["routing"] = previous_routing
     else:

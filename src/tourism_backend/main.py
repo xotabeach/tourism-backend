@@ -52,11 +52,20 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         poll_delivery_jobs(app.state.session_factory, app.state.redis, settings),
         name="sms-delivery-poller",
     )
+    from tourism_backend.modules.routes.application.terrain_job import (
+        poll_route_terrain,
+        stop_terrain_poller,
+    )
+
+    terrain_poller = asyncio.create_task(
+        poll_route_terrain(app.state.session_factory, settings), name="route-terrain-poller"
+    )
     loop_watch = asyncio.create_task(watch_event_loop_lag(), name="event-loop-lag")
     try:
         yield
     finally:
         loop_watch.cancel()
+        await stop_terrain_poller(terrain_poller)
         await stop_delivery_poller(sms_poller)
         await stop_immediate_deliveries()
         await app.state.redis.aclose()

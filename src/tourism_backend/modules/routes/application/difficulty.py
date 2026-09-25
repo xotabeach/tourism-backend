@@ -37,12 +37,21 @@ TERRAIN_MIN_METERS = 200
 # OSM sac_scale grades as Valhalla reports them, by the level they set.
 TRAIL_GRADE_LEVELS: dict[str, int] = {"T1": 2, "T2": 3, "T3": 4, "T4": 5, "T5": 5, "T6": 5}
 STEEP_SLOPE_DEGREES = 25.0
+# Ungraded dirt paths and forest roads are «простые тропы» (level 2) once
+# there is a kilometre of them.
+DIRT_LEVEL = 2
+DIRT_MIN_METERS = 1_000
 
 # Driving (D2, D7).
 DRIVE_EASY_HOURS = 3.0
 DRIVE_LONG_HOURS = 5.0
-SERPENTINE_MIN_METERS = 2_000
+# Hairpin road (Valhalla curvature 13+) a day must have to count: a pass
+# highway has about 2 km of it, a mountain road to Ai-Petri 15 km.
+SERPENTINE_MIN_METERS = 5_000
 UNPAVED_LONG_METERS = 5_000
+# Less than this is a lane to a car park, not an unpaved road.
+UNPAVED_MIN_METERS = 1_000
+OFFROAD_MIN_METERS = 500
 
 # A day on its feet longer than this is at least level 2, visits included (D8).
 LONG_DAY_MINUTES = 9 * 60
@@ -171,6 +180,9 @@ def _walk_part(
         level = TRAIL_GRADE_LEVELS[grade]
         if meters >= TERRAIN_MIN_METERS and level > by_terrain:
             by_terrain, hardest = level, (grade, meters)
+    dirt = sum(segment.terrain.get("dirt", 0) for segment in segments)
+    if by_terrain < DIRT_LEVEL and dirt >= DIRT_MIN_METERS:
+        by_terrain, hardest = DIRT_LEVEL, ("dirt", dirt)
     if hardest is not None:
         reasons.append(Reason("trail", {"grade": hardest[0], "meters": hardest[1]}))
     steepest = max((s.max_slope_degrees or 0.0 for s in segments), default=0.0)
@@ -194,15 +206,15 @@ def _drive_part(segments: Sequence[SegmentInput]) -> tuple[int, list[Reason], bo
     offroad = sum(s.terrain.get("offroad", 0) for s in segments)
     reasons: list[Reason] = []
     level = MIN_LEVEL
-    if offroad >= TERRAIN_MIN_METERS:
+    if offroad >= OFFROAD_MIN_METERS:
         level = 5
         reasons.append(Reason("offroad", {"meters": offroad}))
     elif unpaved > UNPAVED_LONG_METERS:
         level = 4
         reasons.append(Reason("unpaved", {"meters": unpaved}))
-    elif unpaved >= TERRAIN_MIN_METERS or hours > DRIVE_LONG_HOURS:
+    elif unpaved >= UNPAVED_MIN_METERS or hours > DRIVE_LONG_HOURS:
         level = 3
-        if unpaved >= TERRAIN_MIN_METERS:
+        if unpaved >= UNPAVED_MIN_METERS:
             reasons.append(Reason("unpaved", {"meters": unpaved}))
     elif serpentine >= SERPENTINE_MIN_METERS or hours > DRIVE_EASY_HOURS:
         level = 2
