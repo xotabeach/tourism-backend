@@ -14,7 +14,10 @@ from tourism_backend.modules.support.application.help_semantic import (
     fuse_rankings,
     semantic_help_ids,
 )
-from tourism_backend.modules.support.application.help_visibility import visible_help
+from tourism_backend.modules.support.application.help_visibility import (
+    resolve_help_version,
+    visible_help,
+)
 from tourism_backend.modules.support.infrastructure.help_models import SupportHelpRevision
 
 
@@ -66,6 +69,7 @@ async def search_help(
     encoder: HelpQueryEncoder | None = None,
     semantic_min_score: float = 0.55,
 ) -> HelpSearchOut:
+    app_version = await resolve_help_version(session, app_version)
     available = await session.scalar(
         select(SupportHelpRevision.id).where(*visible_help(app_version)).limit(1)
     )
@@ -163,6 +167,7 @@ async def read_help(
     revision: int,
     app_version: str,
 ) -> HelpArticleOut:
+    app_version = await resolve_help_version(session, app_version)
     row = await session.scalar(
         select(SupportHelpRevision).where(
             SupportHelpRevision.article_id == article_id,
