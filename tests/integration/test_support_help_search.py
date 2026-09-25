@@ -130,6 +130,21 @@ async def test_drafts_and_other_builds_are_invisible(db: AsyncSession, pack: Hel
     assert not (await search_help(db, query="баллы", app_version="0.0.0")).available
 
 
+async def test_newer_apps_read_the_latest_pack_not_newer_than_them(
+    db: AsyncSession, pack: HelpCatalog
+) -> None:
+    """BACKEND-29: 0.2.5 and 0.3.0 lost help because only 0.2.4 had a pack."""
+    await publish_fixture(db, pack)
+    version = pack.manifest.target_app_version
+    newer = "99.1.0"
+    result = await search_help(db, query="баллы", app_version=newer)
+    assert result.available
+    assert result.items
+    assert {item.app_version for item in result.items} == {version}
+    article = await read_help(db, article_id="points-earn", revision=1, app_version=newer)
+    assert article.app_version == version
+
+
 async def test_withdrawal_expiry_and_no_implicit_renewal(
     db: AsyncSession, pack: HelpCatalog
 ) -> None:
