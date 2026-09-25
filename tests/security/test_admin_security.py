@@ -889,7 +889,7 @@ async def test_runtime_config_requires_admin_role_not_just_login(
     show = await admin_client.get(
         "/admin/config/ai-provider", headers=headers, follow_redirects=False
     )
-    assert show.status_code == 303, show.text
+    assert show.status_code == 403, show.text
 
     save = await admin_client.post(
         "/admin/config/ai-provider/save",
@@ -897,7 +897,7 @@ async def test_runtime_config_requires_admin_role_not_just_login(
         headers=headers,
         follow_redirects=False,
     )
-    assert save.status_code == 303, save.text
+    assert save.status_code == 403, save.text
 
 
 def test_article_admin_views_are_registered_and_write_gated() -> None:
