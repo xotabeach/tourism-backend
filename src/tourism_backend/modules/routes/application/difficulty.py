@@ -379,3 +379,42 @@ def profile_fit(
     if compared <= ceiling - 2:
         return ProfileFit(0.7, None, False)
     return ProfileFit(1.0, "сложность из профиля", False)
+
+
+def _int_or_none(value: object) -> int | None:
+    return int(value) if isinstance(value, (int, float)) else None
+
+
+def quick_estimate(
+    *,
+    mode: str,
+    distance_meters: int | None,
+    duration_seconds: int | None,
+    elevation_gain_meters: int | None,
+    elevation_loss_meters: int | None,
+    segments: Sequence[Mapping[str, object]] = (),
+    synthetic: bool = False,
+) -> int | None:
+    """One-day estimate before a route is saved: the line's length, climb and
+    segments, no ground data (spec 17, D22). None for a straight line."""
+    if synthetic or not distance_meters:
+        return None
+    inputs = [
+        SegmentInput(
+            mode=str(item.get("mode") or mode),
+            distance_meters=_int_or_none(item.get("distance_meters")),
+            duration_seconds=_int_or_none(item.get("duration_seconds")),
+            ascent_meters=_int_or_none(item.get("elevation_gain_meters")),
+            descent_meters=_int_or_none(item.get("elevation_loss_meters")),
+        )
+        for item in segments
+    ] or [
+        SegmentInput(
+            mode=mode,
+            distance_meters=distance_meters,
+            duration_seconds=duration_seconds,
+            ascent_meters=elevation_gain_meters if mode == "walk" else None,
+            descent_meters=elevation_loss_meters if mode == "walk" else None,
+        )
+    ]
+    return route_difficulty([DayInput(inputs)]).level

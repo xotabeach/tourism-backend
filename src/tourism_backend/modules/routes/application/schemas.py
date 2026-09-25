@@ -224,6 +224,9 @@ class RouteDraftPreviewOut(BaseModel):
     # segments between the points — still worth drawing on a real map, but
     # the client should not present it as a road.
     synthetic: bool = False
+    #: Spec 17: a quick difficulty estimate for the editor's «по расчёту»
+    #: hint; the saved route gets the full one.
+    difficulty_level: int | None = None
 
 
 class RouteGeometryOut(BaseModel):
