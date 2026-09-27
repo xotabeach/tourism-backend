@@ -13,12 +13,18 @@ ENV UV_COMPILE_BYTECODE=1 \
 # Dependencies first, source later: the heavy layers below (torch wheels, the
 # embedding model download) depend only on pyproject.toml/uv.lock, so an
 # ordinary code change reuses them from the build cache instead of
-# re-downloading ~1 GB on every pipeline.
-COPY pyproject.toml uv.lock README.md ./
+# re-downloading ~1 GB on every pipeline. README.md stays out: pyproject names
+# it as the readme, but --no-install-project never builds the package, and a
+# docs edit here used to rebuild the whole venv and re-upload it (2026-09-27).
+COPY pyproject.toml uv.lock ./
 
 # --extra rag: real local RAG embedder (sentence-transformers/torch, pinned
 # to the CPU-only wheel index in pyproject.toml — see [tool.uv.sources]).
 # Inert until RAG_ENABLED=true, but the image needs the package either way.
+# Two steps so no layer is one ~1.5 GB blob: GitLab's registry drops uploads
+# that big (400 Bad Request after ~35 min). Everything but torch first, then
+# torch alone (~770 MB) on top.
+RUN uv sync --frozen --no-dev --no-install-project --extra rag --no-install-package torch
 RUN uv sync --frozen --no-dev --no-install-project --extra rag
 
 # Pre-download the embedding model at build time. The production container's
@@ -72,7 +78,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
     TRANSFORMERS_OFFLINE=1
 
 # Heavy, dependency-only layers first: they only change with uv.lock.
-COPY --from=builder /app/.venv /app/.venv
+# torch travels as its own layer for the same upload-size reason as above.
+COPY --from=builder --exclude=lib/python3.13/site-packages/torch /app/.venv /app/.venv
+COPY --from=builder /app/.venv/lib/python3.13/site-packages/torch /app/.venv/lib/python3.13/site-packages/torch
 COPY --from=builder --chown=appuser:appuser /app/.cache /app/.cache
 
 # Our code: small layers that change on a normal commit. Compiled here
