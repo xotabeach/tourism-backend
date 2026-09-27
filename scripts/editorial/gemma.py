@@ -85,12 +85,12 @@ async def chat_json(
                 raise ValueError(f"no JSON in answer: {text[:200]}")
             raw = re.sub(r",\s*([}\]])", r"\1", match.group(0))
             return json.loads(raw)
-        except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+        except httpx.TransportError as exc:
             last = exc
             await asyncio.sleep(5 * (attempt + 1))
         except (httpx.HTTPStatusError, ValueError, json.JSONDecodeError) as exc:
             last = exc
             await asyncio.sleep(2)
-    if isinstance(last, (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError)):
+    if isinstance(last, httpx.TransportError):
         raise ModelUnavailable(str(last))
     raise ValueError(str(last))
