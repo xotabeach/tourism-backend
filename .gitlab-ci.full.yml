@@ -181,22 +181,14 @@ backend-publish:
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
-    # BuildKit with a registry cache: the dependency layers (torch, the
-    # embedding model) are reused instead of rebuilt in a fresh dind daemon.
-    # With TLS to dind, buildx refuses to build a builder from the environment;
-    # it needs a named context that carries the TLS settings.
-    - docker context create tls-environment
-    - docker buildx create --use --driver docker-container tls-environment
+    # Runtime base (deps, torch, model) only when uv.lock changes, then the
+    # small app image on top: scripts/ci-publish-image.sh explains why.
     - |
-      TAGS="--tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+      TAGS="$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
       # Floating env tips: gamma -> :stage, main -> :production
-      if [ "$CI_COMMIT_BRANCH" = "gamma" ]; then TAGS="$TAGS --tag $CI_REGISTRY_IMAGE:stage"; fi
-      if [ "$CI_COMMIT_BRANCH" = "main" ]; then TAGS="$TAGS --tag $CI_REGISTRY_IMAGE:production"; fi
-      docker buildx build --pull \
-        --cache-from type=registry,ref=$CI_REGISTRY_IMAGE:buildcache \
-        --cache-to type=registry,ref=$CI_REGISTRY_IMAGE:buildcache,mode=max,image-manifest=true,oci-mediatypes=true \
-        --build-arg SECURITY_REFRESH=$(date +%G-%V) \
-        $TAGS --push .
+      if [ "$CI_COMMIT_BRANCH" = "gamma" ]; then TAGS="$TAGS $CI_REGISTRY_IMAGE:stage"; fi
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then TAGS="$TAGS $CI_REGISTRY_IMAGE:production"; fi
+      sh scripts/ci-publish-image.sh $TAGS
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_BRANCH == "gamma"'
