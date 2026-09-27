@@ -14,9 +14,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column(
         "users",
-        sa.Column(
-            "is_system_account", sa.Boolean(), nullable=False, server_default=sa.false()
-        ),
+        sa.Column("is_system_account", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
 
 
