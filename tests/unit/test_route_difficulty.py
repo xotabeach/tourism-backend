@@ -202,3 +202,11 @@ def test_quick_estimate_before_saving() -> None:
         )
         is None
     )
+
+
+def test_walk_without_its_own_length_is_approximate() -> None:
+    no_length = SegmentInput(
+        mode="walk", distance_meters=None, terrain={"T3": 1500}, terrain_known=True
+    )
+    result = route_difficulty([DayInput([no_length])])
+    assert result.confidence == "low"

@@ -191,7 +191,11 @@ def _walk_part(
         reasons.append(Reason("steep", {"degrees": round(steepest)}))
 
     long_enough = [s for s in segments if (s.distance_meters or 0) >= TERRAIN_MIN_METERS]
-    confident = all(s.terrain_known and s.ascent_meters is not None for s in long_enough)
+    # A segment without its own length (a straight-line guess) makes the
+    # effort unknown, whatever ground was matched along it.
+    confident = all(s.distance_meters is not None for s in segments) and all(
+        s.terrain_known and s.ascent_meters is not None for s in long_enough
+    )
     level = max(by_effort, by_terrain)
     # The effort line leads when it decided the level, the terrain otherwise.
     if by_terrain > by_effort:
