@@ -219,7 +219,8 @@ async def _author_fields_for_routes(
             label = users[owner_id].display_name
             avatar = avatars.get(owner_id)
             is_expert = users[owner_id].is_expert
-            rank_title = ranks.get(owner_id)
+            # The editorial profile has no travel rank (spec 16, D6).
+            rank_title = None if users[owner_id].is_system_account else ranks.get(owner_id)
         else:
             # Editorial route: no owning user, so no travel rank to show.
             label = route.author_label
@@ -303,6 +304,7 @@ def _to_list_item(
         owner_user_id=owner_user_id,
         author_avatar_url=author_avatar_url,
         author_is_expert=author_is_expert,
+        author_is_editorial=route.source == "editorial",
         author_rank_title=author_rank_title,
         rating_average=rating_average,
         rating_count=rating_count,

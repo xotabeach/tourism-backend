@@ -121,6 +121,15 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default=False,
         server_default="false",
     )
+    # A service profile (the КРЫМТРИП editorial one): owns editorial routes and
+    # articles, can be followed, never signs in, never earns points or a place
+    # in the ratings, cannot be blocked or deleted (spec 16, D6, D18).
+    is_system_account: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
     travel_plus_active: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,

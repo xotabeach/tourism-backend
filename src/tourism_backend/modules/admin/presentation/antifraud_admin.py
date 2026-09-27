@@ -37,6 +37,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
 from tourism_backend.modules.admin.presentation.permissions import (
     PermissionedModelView as ModelView,
 )
+from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.route_execution.application import antifraud_actions
 from tourism_backend.modules.route_execution.application.antifraud_settings import (
     ALL_KEYS,
@@ -139,6 +140,11 @@ async def apply_user_fraud_action(
     done = 0
     for user_id in _pks(request):
         async with session_maker(expire_on_commit=False) as session:
+            target = await session.get(User, user_id)
+            if target is not None and target.is_system_account:
+                # The editorial profile is never blocked (spec 16, D6).
+                Flash.error(request, f"{target.display_name}: служебный профиль не блокируется.")
+                continue
             try:
                 if kind == "lift_block":
                     await antifraud_actions.lift_block(session, user_id=user_id)
