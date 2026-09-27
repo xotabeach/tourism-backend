@@ -40,8 +40,9 @@ ci-lean-notice:
       when: never
     - when: on_success
 
-# Registry build. Manual in lean mode so an ordinary push does not rebuild a
-# 438MB image; the full pipeline has its own publish stage.
+# Registry build. Manual in lean mode; the full pipeline has its own publish
+# stage. Both push the small app image on a runtime base built only when
+# uv.lock changes (scripts/ci-publish-image.sh).
 backend-publish-manual:
   stage: publish
   image: docker:27-cli
@@ -52,20 +53,8 @@ backend-publish-manual:
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
-    # BuildKit with a registry cache: the dependency layers (torch, the
-    # embedding model) are reused instead of rebuilt in a fresh dind daemon.
-    # With TLS to dind, buildx refuses to build a builder from the environment;
-    # it needs a named context that carries the TLS settings.
-    - docker context create tls-environment
-    - docker buildx create --use --driver docker-container tls-environment
-    - >
-      docker buildx build --pull
-      --cache-from type=registry,ref=$CI_REGISTRY_IMAGE:buildcache
-      --cache-to type=registry,ref=$CI_REGISTRY_IMAGE:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
-      --build-arg SECURITY_REFRESH=$(date +%G-%V)
-      --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-      --tag "$CI_REGISTRY_IMAGE:production"
-      --push .
+    # Same two-part build as backend-publish in .gitlab-ci.full.yml.
+    - sh scripts/ci-publish-image.sh "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:production"
   rules:
     - if: '$CI_PIPELINE_MODE == "full"'
       when: never
