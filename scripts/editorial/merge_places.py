@@ -5,12 +5,13 @@ The first hand-made seed (Ласточкино гнездо, Ханский дв
 import both published the same sights. Each group names a survivor (the
 seed: routes, favourites and reviews already point at it) and its twins.
 For every group:
-  - the survivor gets the editorial text (gemma, from the Wikipedia source)
-    and its «Источник: Википедия» line;
+  - the survivor gets the editorial text, if the group carries one (gemma,
+    from the Wikipedia source), and its «Источник: Википедия» line;
   - every photo of the twins moves to the survivor, skipping a photo already
     there (same Commons page); one cover stays;
-  - the survivor takes the OSM location of the named twin (seed points were
-    put by hand, up to 2 km off) and the twin's OSM tags for reference;
+  - the survivor takes the OSM location of the named twin, if one is named
+    (seed points were put by hand, up to 2 km off), and its OSM tags;
+  - the survivor keeps the categories of both;
   - favourites and route stops move to the survivor;
   - the twin is archived with merged_into_place_id, never deleted.
 
@@ -39,7 +40,11 @@ from tourism_backend.config import get_settings
 from tourism_backend.modules.favorites.infrastructure.models import FavoritePlace
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.application.publication_readiness import EDITORIAL_REVIEWED
-from tourism_backend.modules.places.infrastructure.models import Place, PlaceImage
+from tourism_backend.modules.places.infrastructure.models import (
+    Place,
+    PlaceCategory,
+    PlaceImage,
+)
 from tourism_backend.modules.routes.infrastructure.models import RouteStop
 
 WIKIPEDIA_LICENSE = "CC BY-SA 4.0"
@@ -145,6 +150,20 @@ def _merge(session: Session, group: dict[str, Any], counts: dict[str, int]) -> N
                 bump("favorite")
             else:
                 session.delete(favorite)
+        # A place may carry several categories; the card keeps all of both
+        # (Беседка Ветров: a sight and a viewpoint).
+        have = set(
+            session.scalars(
+                select(PlaceCategory.category_id).where(PlaceCategory.place_id == survivor.id)
+            )
+        )
+        for category_id in session.scalars(
+            select(PlaceCategory.category_id).where(PlaceCategory.place_id == twin.id)
+        ):
+            if category_id not in have:
+                session.add(PlaceCategory(place_id=survivor.id, category_id=category_id))
+                have.add(category_id)
+                bump("category")
         stops = session.execute(
             update(RouteStop).where(RouteStop.place_id == twin.id).values(place_id=survivor.id)
         )

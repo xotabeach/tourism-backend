@@ -46,8 +46,15 @@ async def chat_json(
     user: str,
     images: list[bytes] | None = None,
     max_tokens: int = 900,
+    temperature: float = 0.2,
+    request_seconds: float = 300,
+    reasoning: str = "none",
 ) -> dict[str, Any]:
-    """One request answering a JSON object; retried on transient failures."""
+    """One request answering a JSON object; retried on transient failures.
+
+    Texts keep the low default temperature and no reasoning; route ideas ask
+    for 0.7, reasoning and a long answer (spec 16a, D38). The reasoning comes
+    back apart from the content, so the JSON parsing does not change."""
     content: Any = user
     if images:
         content = [{"type": "text", "text": user}] + [
@@ -63,9 +70,9 @@ async def chat_json(
             {"role": "system", "content": system},
             {"role": "user", "content": content},
         ],
-        "temperature": 0.2,
+        "temperature": temperature,
         "max_tokens": max_tokens,
-        "reasoning_effort": "none",
+        "reasoning_effort": reasoning,
     }
     last: Exception | None = None
     for attempt in range(4):
@@ -74,7 +81,7 @@ async def chat_json(
                 f"{BASE_URL}/chat/completions",
                 json=payload,
                 headers={"Authorization": f"Bearer {_key()}"},
-                timeout=300,
+                timeout=request_seconds,
             )
             if response.status_code >= 500:
                 raise httpx.HTTPStatusError("server", request=response.request, response=response)
