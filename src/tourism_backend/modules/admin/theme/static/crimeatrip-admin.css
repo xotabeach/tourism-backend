@@ -338,7 +338,7 @@ body.ct-login {
 /* Index hub cards */
 .ct-hub {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 16px;
   width: 100%;
 }
@@ -1025,6 +1025,36 @@ body.ct-app .card .card-header {
   border-radius: 999px;
   color: #fff;
   background: rgba(0, 0, 0, .62);
+}
+
+/* Keep stacked content and long operator-facing labels inside narrow pages. */
+.ct-app .page-wrapper,
+.ct-app .page-body .row > *,
+.ct-app .card-body,
+.ct-chat-bubble {
+  min-width: 0;
+}
+
+.ct-app .page-title,
+.ct-app .page-pretitle,
+.ct-app .card-title,
+.ct-app .form-hint,
+.ct-hub-card {
+  overflow-wrap: anywhere;
+}
+
+.ct-chat-legend {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 575.98px) {
+  .ct-chat-compose-box {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ct-chat-send {
+    justify-self: end;
+  }
 }
 
 .ct-permission-grid {

@@ -1,18 +1,47 @@
 {% extends "sqladmin/layout.html" %}
-{% block content %}
-<div class="col-12"><div class="card"><div class="card-body">
-<h2>Выдать или отозвать достижение</h2>
-<form method="post" class="ct-compact-form">
-<label class="form-label">ID пользователя<input class="form-control" name="user_id" required></label>
-<label class="form-label">Достижение<select class="form-select" name="achievement_id" required>
-{% for item in catalog %}<option value="{{ item.id }}">{{ item.title }} ({{ item.status }})</option>{% endfor %}
-</select></label>
-<label class="form-label">Действие<select class="form-select" name="action"><option value="grant">Выдать</option><option value="revoke">Отозвать</option></select></label>
-<label class="form-label">Причина<textarea class="form-control" name="reason" required maxlength="2000"></textarea></label>
-<button class="btn btn-primary" type="submit">Применить</button>
-</form>
+{% block content_header %}
+<div class="row align-items-center"><div class="col">
+  <h2 class="page-title">Правила и ручная выдача</h2>
+  <div class="page-pretitle">Выдайте или отзовите достижение с указанием причины. Действие сохранится в журнале.</div>
 </div></div>
-<div class="table-responsive mt-3"><table class="table"><thead><tr><th>Достижение</th><th>Правило</th><th>Владельцев</th></tr></thead><tbody>
-{% for item in catalog %}<tr><td>{{ item.title }}</td><td>{{ item.status }}</td><td>{{ item.count }}</td></tr>{% endfor %}
-</tbody></table></div></div>
+{% endblock %}
+{% block content %}
+<div class="col-12 col-xl-8">
+  <div class="card mb-3"><div class="card-body">
+    <form method="post">
+      <div class="mb-3">
+        <label class="form-label" for="achievement-user">ID пользователя</label>
+        <input id="achievement-user" class="form-control" name="user_id" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="achievement-id">Достижение</label>
+        <select id="achievement-id" class="form-select" name="achievement_id" required>
+          {% for item in catalog %}<option value="{{ item.id }}">{{ item.title }} ({{ item.status }})</option>{% endfor %}
+        </select>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="achievement-action">Действие</label>
+        <select id="achievement-action" class="form-select" name="action">
+          <option value="grant">Выдать</option><option value="revoke">Отозвать</option>
+        </select>
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="achievement-reason">Причина</label>
+        <textarea id="achievement-reason" class="form-control" name="reason" required maxlength="2000" rows="3"></textarea>
+      </div>
+      <button class="btn btn-primary" type="submit" {% if not catalog %}disabled{% endif %}>Применить</button>
+    </form>
+  </div></div>
+  <div class="card">
+    <div class="table-responsive">
+      <table class="table table-vcenter card-table">
+        <thead><tr><th>Достижение</th><th>Правило</th><th>Владельцев</th></tr></thead>
+        <tbody>
+          {% for item in catalog %}<tr><td>{{ item.title }}</td><td>{{ item.status }}</td><td>{{ item.count }}</td></tr>
+          {% else %}<tr><td colspan="3" class="text-secondary">Достижений пока нет.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
 {% endblock %}

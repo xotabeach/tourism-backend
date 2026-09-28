@@ -8,17 +8,18 @@
 </div>
 {% endblock %}
 {% block content %}
+{% set provider_labels = dict(providers) %}
 <div class="col-12 col-xl-8">
   <div class="card">
     <div class="card-body">
       <div class="mb-4">
         <div class="text-secondary mb-1">Сейчас отвечает</div>
-        <div class="d-flex align-items-center gap-2">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
           <span class="ct-badge ct-badge-ops" style="font-size: 0.95rem; padding: 0.35rem 0.8rem;">
-            {{ effective }}
+            {{ provider_labels.get(effective, effective) }}
           </span>
           {% if override %}
-          <span class="text-secondary">— переопределено в админке (переменная окружения: {{ env_default }})</span>
+          <span class="text-secondary">— переопределено в админке (переменная окружения: {{ provider_labels.get(env_default, env_default) }})</span>
           {% else %}
           <span class="text-secondary">— значение из переменной окружения AI_PROVIDER, без переопределения</span>
           {% endif %}

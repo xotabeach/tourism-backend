@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -540,6 +541,19 @@ def format_fraud_flag(model: object, attribute: object) -> Markup:
         )
         return Markup('<span class="ct-badge {}">{}</span>').format(css, label)
     return Markup('<span class="text-secondary">—</span>')
+
+
+def choice_formatter(field: str, labels: dict[str, str]) -> Callable[[object, object], Markup]:
+    """Translate a stored value without changing it; escape future unknown values."""
+
+    def render(model: object, attribute: object) -> Markup:
+        value = getattr(model, field, None)
+        if value is None or value == "":
+            return escape("—")
+        key = str(value)
+        return escape(labels.get(key, key))
+
+    return render
 
 
 def format_route_name_with_structure(
