@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from tourism_backend.modules.app_update.presentation.router import router as app_update_router
 from tourism_backend.modules.content.presentation.router import router as content_router
 from tourism_backend.modules.favorites.presentation.router import router as favorites_router
 from tourism_backend.modules.geography.presentation.router import router as geography_router
@@ -46,6 +47,7 @@ router.include_router(maps_router)
 router.include_router(content_router)
 router.include_router(moderation_router)
 router.include_router(runtime_config_router)
+router.include_router(app_update_router)
 
 
 @router.get("")
