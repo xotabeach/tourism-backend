@@ -1582,6 +1582,20 @@ class RouteAdmin(ModelView, model=Route):
                 "extreme": "Очень сложный",
             },
         ),
+        Route.lifecycle_status: choice_formatter(
+            "lifecycle_status",
+            {"draft": "Черновик", "active": "Действует", "archived": "В архиве"},
+        ),
+        Route.transport_mode: choice_formatter(
+            "transport_mode",
+            {
+                "walk": "Пешком",
+                "walking": "Пешком",
+                "car": "На машине",
+                "public": "Общественный транспорт",
+                "mixed": "Смешанный",
+            },
+        ),
     }
     column_formatters_detail = {
         **column_formatters,
