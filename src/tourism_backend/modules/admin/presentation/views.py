@@ -46,6 +46,7 @@ from tourism_backend.modules.admin.presentation.antifraud_admin import (
     UserFraudStateAdmin,
     apply_user_fraud_action,
 )
+from tourism_backend.modules.admin.presentation.app_update_admin import AppUpdateConfigAdmin
 from tourism_backend.modules.admin.presentation.auth import (
     require_admin_role,
     require_permission,
@@ -4031,6 +4032,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(SupportHelpIndexAdmin)
     admin.add_view(RuntimeConfigAdmin)
     admin.add_view(SmsConfigAdmin)
+    admin.add_view(AppUpdateConfigAdmin)
     admin.add_view(RoutePointsHoldAdmin)
     admin.add_view(UserFraudStateAdmin)
     admin.add_view(RoutePaceViolationAdmin)
@@ -4045,6 +4047,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     if session_maker is not None:
         RuntimeConfigAdmin.session_maker = session_maker
         SmsConfigAdmin.session_maker = session_maker
+        AppUpdateConfigAdmin.session_maker = session_maker
         AntiFraudConfigAdmin.session_maker = session_maker
         AchievementsOperationsAdmin.session_maker = session_maker
         RouteStructureAdmin.session_maker = session_maker
