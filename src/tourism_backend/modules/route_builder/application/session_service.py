@@ -877,10 +877,7 @@ async def post_message(
                     "Какие маршруты сравнить? Пришлите названия или сначала попросите варианты."
                 )
             elif fallback:
-                assistant_text = (
-                    "Не удалось получить сравнение помощника. "
-                    "Можно повторить вопрос или открыть показанные карточки."
-                )
+                assistant_text = grounded_comparison_text(prefetch["comparison_routes"])
             discovery_replies = [{"id": "reply", "label": "Предложи варианты"}]
         elif goal in {"place_info", "clarify"}:
             # No route questionnaire/CTA after a factual answer or open clarification.
@@ -1178,6 +1175,14 @@ async def _assistant_from_ai(
         # No unbounded agent loop, and never claim an ungrounded comparison.
         remaining = settings.ai_turn_budget_seconds - (time.perf_counter() - started)
         if remaining <= _MIN_TOOL_ROUND_SECONDS:
+            logger.info(
+                "ai_chat_grounding_skipped",
+                extra={
+                    "goal": semantic_goal,
+                    "reason": "budget",
+                    "remaining_s": round(remaining, 1),
+                },
+            )
             return replace(result, structured_parse="fallback")
         try:
             follow: ChatTurnResult = await asyncio.wait_for(
@@ -1190,7 +1195,11 @@ async def _assistant_from_ai(
                 ),
                 timeout=remaining,
             )
-        except Exception:  # noqa: BLE001 — deterministic grounded response remains available
+        except Exception as exc:  # noqa: BLE001 — deterministic grounded response remains available
+            logger.info(
+                "ai_chat_grounding_skipped",
+                extra={"goal": semantic_goal, "reason": type(exc).__name__},
+            )
             return replace(result, structured_parse="fallback")
         return replace(
             follow,
@@ -1537,7 +1546,7 @@ def _catalog_match_block(
         difficulty = getattr(route, "difficulty", None)
         difficulty_label = None
         if isinstance(difficulty, str) and difficulty.strip():
-            difficulty_label = difficulty.strip()[:40]
+            difficulty_label = _DIFFICULTY_LABELS.get(difficulty.strip(), difficulty.strip()[:40])
         elif isinstance(difficulty, int):
             difficulty_label = f"{difficulty}/5"
         routes.append(
@@ -1748,6 +1757,7 @@ async def _comparison_context(
                 "route_id": str(route.id),
                 "title": route.name,
                 "duration_minutes": route.estimated_duration_minutes,
+                "distance_meters": route.distance_meters,
                 "transport_mode": route.transport_mode,
                 "difficulty": route.difficulty,
                 "stops_count": route.stops_count,
@@ -1755,6 +1765,82 @@ async def _comparison_context(
             for route in routes
         ]
     }
+
+
+_DIFFICULTY_LABELS = {
+    "easy": "лёгкий",
+    "moderate": "средний",
+    "medium": "средний",
+    "hard": "сложный",
+    "extreme": "очень сложный",
+}
+_DIFFICULTY_ORDER = {"easy": 0, "moderate": 1, "medium": 1, "hard": 2, "extreme": 3}
+_COMPARISON_TRANSPORT_LABELS = {
+    "walk": "пешком",
+    "walking": "пешком",
+    "car": "на машине",
+    "public": "на общественном транспорте",
+    "mixed": "смешанный",
+}
+
+
+def _format_hours(minutes: int) -> str:
+    if minutes < 60:
+        return f"около {minutes} мин"
+    hours = round(minutes / 60, 1)
+    return f"около {hours:g} ч".replace(".", ",")
+
+
+def grounded_comparison_text(routes: list[dict[str, Any]]) -> str:
+    """Compare shown catalogue cards without the model.
+
+    Used when the synthesis call ran out of the turn budget or failed: every
+    figure comes from the cards themselves, so the reply stays honest and the
+    person gets a comparison instead of an apology.
+    """
+    lines: list[str] = []
+    for route in routes[:5]:
+        facts: list[str] = []
+        meters = route.get("distance_meters")
+        if isinstance(meters, int) and meters > 0:
+            facts.append(f"{meters / 1000:.1f} км".replace(".", ","))
+        minutes = route.get("duration_minutes")
+        if isinstance(minutes, int) and minutes > 0:
+            facts.append(_format_hours(minutes))
+        transport = _COMPARISON_TRANSPORT_LABELS.get(str(route.get("transport_mode") or ""))
+        if transport:
+            facts.append(transport)
+        difficulty = _DIFFICULTY_LABELS.get(str(route.get("difficulty") or ""))
+        if difficulty:
+            facts.append(difficulty)
+        stops = route.get("stops_count")
+        if isinstance(stops, int) and stops > 0:
+            facts.append(f"точек: {stops}")
+        title = str(route.get("title") or "Маршрут").strip()
+        lines.append(f"• «{title}»: {', '.join(facts)}." if facts else f"• «{title}».")
+    if not lines:
+        return "Какие маршруты сравнить? Пришлите названия или сначала попросите варианты."
+
+    summary: list[str] = []
+    with_distance = [r for r in routes if isinstance(r.get("distance_meters"), int)]
+    if len(with_distance) >= 2:
+        shortest = min(with_distance, key=lambda r: r["distance_meters"])
+        summary.append(f"Самый короткий: «{shortest.get('title')}».")
+    rated = [r for r in routes if str(r.get("difficulty") or "") in _DIFFICULTY_ORDER]
+    if len(rated) >= 2:
+        easiest = min(rated, key=lambda r: _DIFFICULTY_ORDER[str(r["difficulty"])])
+        hardest = max(rated, key=lambda r: _DIFFICULTY_ORDER[str(r["difficulty"])])
+        if easiest is not hardest and easiest["difficulty"] != hardest["difficulty"]:
+            summary.append(f"Самый лёгкий: «{easiest.get('title')}».")
+    tail = " ".join(summary)
+    return "\n".join(
+        [
+            "Коротко по показанным маршрутам:",
+            *lines,
+            *([tail] if tail else []),
+            "Скажи, что важнее: время, нагрузка или транспорт, и подскажу, какой выбрать.",
+        ]
+    )
 
 
 def _retrieval_query(messages: list[ChatMessage], constraints: dict[str, Any]) -> str:
