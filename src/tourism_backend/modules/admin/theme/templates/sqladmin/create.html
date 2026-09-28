@@ -1,0 +1,69 @@
+{% extends "sqladmin/layout.html" %}
+{% from 'sqladmin/_macros.html' import render_form_fields %}
+{% block content %}
+<div class="col-12">
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">Добавить: {{ model_view.name }}</h3>
+    </div>
+    <div class="card-body border-bottom py-3">
+      {% block create_form %}
+      <form action="{{ url_for('admin:create', identity=model_view.identity) }}" method="POST"
+        enctype="multipart/form-data">
+        <div class="row">
+          {% if error %}
+          <div class="alert alert-danger" role="alert">{{ error }}</div>
+          {% endif %}
+        </div>
+        <fieldset class="form-fieldset">
+          {{ render_form_fields(form, form_opts=form_opts, ajax_lookup_url=url_for('admin:ajax_lookup', identity=model_view.identity)) }}
+        </fieldset>
+        <div class="row">
+          <div class="col-md-2">
+            <a href="{{ url_for('admin:list', identity=model_view.identity) }}" class="btn">
+              Отмена
+            </a>
+          </div>
+          <div class="col-md-6">
+            <div class="btn-group flex-wrap">
+              {% block submit_buttons_bottom  %}
+                <button type="submit" name="save" value="Save" class="btn btn-primary ct-btn-primary">Сохранить</button>
+                {% if model_view.can_edit %}
+                <button type="submit" name="save" value="Save and continue editing" class="btn btn-outline-primary">Сохранить и продолжить</button>
+                {% endif %}
+                <button type="submit" name="save" value="Save and add another" class="btn btn-outline-primary">Сохранить и добавить ещё</button>
+              {% endblock %}
+            </div>
+          </div>
+        </div>
+      </form>
+      {% endblock %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block head_css %}
+{{ super() }}
+{% if form is defined %}
+  {% set form_media = collect_form_media(form) %}
+  {% for url in form_media.css %}
+  <link rel="stylesheet" href="{{ url }}">
+  {% endfor %}
+{% endif %}
+{% endblock %}
+
+{% block tail %}
+{{ super() }}
+{% if form is defined %}
+  {% set form_media = collect_form_media(form) %}
+  {% for url in form_media.js %}
+  <script src="{{ url }}"></script>
+  {% endfor %}
+  {% for field in form if field.editor_init_template is defined %}
+    {% with field = field %}
+      {% include field.editor_init_template %}
+    {% endwith %}
+  {% endfor %}
+{% endif %}
+{% endblock %}

@@ -136,6 +136,7 @@ async def test_public_profile_hides_phone_and_is_readable(
         "leaderboard_place",
         "liked_by_me",
         "is_expert",
+        "is_editorial",
         "followers_count",
         "following_count",
         "completed_routes_count",
@@ -187,6 +188,7 @@ async def test_public_user_search_returns_profile_media_without_pii(
         "leaderboard_place",
         "liked_by_me",
         "is_expert",
+        "is_editorial",
         "followers_count",
         "following_count",
         "completed_routes_count",
@@ -278,6 +280,7 @@ async def test_users_leaderboard_is_public_and_ordered_by_points(
         "leaderboard_place",
         "liked_by_me",
         "is_expert",
+        "is_editorial",
         "followers_count",
         "following_count",
         "completed_routes_count",
@@ -904,3 +907,55 @@ async def test_reset_backfill_exports_before_deleting_and_is_repeatable(
             await session.rollback()
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_editorial_service_profile_never_signs_in_or_ranks(
+    live_client: AsyncClient,
+) -> None:
+    """Spec 16 (D6, D18): the КРЫМТРИП profile is public, marked «Редакция»,
+    outside the ratings, and no code or token is ever issued for it."""
+    phone = f"+7912{uuid4().int % 10_000_000:07d}"
+    tokens = await _login(live_client, phone=phone, name="КРЫМТРИП тест")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    user_id = (await live_client.get("/api/v1/me", headers=headers)).json()["id"]
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    async with engine.begin() as conn:
+        top = await conn.scalar(text("SELECT COALESCE(MAX(travel_points), 0) FROM users"))
+        await conn.execute(
+            text(
+                "UPDATE users SET is_system_account = true, travel_points = :points WHERE id = :id"
+            ),
+            {"id": user_id, "points": int(top or 0) + 10},
+        )
+    await engine.dispose()
+
+    profile = (await live_client.get(f"/api/v1/users/{user_id}")).json()
+    assert profile["is_editorial"] is True
+    assert profile["leaderboard_place"] is None
+    board = (await live_client.get("/api/v1/users/leaderboard", params={"limit": 100})).json()
+    assert user_id not in {item["id"] for item in board["items"]}
+
+    # A code request answers as usual but sends nothing; sign-in and refresh
+    # are refused.
+    request = await live_client.post(
+        "/api/v1/auth/otp/request", json={"display_name": "x", "phone": phone}
+    )
+    assert request.status_code == 204
+    verify = await live_client.post(
+        "/api/v1/auth/otp/verify",
+        json={
+            "phone": phone,
+            "code": "1234",
+            "privacy_accepted": True,
+            "personal_data_accepted": True,
+        },
+    )
+    # No code was issued, so there is nothing to verify.
+    assert verify.status_code in (400, 403)
+    assert "access_token" not in verify.text
+    refresh = await live_client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert refresh.status_code == 403

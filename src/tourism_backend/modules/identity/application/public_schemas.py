@@ -18,6 +18,8 @@ class PublicUserOut(BaseModel):
     leaderboard_place: int | None = None
     liked_by_me: bool = False
     is_expert: bool = False
+    #: The КРЫМТРИП editorial profile: badge «Редакция», no rating (spec 16).
+    is_editorial: bool = False
     followers_count: int = Field(default=0, ge=0)
     following_count: int = Field(default=0, ge=0)
     # Only computed for a single-profile fetch (get_public_user) — search/

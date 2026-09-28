@@ -7,6 +7,7 @@ from fastapi import APIRouter, Query, status
 from tourism_backend.api.deps import CurrentUserId, DbSession
 from tourism_backend.modules.route_execution.application import service
 from tourism_backend.modules.route_execution.application.schemas import (
+    DifficultyFeedbackIn,
     RouteExecutionEventIn,
     RouteExecutionListOut,
     RouteExecutionOut,
@@ -145,6 +146,39 @@ async def pause_route_execution(
     )
 
 
+@router.post("/{execution_id}/end-day", response_model=RouteExecutionOut)
+async def end_route_execution_day(
+    execution_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    """«Закончить день»: a night pause; resume starts the next day (spec 14a)."""
+    return await service.pause_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        event=payload,
+        night=True,
+    )
+
+
+@router.post("/{execution_id}/finish-early", response_model=RouteExecutionOut)
+async def finish_route_execution_early(
+    execution_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    """«Завершить многодневный маршрут»: the finished days are paid (spec 14a)."""
+    return await service.finish_early_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        event=payload,
+    )
+
+
 @router.post("/{execution_id}/resume", response_model=RouteExecutionOut)
 async def resume_route_execution(
     execution_id: UUID,
@@ -157,4 +191,16 @@ async def resume_route_execution(
         user_id=user_id,
         execution_id=execution_id,
         event=payload,
+    )
+
+
+@router.post("/{execution_id}/difficulty-feedback", status_code=status.HTTP_204_NO_CONTENT)
+async def route_execution_difficulty_feedback(
+    execution_id: UUID,
+    payload: DifficultyFeedbackIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> None:
+    await service.record_difficulty_feedback(
+        session, user_id=user_id, execution_id=execution_id, answer=payload.answer
     )

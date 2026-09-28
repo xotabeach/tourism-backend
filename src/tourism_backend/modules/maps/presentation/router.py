@@ -8,14 +8,27 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Query, Request, Response
+from geoalchemy2 import Geometry
+from geoalchemy2.functions import ST_X, ST_Y
+from sqlalchemy import cast, select
 
 from tourism_backend.api.deps import DbSession, SettingsDep
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import Settings
+from tourism_backend.modules.maps.infrastructure.osm_static import (
+    MapFrame,
+    StaticMapError,
+    draw_overlays,
+    fetch_basemap,
+    fit_frame,
+)
 from tourism_backend.modules.places.application import service as places_service
+from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.route_builder.infrastructure.two_gis_routing import (
     two_gis_routing_stats,
 )
 from tourism_backend.modules.routes.application import service as routes_service
+from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
 
 router = APIRouter(tags=["maps"])
 _STATIC_URL = "https://static.maps.2gis.com/2.0"
@@ -264,12 +277,137 @@ async def _fetch(
     )
 
 
+_OSM_TIMEOUT_SECONDS = 10.0
+_osm_cache: dict[tuple[object, ...], tuple[float, bytes, str]] = {}
+
+
+def _png_response(content: bytes, etag: str, request: Request, cache_control: str) -> Response:
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={
+            "Cache-Control": cache_control,
+            "ETag": etag,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+async def _osm_image(
+    *,
+    settings: Settings,
+    request: Request,
+    frame: MapFrame,
+    line: Sequence[tuple[float, float]] = (),
+    numbered_pins: Sequence[tuple[float, float]] = (),
+    place_pin: tuple[float, float] | None = None,
+    line_mode: str = "walk",
+    pieces: Sequence[tuple[str, Sequence[tuple[float, float]]]] = (),
+) -> Response:
+    line_digest = hashlib.sha256(
+        repr(
+            (
+                tuple(line),
+                tuple(numbered_pins),
+                line_mode,
+                tuple((mode, tuple(points)) for mode, points in pieces),
+            )
+        ).encode()
+    ).hexdigest()
+    key = (settings.map_source_version, frame, line_digest, place_pin)
+    now = time.monotonic()
+    cached = _osm_cache.get(key)
+    if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
+        return _png_response(cached[1], cached[2], request, "public, max-age=86400")
+    try:
+        base = await fetch_basemap(
+            frame, base_url=settings.tileserver_base_url, timeout_seconds=_OSM_TIMEOUT_SECONDS
+        )
+    except StaticMapError as exc:
+        raise AppError(
+            code="map_preview_upstream_unavailable",
+            message="Map renderer is temporarily unavailable",
+            status_code=502,
+        ) from exc
+    content = draw_overlays(
+        base,
+        frame,
+        line=line,
+        numbered_pins=numbered_pins,
+        place_pin=place_pin,
+        line_mode=line_mode,
+        pieces=pieces,
+    )
+    etag = f'"{hashlib.sha256(content).hexdigest()}"'
+    if len(_osm_cache) >= _CACHE_MAX_ITEMS:
+        _osm_cache.pop(next(iter(_osm_cache)))
+    _osm_cache[key] = (now, content, etag)
+    return _png_response(
+        content, etag, request, "public, max-age=86400, stale-while-revalidate=604800"
+    )
+
+
+async def route_map_response(
+    *,
+    settings: Settings,
+    request: Request,
+    line: Sequence[tuple[float, float]],
+    stops: Sequence[tuple[float, float]],
+    width: int,
+    height: int,
+    scale: int,
+    center: tuple[float, float] | None,
+    zoom: int | None,
+    pins: str,
+    line_mode: str = "walk",
+    pieces: Sequence[tuple[str, Sequence[tuple[float, float]]]] = (),
+) -> Response:
+    """One route image for every endpoint that shows a route (spec 12a).
+
+    ``line_mode`` is a segment mode (spec 14): walking is drawn dashed.
+    """
+    if settings.map_provider == "2gis":
+        return await _fetch(
+            settings=settings,
+            request=request,
+            params=_route_static_params(
+                line,
+                stops,
+                width=width,
+                height=height,
+                scale=scale,
+                center=center,
+                zoom=zoom,
+                pins=pins,
+            ),
+        )
+    if center is not None and zoom is not None:
+        frame = MapFrame(center[0], center[1], zoom, width, height, scale)
+    else:
+        everything = list(line) + [p for _, points in pieces for p in points]
+        frame = fit_frame(everything + list(stops), width=width, height=height, scale=scale)
+    return await _osm_image(
+        settings=settings,
+        request=request,
+        frame=frame,
+        line=line,
+        numbered_pins=stops if pins == "numbered" else (),
+        line_mode=line_mode,
+        pieces=pieces,
+    )
+
+
 @router.get("/maps/static/route/{route_id}")
+@router.get("/maps/static/route/{route_id}/{version}")
 async def route_static_map(
     route_id: UUID,
     session: DbSession,
     settings: SettingsDep,
     request: Request,
+    # The renderer version only busts caches (v=osm1, D22); any value works.
+    version: str | None = None,
     width: int = Query(default=880, ge=120, le=1280),
     height: int = Query(default=420, ge=90, le=1280),
     scale: int = Query(default=2, ge=1, le=2),
@@ -294,30 +432,43 @@ async def route_static_map(
             status_code=404,
         )
     has_center = center_lat is not None and center_lng is not None
-    params = _route_static_params(
-        line_points,
-        stop_points or line_points,
+    return await route_map_response(
+        settings=settings,
+        request=request,
+        line=line_points,
+        stops=stop_points or line_points,
         width=width,
         height=height,
         scale=scale,
         center=(center_lat, center_lng) if has_center else None,  # type: ignore[arg-type]
         zoom=zoom if has_center else None,
         pins=pins,
+        line_mode=segment_mode_for(route.transport_mode),
+        pieces=await routes_service.route_segment_lines(session, route_id),
     )
-    return await _fetch(settings=settings, params=params, request=request)
 
 
 @router.get("/maps/static/place/{place_id}")
+@router.get("/maps/static/place/{place_id}/{version}")
 async def place_static_map(
     place_id: UUID,
     session: DbSession,
     settings: SettingsDep,
     request: Request,
+    # The renderer version only busts caches (v=osm1, D22); any value works.
+    version: str | None = None,
     width: int = Query(default=880, ge=120, le=1280),
     height: int = Query(default=420, ge=90, le=1280),
     scale: int = Query(default=2, ge=1, le=2),
 ) -> Response:
     place = await places_service.get_place(session, place_id)
+    if settings.map_provider == "osm":
+        return await _osm_image(
+            settings=settings,
+            request=request,
+            frame=MapFrame(place.lat, place.lng, 14, width, height, scale),
+            place_pin=(place.lng, place.lat),
+        )
     params = [
         ("s", _size(width, height, scale)),
         ("c", f"{place.lat:.6f},{place.lng:.6f}"),
@@ -325,6 +476,63 @@ async def place_static_map(
         ("pt", f"{place.lat:.6f},{place.lng:.6f}~k:p~c:rd~s:l"),
     ]
     return await _fetch(settings=settings, params=params, request=request)
+
+
+@router.get("/maps/static/points/{version}/{place_ids}")
+async def points_static_map(
+    version: str,
+    place_ids: str,
+    session: DbSession,
+    settings: SettingsDep,
+    request: Request,
+    width: int = Query(default=880, ge=120, le=1280),
+    height: int = Query(default=420, ge=90, le=1280),
+    scale: int = Query(default=2, ge=1, le=2),
+    center_lat: float | None = Query(default=None, ge=-90, le=90),
+    center_lng: float | None = Query(default=None, ge=-180, le=180),
+    zoom: int | None = Query(default=None, ge=1, le=18),
+    pins: str = Query(default="numbered", pattern="^(numbered|none)$"),
+) -> Response:
+    """Basemap with the places an author has put down, before any routing.
+
+    The publish form shows the real map from the first point on and draws
+    the road line over it once the preview is routed (FRONTEND-44). Only
+    published places are drawn: an unpublished id is left out, never shown.
+    """
+    del version  # busts caches only, like the route endpoint (D22)
+    try:
+        ids = [UUID(raw) for raw in place_ids.split(",") if raw.strip()]
+    except ValueError as exc:
+        raise AppError(
+            code="map_preview_unavailable", message="Invalid place ids", status_code=404
+        ) from exc
+    if not 1 <= len(ids) <= 22:
+        raise AppError(code="map_preview_unavailable", message="Invalid place ids", status_code=404)
+    geom = cast(Place.location, Geometry)
+    rows = (
+        await session.execute(
+            select(Place.id, ST_X(geom), ST_Y(geom)).where(
+                Place.id.in_(set(ids)), Place.publication_status == "published"
+            )
+        )
+    ).all()
+    by_id = {place_id: (float(lng), float(lat)) for place_id, lng, lat in rows}
+    points = [by_id[place_id] for place_id in ids if place_id in by_id]
+    if not points:
+        raise AppError(code="map_preview_unavailable", message="No places to show", status_code=404)
+    has_center = center_lat is not None and center_lng is not None
+    return await route_map_response(
+        settings=settings,
+        request=request,
+        line=(),
+        stops=points,
+        width=width,
+        height=height,
+        scale=scale,
+        center=(center_lat, center_lng) if has_center else None,  # type: ignore[arg-type]
+        zoom=zoom if has_center else None,
+        pins=pins,
+    )
 
 
 @router.get("/maps/two-gis/status")

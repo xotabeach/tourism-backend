@@ -35,12 +35,17 @@ async def test_stub_routes_nearby_walk_points() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stub_rejects_unreachable_walk_leg() -> None:
+async def test_stub_builds_a_long_walk_leg_and_flags_it() -> None:
+    """Length alone refuses nothing (spec 14, D24); an explicit limit still does."""
     provider = StubRoutingProvider()
+    far = [_wp(34.1, 44.5), _wp(35.5, 45.5)]  # ~150+ km road-estimate
+    result = await provider.route(waypoints=far, transport_mode="walk")
+    assert "long_leg:0" in result.warnings
     with pytest.raises(RoutingError) as exc:
         await provider.route(
-            waypoints=[_wp(34.1, 44.5), _wp(35.5, 45.5)],  # ~150+ km road-estimate
+            waypoints=far,
             transport_mode="walk",
+            constraints=RoutingConstraints(max_leg_meters=25_000),
         )
     assert exc.value.code == "routing_unreachable"
 
@@ -83,7 +88,9 @@ async def test_draft_preview_cache_round_trips_and_expires_into_a_miss() -> None
             return self._raw
 
     stored = json.dumps({"line": line, "stops": stops})
-    assert await draft_preview_shape(_Redis(stored), "id") == (line, stops)
+    assert await draft_preview_shape(_Redis(stored), "id") == (line, stops, "walk")
+    driven = json.dumps({"line": line, "stops": stops, "mode": "car"})
+    assert await draft_preview_shape(_Redis(driven), "id") == (line, stops, "car")
 
     # Expired entry, no Redis at all, and a corrupt payload all behave alike.
     assert await draft_preview_shape(_Redis(None), "id") is None

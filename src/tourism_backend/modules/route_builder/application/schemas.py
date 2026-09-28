@@ -26,6 +26,10 @@ MatchStrategy = Literal["algorithmic", "ai_catalog_rank"]
 DayKind = Literal["any", "weekday", "weekend"]
 
 
+#: Matching treats any larger budget as this one.
+MAX_BUDGET_AMOUNT = 1_000_000
+
+
 class RouteMatchParamsIn(BaseModel):
     """Normalized match constraints.
 
@@ -59,7 +63,7 @@ class RouteMatchParamsIn(BaseModel):
     season: str | None = Field(default=None, max_length=32)
     transport_mode: TransportMode | None = None
     day_kind: DayKind = "any"
-    budget_amount: int | None = Field(default=None, ge=0, le=1_000_000)
+    budget_amount: int | None = Field(default=None, ge=0, le=MAX_BUDGET_AMOUNT)
     paid_ok: bool | None = None
     with_children: bool | None = None
     with_pets: bool | None = None
@@ -69,6 +73,16 @@ class RouteMatchParamsIn(BaseModel):
     # Values with a form default (duration, pace) the person really chose. A
     # client that does not send it is treated as having chosen everything.
     explicit_fields: list[str] | None = Field(default=None, max_length=4)
+
+    @field_validator("budget_amount", mode="before")
+    @classmethod
+    def _cap_budget(cls, value: object) -> object:
+        # A bigger budget is a wish, not a mistake: «100000000» failed the
+        # whole match with a 422 (FRONTEND-46). Anything above the cap means
+        # the same for matching as the cap itself.
+        if isinstance(value, int) and not isinstance(value, bool) and value > MAX_BUDGET_AMOUNT:
+            return MAX_BUDGET_AMOUNT
+        return value
 
     @field_validator("explicit_fields")
     @classmethod
@@ -264,6 +278,33 @@ class CatalogMatchBlockOut(BaseModel):
     routes: list[CatalogRouteItemOut] = Field(default_factory=list, max_length=5)
 
 
+class ComparisonRouteOut(BaseModel):
+    """One column of a side-by-side comparison, all figures from the card."""
+
+    route_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=120)
+    distance_km: float | None = Field(default=None, ge=0)
+    duration_minutes: int | None = Field(default=None, ge=0)
+    transport_label: str | None = Field(default=None, max_length=40)
+    difficulty_label: str | None = Field(default=None, max_length=40)
+    #: 1 easy .. 4 extreme, for the difficulty scale; None when unknown.
+    difficulty_level: int | None = Field(default=None, ge=1, le=4)
+    stops_count: int | None = Field(default=None, ge=0)
+    #: Server-computed superlatives («Короче всех», «Легче всех»).
+    badges: list[str] = Field(default_factory=list, max_length=3)
+
+
+class RouteComparisonBlockOut(BaseModel):
+    """Visual comparison of the catalogue routes shown earlier (FRONTEND-46).
+
+    Clients that predate it skip unknown block types, so they still get the
+    assistant text on its own.
+    """
+
+    type: Literal["route_comparison"] = "route_comparison"
+    routes: list[ComparisonRouteOut] = Field(min_length=2, max_length=5)
+
+
 class ActionsBlockOut(BaseModel):
     type: Literal["actions"] = "actions"
     actions: list[dict[str, str]]
@@ -335,6 +376,7 @@ ChatBlockOut = (
     PlaceChipBlockOut
     | RouteProposalCardBlockOut
     | CatalogMatchBlockOut
+    | RouteComparisonBlockOut
     | ActionsBlockOut
     | SliderBlockOut
     | ToggleBlockOut
@@ -352,6 +394,12 @@ class RouteProposalPreviewOut(BaseModel):
     synthetic: bool = True
     static_map_url: str | None = None
     trip_plan: TripPlanOut | None = None
+    # How the line is travelled, for its look on the map (spec 14, D23).
+    # Proposals stored before it have none and were walked or driven alike.
+    line_mode: Literal["walk", "car"] = "walk"
+    # Spec 17 (D22): a quick estimate from the line's length and climb, shown
+    # on the card instead of the pace; the saved route gets the full one.
+    difficulty_level: int | None = Field(default=None, ge=1, le=5)
 
 
 class ProposalTripDateIn(BaseModel):
@@ -463,7 +511,7 @@ class ChatControlsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     city: str | None = Field(default=None, min_length=1, max_length=80)
-    budget_amount: StrictInt | None = Field(default=None, ge=0, le=1_000_000)
+    budget_amount: StrictInt | None = Field(default=None, ge=0, le=MAX_BUDGET_AMOUNT)
     with_children: StrictBool | None = None
     with_pets: StrictBool | None = None
     avoid_crowds: StrictBool | None = None

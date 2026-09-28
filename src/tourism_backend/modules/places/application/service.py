@@ -6,6 +6,7 @@ from sqlalchemy import Select, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import get_settings
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
 from tourism_backend.modules.places.application.schemas import (
     CategoryOut,
@@ -308,5 +309,5 @@ async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
         content_enrichment_status=place.content_enrichment_status,
         proposed_slug=place.proposed_slug,
         primary_entrance=primary_entrance,
-        static_map_url=f"/api/v1/maps/static/place/{place.id}",
+        static_map_url=f"/api/v1/maps/static/place/{place.id}/{get_settings().map_source_version}",
     )

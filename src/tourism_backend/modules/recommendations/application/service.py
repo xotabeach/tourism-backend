@@ -557,6 +557,7 @@ async def _load_candidates(session: AsyncSession) -> list[RecommendationCandidat
             favorite_count=int(favorite_counts.get(route.id, 0)),
             seasonality=tuple(route.seasonality or ()),
             quality_status=_quality_status(route.accessibility),
+            difficulty_level=route.difficulty_level,
         )
         for route in routes
     ]

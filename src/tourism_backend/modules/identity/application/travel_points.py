@@ -50,6 +50,10 @@ async def grant_due_travel_points(session: AsyncSession) -> int:
         beneficiary = await session.get(User, like.liked_user_id)
         if beneficiary is None:
             continue
+        if beneficiary.is_system_account:
+            # The editorial profile earns nothing (spec 16, D6).
+            like.awarded_at = now
+            continue
         beneficiary.travel_points += AWARD_POINTS
         await _sync_rank(session, beneficiary)
         like.awarded_at = now
@@ -73,6 +77,9 @@ async def grant_due_travel_points(session: AsyncSession) -> int:
         beneficiary = await session.get(User, owner_id)
         if beneficiary is None:
             continue
+        if beneficiary.is_system_account:
+            fav.author_points_awarded_at = now
+            continue
         beneficiary.travel_points += AWARD_POINTS
         await _sync_rank(session, beneficiary)
         fav.author_points_awarded_at = now
@@ -89,7 +96,7 @@ async def award_travel_points(session: AsyncSession, *, user: User, points: int)
     Callers own idempotency: this always adds. Returns the granted amount so
     the caller can persist it as its own replay guard.
     """
-    if points <= 0:
+    if points <= 0 or user.is_system_account:
         return 0
     user.travel_points += points
     await _sync_rank(session, user)

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from tourism_backend.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
-ADMIN_ROLES = ("ops", "admin")
+ADMIN_ROLES = ("admin", "ops", "support", "route_manager", "content_manager")
 
 
 class AdminPrincipal(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -37,7 +37,10 @@ class AdminRoleBinding(Base, UUIDPrimaryKeyMixin):
             "role",
             name="uq_admin_role_bindings_principal_role",
         ),
-        CheckConstraint("role IN ('ops', 'admin')", name="role"),
+        CheckConstraint(
+            "role IN ('admin', 'ops', 'support', 'route_manager', 'content_manager')",
+            name="role",
+        ),
     )
 
     principal_id: Mapped[UUID] = mapped_column(
@@ -50,6 +53,40 @@ class AdminRoleBinding(Base, UUIDPrimaryKeyMixin):
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(UTC),
+    )
+
+
+class AdminRolePermission(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "admin_role_permissions"
+    __table_args__ = (
+        UniqueConstraint("role", "permission", name="uq_admin_role_permission"),
+        CheckConstraint(
+            "role IN ('ops', 'support', 'route_manager', 'content_manager')",
+            name="role",
+        ),
+    )
+
+    role: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    permission: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class AdminPermissionOverride(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "admin_permission_overrides"
+    __table_args__ = (
+        UniqueConstraint("principal_id", "permission", name="uq_admin_permission_override"),
+        CheckConstraint("effect IN ('allow', 'deny')", name="effect"),
+    )
+
+    principal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("admin_principals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    permission: Mapped[str] = mapped_column(String(64), nullable=False)
+    effect: Mapped[str] = mapped_column(String(5), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
 
 

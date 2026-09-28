@@ -176,3 +176,21 @@ class RouteTerrainFeature(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     geometry = mapped_column(Geography(geometry_type="LINESTRING", srid=4326), nullable=False)
     source_osm_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class Parking(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A public car park from OSM, where a drive ends and a walk starts (spec 14b).
+
+    Replaced wholesale by each OSM data version (``load_parkings``); an
+    editor's choice of car park for a stop lives on the route, not here.
+    """
+
+    __tablename__ = "parkings"
+
+    osm_id: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    location = mapped_column(Geography(geometry_type="POINT", srid=4326), nullable=False)
+    access: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    fee: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    data_version: Mapped[str] = mapped_column(String(32), nullable=False)

@@ -133,6 +133,14 @@ async def request_otp(
         bypass=settings.otp_accept_any_enabled,
     )
 
+    service = await session.scalar(
+        select(User.id).where(User.phone_e164 == payload.phone, User.is_system_account.is_(True))
+    )
+    if service is not None:
+        # No code is ever sent to a service profile's number; the answer
+        # looks like any other so the number cannot be probed.
+        return
+
     lock_key = f"auth:otp:issue:{payload.phone}"
     if not await _acquire_otp_issue_lock(redis, lock_key):
         # A concurrent request is already issuing a code for this phone.
@@ -212,6 +220,14 @@ async def _issue_tokens(
     device_label: str | None,
     family_id: UUID | None = None,
 ) -> TokenPairOut:
+    if user.is_system_account:
+        # The one gate every sign-in and refresh passes: a service profile
+        # (КРЫМТРИП) is managed from the admin and never holds a session.
+        raise AppError(
+            code="system_account",
+            message="Этот профиль служебный, вход в него невозможен",
+            status_code=403,
+        )
     refresh_raw = new_refresh_token()
     family = family_id or uuid4()
     refresh_row = AuthRefreshSession(
@@ -386,6 +402,22 @@ async def refresh_tokens(
     user = await session.get(User, row.user_id)
     if user is None:
         raise AppError(code="refresh_invalid", message="Invalid refresh token", status_code=401)
+    if user.is_system_account:
+        # A profile turned into a service one loses every session it had.
+        await session.execute(
+            update(AuthRefreshSession)
+            .where(
+                AuthRefreshSession.user_id == user.id,
+                AuthRefreshSession.revoked_at.is_(None),
+            )
+            .values(revoked_at=now)
+        )
+        await session.commit()
+        raise AppError(
+            code="system_account",
+            message="Этот профиль служебный, вход в него невозможен",
+            status_code=403,
+        )
 
     new_raw = new_refresh_token()
     new_row = AuthRefreshSession(

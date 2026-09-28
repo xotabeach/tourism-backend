@@ -1,20 +1,22 @@
 # tourism-backend
 
-Private server repository для Crimea Travel Platform: modular monolith на
+Сервер КРЫМТРИП: modular monolith на
 Python 3.13 и FastAPI.
 
 Стек целиком (local / test / Gemma 4 home lab):
-`tourism-platform/docs/stack.md`.
+[tourism-platform/docs/stack.md](https://github.com/xotabeach/tourism-platform/blob/main/docs/stack.md).
 
 ## Назначение
 
 - HTTP API (`/api/v1`) для мобильного клиента.
 - Domain modules с API: `identity`, `geography`, `places`, `routes`,
-  `favorites`, `support`, `notifications`, `admin`, `media`.
+  `content`, `favorites`, `support`, `notifications`, `admin`, `media`.
 - API-модули: `route_builder` (match/generate/AI sessions),
   `route_execution` (start/check/complete/cancel), `subscriptions` (Travel+
   entitlements; self-serve checkout остаётся mock до подключения billing).
-- Миграции PostgreSQL/PostGIS через Alembic. Ops UI: SQLAdmin `/admin`.
+- Миграции PostgreSQL/PostGIS через Alembic. Админка `/admin` на SQLAdmin/Jinja:
+  адаптивные экраны, дашборд, рабочие очереди и статистика. Администратор
+  редактирует права ролей и персональные исключения; доступ проверяется на сервере.
 
 ## Требования
 
@@ -58,8 +60,9 @@ python scripts/seed_crimea.py
 ./scripts/validate.sh
 ```
 
-Стиль и DX: `tourism-platform/docs/development-environment.md`,
-`python-code-style.md`, `python-testing-guide.md`.
+Стиль и DX: [окружение](https://github.com/xotabeach/tourism-platform/blob/main/docs/development-environment.md),
+[Python code style](https://github.com/xotabeach/tourism-platform/blob/main/docs/python-code-style.md),
+[тесты](https://github.com/xotabeach/tourism-platform/blob/main/docs/python-testing-guide.md).
 
 Bulk import:
 
@@ -81,8 +84,10 @@ uv run python scripts/import_osm_crimea.py --fetch --limit 1000 --apply
 идемпотентно обновляет OSM records. Публикация требует отдельного
 boundary/dedup/editorial quality gate.
 
-В режиме экономии GitLab minutes push pipeline отключён. Production собирается
-и разворачивается с доверенного рабочего компьютера отдельной командой:
+На `main` и `gamma` запускается lean GitLab pipeline. Полный pipeline со
+стилем, тестами, сканерами и деплоем включается через
+`CI_PIPELINE_MODE=full`; локально проверки выполняет `./scripts/validate.sh`.
+Ручной локальный способ сборки и развёртывания:
 
 ```bash
 ./scripts/deploy-production-local.sh
@@ -91,8 +96,7 @@ boundary/dedup/editorial quality gate.
 Скрипт требует registry/SSH variables из локального окружения, собирает
 `linux/amd64`, публикует immutable SHA + `production`, затем запускает миграции
 на сервере через pinned host key. Импорт 1000 OSM-кандидатов остаётся явной
-опцией `--import-osm-crimea`. В GitLab сохранён только ручной registry build,
-запускаемый через **Run pipeline**; автоматических pipeline на push нет.
+опцией `--import-osm-crimea`. В lean pipeline registry build доступен как ручная job.
 
 ## Endpoints (срез)
 
@@ -104,12 +108,13 @@ OpenAPI: `http://localhost:8000/docs`
 | Geography / places | `/api/v1/geography/*`, `/categories`, `/places`, отдельные place reviews + media |
 | Auth / me | `/auth/otp/*`, `/auth/refresh`, `/me`, `/me/preferences` |
 | Users | `/users/search`, `/users/leaderboard`, `/users/{id}`, `/users/{id}/achievements` |
-| Routes | catalog (в т.ч. `place_id`), `/routes/mine`, drafts, submit, reviews + reply context + media, `/routes/recommendations/today`, `POST /routes/{id}/recommendation-feedback` |
+| Routes | catalog (в т.ч. `place_id`), `/routes/mine`, drafts, submit, reviews + reply context + media, дни/этапы и сложность, `/routes/recommendations/today`, `POST /routes/{id}/recommendation-feedback` |
+| Articles | статьи, комментарии и медиа с модерацией |
 | Route executions | `/route-executions` (start/list), `/active`, stop complete, complete, cancel; мутации принимают необязательный `{client_event_id, occurred_at}` для offline-повторов |
 | Favorites | `/favorites/places/{id}`, `/favorites/routes/{id}` |
 | Support | `/support/tickets`, `/support/tickets/{id}/attachments` (до 3 фото) |
 | Inbox / FCM | `/me/notifications`, `/me/device-tokens` |
-| Admin | `/admin` (cookie session; review photos, collapsed filters, expert actions) |
+| Admin | `/admin` (cookie session; дашборд, поддержка, контент, маршруты, права сотрудников) |
 
 AI planning sessions и deterministic Route Builder уже подключены в Phase 8B;
 OpenAI-compatible LM Studio transport и безопасный smoke probe также доступны.
@@ -158,8 +163,8 @@ Dockerfile
 
 ## Связанные репозитории
 
-- [`tourism-platform`](../tourism-platform) — архитектура, Compose, deploy.
-- [`tourism-mobile`](../tourism-mobile) — Flutter client.
+- [`tourism-platform`](https://github.com/xotabeach/tourism-platform) — архитектура, Compose, deploy.
+- [`tourism-mobile`](https://github.com/xotabeach/tourism-mobile) — Flutter client.
 
 ## Лицензия
 

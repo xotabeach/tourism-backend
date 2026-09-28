@@ -2,27 +2,139 @@
 {% block content_header %}
 <div class="row align-items-center">
   <div class="col">
-    <h2 class="page-title">КрымТрип Ops</h2>
-    <div class="page-pretitle">Внутренняя панель поддержки и доступа</div>
+    <div class="page-pretitle">КрымТрип Ops · {{ dashboard.updated_at.strftime("%d.%m.%Y, %H:%M") }} МСК</div>
+    <h2 class="page-title">Рабочий стол</h2>
   </div>
 </div>
 {% endblock %}
 {% block content %}
-<div class="ct-hub">
-  <a class="ct-hub-card" href="{{ url_for('admin:list', identity='user') }}">
-    <div class="ct-hub-icon"><i class="fa-solid fa-users"></i></div>
-    <h3>Пользователи</h3>
-    <p>Профили с аватарками, OTP-коды и смена телефона</p>
-  </a>
-  <a class="ct-hub-card" href="{{ url_for('admin:list', identity='support-ticket') }}">
-    <div class="ct-hub-icon"><i class="fa-solid fa-headset"></i></div>
-    <h3>Поддержка</h3>
-    <p>Тикеты и чат с пользователем — ответы оператора</p>
-  </a>
-  <a class="ct-hub-card" href="{{ url_for('admin:list', identity='admin-audit-event') }}">
-    <div class="ct-hub-icon"><i class="fa-solid fa-shield-halved"></i></div>
-    <h3>Доступ</h3>
-    <p>Операторы, роли и журнал аудита</p>
-  </a>
+<div class="col-12">
+  <div class="ct-dashboard-intro">
+    <div>
+      <span class="ct-eyebrow">Сегодня в работе</span>
+      <h3>Данные и задачи вашей команды</h3>
+      <p>Показаны только разделы, доступные вашей учётной записи.</p>
+    </div>
+    {% if dashboard.stats %}
+    <a class="btn btn-primary ct-btn-primary" href="{{ url_for('admin:view-stats') }}">Открыть статистику</a>
+    {% endif %}
+  </div>
+
+  <div class="ct-dashboard-columns">
+    <section class="ct-dashboard-section" aria-labelledby="dashboard-metrics-title">
+      <div class="ct-section-heading">
+        <div><span class="ct-eyebrow">Обзор</span><h3 id="dashboard-metrics-title">Ключевые показатели</h3></div>
+        {% if dashboard.stats %}<span class="text-secondary">За 7 дней · МСК</span>{% endif %}
+      </div>
+      <div class="ct-metric-grid">
+        {% if dashboard.stats %}
+        <a class="ct-metric-card" href="{{ url_for('admin:view-stats') }}">
+          <span class="ct-metric-icon"><i class="fa-solid fa-download" aria-hidden="true"></i></span>
+          <span class="ct-metric-label">Скачивания APK</span>
+          <strong class="ct-metric-value">{{ dashboard.stats.downloads_total }}</strong>
+          <span class="ct-metric-hint">Всего за выбранные 7 дней</span>
+        </a>
+        {% if dashboard.stats.display_share %}
+        {% set last_share = dashboard.stats.display_share %}
+        <a class="ct-metric-card" href="{{ url_for('admin:view-stats') }}">
+          <span class="ct-metric-icon"><i class="fa-solid fa-users" aria-hidden="true"></i></span>
+          <span class="ct-metric-label">Активные пользователи</span>
+          <strong class="ct-metric-value">{{ last_share.total }}</strong>
+          <span class="ct-metric-hint">{{ last_share.day.strftime("%d.%m.%Y") }}</span>
+        </a>
+        {% endif %}
+        {% endif %}
+        {% if 'support_open' in dashboard.counts %}
+        <a class="ct-metric-card" href="{{ url_for('admin:list', identity='support-ticket') }}">
+          <span class="ct-metric-icon"><i class="fa-solid fa-headset" aria-hidden="true"></i></span>
+          <span class="ct-metric-label">Открытые обращения</span>
+          <strong class="ct-metric-value">{{ dashboard.counts.support_open }}</strong>
+          <span class="ct-metric-hint">Все тикеты поддержки</span>
+        </a>
+        {% endif %}
+        {% if 'routes_pending' in dashboard.counts %}
+        <a class="ct-metric-card" href="{{ url_for('admin:list', identity='route') }}?publication_status=pending_review">
+          <span class="ct-metric-icon"><i class="fa-solid fa-route" aria-hidden="true"></i></span>
+          <span class="ct-metric-label">Маршруты на проверке</span>
+          <strong class="ct-metric-value">{{ dashboard.counts.routes_pending }}</strong>
+          <span class="ct-metric-hint">Ждут решения редактора</span>
+        </a>
+        {% endif %}
+        {% if 'articles_pending' in dashboard.counts %}
+        <a class="ct-metric-card" href="{{ url_for('admin:list', identity='article') }}?status=pending_review">
+          <span class="ct-metric-icon"><i class="fa-solid fa-newspaper" aria-hidden="true"></i></span>
+          <span class="ct-metric-label">Статьи на проверке</span>
+          <strong class="ct-metric-value">{{ dashboard.counts.articles_pending }}</strong>
+          <span class="ct-metric-hint">Ожидают публикации или отклонения</span>
+        </a>
+        {% endif %}
+      </div>
+      {% if dashboard.stats and dashboard.stats.downloads_by_day %}
+      <div class="ct-dashboard-chart card">
+        <div class="ct-dashboard-chart-header"><h4>Скачивания по дням</h4><a href="{{ url_for('admin:view-stats') }}">Подробнее</a></div>
+        <div class="ct-dashboard-bars" role="img" aria-label="Скачивания APK по дням за неделю">
+          {% for day, n in dashboard.stats.downloads_by_day %}
+          <div class="ct-dashboard-bar-item" title="{{ day.strftime('%d.%m') }}: {{ n }}">
+            <span class="ct-dashboard-bar-value">{{ n }}</span>
+            <span class="ct-dashboard-bar-track"><span class="ct-dashboard-bar-fill" style="height: {{ (n * 100 // dashboard.stats.max_day_downloads) if dashboard.stats.max_day_downloads else 0 }}%"></span></span>
+            <span class="ct-dashboard-bar-label">{{ day.strftime('%d.%m') }}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="ct-dashboard-section" aria-labelledby="dashboard-queues-title">
+      <div class="ct-section-heading"><div><span class="ct-eyebrow">Действия</span><h3 id="dashboard-queues-title">Рабочие очереди</h3></div></div>
+      <div class="ct-queue-list">
+        {% if 'support_awaiting' in dashboard.counts %}
+        <a class="ct-queue-card" href="{{ url_for('admin:list', identity='support-ticket') }}?awaiting_reply=1">
+          <span class="ct-queue-icon"><i class="fa-solid fa-comment-dots" aria-hidden="true"></i></span>
+          <span class="ct-queue-copy"><strong>Ждут ответа поддержки</strong><small>Сообщение пользователя последнее в чате</small></span>
+          <span class="ct-queue-count">{{ dashboard.counts.support_awaiting }}</span>
+        </a>
+        {% endif %}
+        {% if 'routes_pending' in dashboard.counts %}
+        <a class="ct-queue-card" href="{{ url_for('admin:list', identity='route') }}?publication_status=pending_review">
+          <span class="ct-queue-icon"><i class="fa-solid fa-map-signs" aria-hidden="true"></i></span>
+          <span class="ct-queue-copy"><strong>Проверить маршруты</strong><small>Публикация и качество</small></span>
+          <span class="ct-queue-count">{{ dashboard.counts.routes_pending }}</span>
+        </a>
+        {% endif %}
+        {% if 'articles_pending' in dashboard.counts %}
+        <a class="ct-queue-card" href="{{ url_for('admin:list', identity='article') }}?status=pending_review">
+          <span class="ct-queue-icon"><i class="fa-solid fa-file-lines" aria-hidden="true"></i></span>
+          <span class="ct-queue-copy"><strong>Проверить статьи</strong><small>Материалы перед публикацией</small></span>
+          <span class="ct-queue-count">{{ dashboard.counts.articles_pending }}</span>
+        </a>
+        {% endif %}
+        {% if 'comments_pending' in dashboard.counts %}
+        <a class="ct-queue-card" href="{{ url_for('admin:list', identity='article-comment') }}?status=pending_review">
+          <span class="ct-queue-icon"><i class="fa-solid fa-comments" aria-hidden="true"></i></span>
+          <span class="ct-queue-copy"><strong>Проверить комментарии</strong><small>Ожидают модерации</small></span>
+          <span class="ct-queue-count">{{ dashboard.counts.comments_pending }}</span>
+        </a>
+        {% endif %}
+        {% if 'reports_route_open' in dashboard.counts %}
+        <a class="ct-queue-card" href="{{ url_for('admin:list', identity='content-report') }}">
+          <span class="ct-queue-icon"><i class="fa-solid fa-flag" aria-hidden="true"></i></span>
+          <span class="ct-queue-copy"><strong>Жалобы на маршруты и места</strong><small>Новые и в работе</small></span>
+          <span class="ct-queue-count">{{ dashboard.counts.reports_route_open }}</span>
+        </a>
+        {% endif %}
+        {% if 'reports_content_open' in dashboard.counts %}
+        <a class="ct-queue-card" href="{{ url_for('admin:list', identity='content-report') }}">
+          <span class="ct-queue-icon"><i class="fa-solid fa-flag" aria-hidden="true"></i></span>
+          <span class="ct-queue-copy"><strong>Жалобы на статьи и комментарии</strong><small>Новые и в работе</small></span>
+          <span class="ct-queue-count">{{ dashboard.counts.reports_content_open }}</span>
+        </a>
+        {% endif %}
+      </div>
+      {% if not dashboard.counts %}
+      <div class="ct-empty-panel">У этой учётной записи пока нет рабочих очередей. Администратор может настроить доступ в разделе «Права доступа».</div>
+      {% endif %}
+    </section>
+  </div>
 </div>
 {% endblock %}

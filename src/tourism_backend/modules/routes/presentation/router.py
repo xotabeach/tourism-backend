@@ -5,7 +5,7 @@ from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile,
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
 from tourism_backend.api.errors import AppError
-from tourism_backend.modules.maps.presentation.router import _fetch, _route_static_params
+from tourism_backend.modules.maps.presentation.router import route_map_response
 from tourism_backend.modules.routes.application import media as route_media
 from tourism_backend.modules.routes.application import review_media, review_service
 from tourism_backend.modules.routes.application import service as routes_service
@@ -18,6 +18,8 @@ from tourism_backend.modules.routes.application.review_schemas import (
 )
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
+    RouteDayOut,
+    RouteDaysIn,
     RouteDetailOut,
     RouteDraftPreviewIn,
     RouteDraftPreviewOut,
@@ -97,22 +99,21 @@ async def route_draft_preview_map(
             message="Route preview expired",
             status_code=404,
         )
-    line, stops = shape
-    response = await _fetch(
+    line, stops, mode = shape
+    response = await route_map_response(
         settings=settings,
         request=request,
-        params=_route_static_params(
-            line,
-            stops,
-            width=width,
-            height=height,
-            scale=scale,
-            center=(center_lat, center_lng)
-            if center_lat is not None and center_lng is not None
-            else None,
-            zoom=zoom,
-            pins=pins,
-        ),
+        line=line,
+        stops=stops,
+        width=width,
+        height=height,
+        scale=scale,
+        center=(center_lat, center_lng)
+        if center_lat is not None and center_lng is not None
+        else None,
+        zoom=zoom,
+        pins=pins,
+        line_mode=mode,
     )
     # An unsaved draft is the author's alone, even though the raster
     # provider is shared.
@@ -200,6 +201,34 @@ async def upload_route_draft_media(
     )
 
 
+@router.put("/routes/{route_id}/days", response_model=list[RouteDayOut])
+async def set_route_days(
+    route_id: UUID,
+    payload: RouteDaysIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> list[RouteDayOut]:
+    """«Закончить день здесь»: the author's own day boundaries (spec 14a)."""
+    return await routes_service.set_user_route_days(
+        session,
+        route_id=route_id,
+        owner_user_id=user_id,
+        ends_after_stop_ids=payload.ends_after_stop_ids,
+    )
+
+
+@router.delete("/routes/{route_id}/days", response_model=list[RouteDayOut])
+async def reset_route_days(
+    route_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> list[RouteDayOut]:
+    """«Разделить заново»: days by the route's norms again."""
+    return await routes_service.reset_user_route_days(
+        session, route_id=route_id, owner_user_id=user_id
+    )
+
+
 @router.get("/routes/{route_id}/editable", response_model=UserRouteEditableOut)
 async def get_route_for_edit(
     route_id: UUID,
@@ -247,6 +276,8 @@ async def get_routes(
     place_id: UUID | None = None,
     transport_mode: str | None = Query(default=None, max_length=32),
     difficulty: str | None = Query(default=None, max_length=32),
+    # Spec 17: «не сложнее N» on the 1..5 scale.
+    difficulty_max: int | None = Query(default=None, ge=1, le=5),
     q: str | None = Query(default=None, max_length=200),
     source: RouteSource | None = None,
     sort: RouteCatalogSort = "default",
@@ -260,6 +291,7 @@ async def get_routes(
         place_id=place_id,
         transport_mode=transport_mode,
         difficulty=difficulty,
+        difficulty_max=difficulty_max,
         q=q,
         source=source,
         sort=sort,

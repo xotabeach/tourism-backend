@@ -13,6 +13,11 @@ from tourism_backend.modules.route_builder.application.schemas import (
     RouteMatchParamsIn,
     TripType,
 )
+from tourism_backend.modules.routes.application.difficulty import (
+    ProfileFit,
+    level_from_legacy,
+    profile_fit,
+)
 
 # Bump when the meaning of the score changes; stored with chat snapshots.
 MATCH_FORMULA_VERSION = 2
@@ -141,6 +146,9 @@ class RouteMatchCandidate:
     price_min_amount: int | None = None
     # Editor's «Море» tag (BACKEND-19).
     is_seaside: bool = False
+    # Spec 17: shown level 1..5 and the walking part's level.
+    difficulty_level: int | None = None
+    walk_level: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +163,8 @@ class UserPreferenceSignals:
 
     categories: frozenset[str] = frozenset()
     difficulty: str | None = None
+    # «На транспорте» (``car``): matched by the walking part (spec 17).
+    transport: str | None = None
     travels_with_kids: bool = False
     travels_with_pets: bool = False
 
@@ -355,6 +365,17 @@ def _season_score(season: str | None, seasonality: tuple[str, ...]) -> tuple[flo
     return 0.2, None
 
 
+def difficulty_fit(
+    preferences: UserPreferenceSignals, candidate: RouteMatchCandidate
+) -> ProfileFit | None:
+    return profile_fit(
+        preferred_difficulty=preferences.difficulty,
+        preferred_transport=preferences.transport,
+        level=candidate.difficulty_level or level_from_legacy(candidate.difficulty),
+        walk_level=candidate.walk_level,
+    )
+
+
 def _preference_score(
     preferences: UserPreferenceSignals | None,
     candidate: RouteMatchCandidate,
@@ -374,14 +395,11 @@ def _preference_score(
         parts.append(category_score)
         if overlap:
             reasons.append("совпадает с предпочтениями")
-    if preferences.difficulty:
-        if candidate.difficulty is None:
-            parts.append(0.5)
-        elif candidate.difficulty.casefold() == preferences.difficulty.casefold():
-            parts.append(1.0)
-            reasons.append("сложность из профиля")
-        else:
-            parts.append(0.25)
+    fit = difficulty_fit(preferences, candidate)
+    if fit is not None:
+        parts.append(fit.score)
+        if fit.reason:
+            reasons.append(fit.reason)
     if preferences.travels_with_kids:
         parts.append(
             1.0

@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     sms_sender: str = Field(default="КРЫМТРИП", min_length=2, max_length=64)
     sms_otp_template: str = Field(default="Код подтверждения: {code}", min_length=2, max_length=640)
     sms_poll_interval_seconds: float = Field(default=20, ge=1, le=300)
+    # Spec 17: how often to look for routes whose ground is not fetched yet.
+    terrain_poll_interval_seconds: float = Field(default=60, ge=5, le=3600)
     sms_max_attempts: int = Field(default=3, ge=1, le=10)
     sms_daily_soft_budget: int = Field(default=500, ge=1)
 
@@ -183,8 +185,18 @@ class Settings(BaseSettings):
     # ADR-004/010 RoutingProvider. ``stub`` is synthetic local DX; ``2gis``
     # uses the server-side HTTP Routing API.  Keep the default conservative so
     # a missing external key can never silently change local/test behaviour.
-    routing_provider: Literal["stub", "2gis"] = "stub"
-    osrm_base_url: str | None = None
+    routing_provider: Literal["stub", "valhalla", "2gis"] = "stub"
+    # Our own Valhalla in the private compose network (spec 12a).
+    valhalla_base_url: str = "http://valhalla:8002"
+    # OSM data build the graph and tiles come from (osmYYYYMMDD); written into
+    # every routing snapshot so a monthly rebuild can be diffed (D25).
+    osm_data_version: str | None = None
+    # Static map images: our tileserver-gl on OSM tiles (spec 12a). 2GIS stays
+    # only as an off-by-default fallback (D1).
+    map_provider: Literal["osm", "2gis"] = "osm"
+    tileserver_base_url: str = "http://tileserver:8080"
+    # Goes into image URLs and cache keys; bump when style or tiles change (D22).
+    map_source_version: str = Field(default="osm2", pattern=r"^[a-z0-9]{1,16}$")
     routing_timeout_seconds: float = Field(default=10, ge=1, le=60)
     # Keep the canonical name explicit, while accepting the two names used by
     # older deployment manifests during a rolling migration.  The value is

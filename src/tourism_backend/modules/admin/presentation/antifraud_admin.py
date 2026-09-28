@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
 
-from sqladmin import BaseView, ModelView, action, expose
+from sqladmin import BaseView, action, expose
 from sqladmin.filters import AllUniqueStringValuesFilter, OperationColumnFilter
 from sqladmin.flash import Flash
 from sqlalchemy import delete, func, select
@@ -23,7 +23,7 @@ from starlette.responses import RedirectResponse, Response
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.admin.application.audit import record_audit
 from tourism_backend.modules.admin.presentation.auth import (
-    require_admin_role,
+    require_permission,
     session_principal_id,
 )
 from tourism_backend.modules.admin.presentation.datetime_fmt import ADMIN_COLUMN_TYPE_FORMATTERS
@@ -35,6 +35,10 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_violation_kind,
     format_violation_mode,
 )
+from tourism_backend.modules.admin.presentation.permissions import (
+    PermissionedModelView as ModelView,
+)
+from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.route_execution.application import antifraud_actions
 from tourism_backend.modules.route_execution.application.antifraud_settings import (
     ALL_KEYS,
@@ -61,12 +65,19 @@ _ADMIN_ONLY_ACTIONS = ("trust", "untrust")
 #: Russian names for the raw enum stored in runtime_config / RoutePaceViolation.mode
 #: (BACKEND-4: the screen showed "shadow"/"enforce" verbatim).
 MODE_LABELS = {"off": "Выключено", "shadow": "Наблюдение", "enforce": "Боевой"}
+#: Russian names for choice settings other than the mode.
+CHOICE_LABELS = {"straight_line": "По прямой", "provider": "По участкам маршрута"}
 
 _LABELS = {
     "af_mode": (
         "Режим",
         "Выключено — ничего не проверяет. Наблюдение — считает нарушения, "
         "но не ограничивает. Боевой — держит очки и блокирует запуск.",
+    ),
+    "af_pace_source": (
+        "Оценка участка для темпа",
+        "По прямой — как до перехода на OSM. По участкам маршрута — реальные тропы "
+        "и дороги; пока включено «по прямой», участки сравниваются в журнале.",
     ),
     "af_pace_violation_ratio": ("Доля расчётного времени", "Участок быстрее этой доли — нарушение"),
     "af_min_mark_ratio": ("Пол отметки, доля", "Быстрее — отметка не даёт очков за точку"),
@@ -118,8 +129,11 @@ async def apply_user_fraud_action(
     actor_id = session_principal_id(request)
     if actor_id is None:
         return RedirectResponse(str(request.url_for("admin:login")), status_code=302)
-    if kind in _ADMIN_ONLY_ACTIONS and not require_admin_role(request):
-        Flash.error(request, "Доступно только роли admin.")
+    if not require_permission(request, "antifraud.write"):
+        Flash.error(request, "Недостаточно прав.")
+        return back
+    if kind in _ADMIN_ONLY_ACTIONS and not require_permission(request, "antifraud.trust"):
+        Flash.error(request, "Недостаточно прав для доверенного статуса.")
         return back
     if kind not in _USER_ACTIONS and kind not in _ADMIN_ONLY_ACTIONS:
         return back
@@ -127,6 +141,11 @@ async def apply_user_fraud_action(
     done = 0
     for user_id in _pks(request):
         async with session_maker(expire_on_commit=False) as session:
+            target = await session.get(User, user_id)
+            if target is not None and target.is_system_account:
+                # The editorial profile is never blocked (spec 16, D6).
+                Flash.error(request, f"{target.display_name}: служебный профиль не блокируется.")
+                continue
             try:
                 if kind == "lift_block":
                     await antifraud_actions.lift_block(session, user_id=user_id)
@@ -471,14 +490,14 @@ class AntiFraudConfigAdmin(BaseView):
     session_maker: ClassVar[Any]
 
     def is_accessible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return require_permission(request, "antifraud.read")
 
     def is_visible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return self.is_accessible(request)
 
     @expose("/config/antifraud", methods=["GET"], identity="config-antifraud")
     async def show(self, request: Request) -> Response:
-        if not require_admin_role(request):
+        if not require_permission(request, "antifraud.read"):
             Flash.error(request, "Доступно только роли admin.")
             return RedirectResponse(request.url_for("admin:index"), status_code=303)
         async with self.session_maker(expire_on_commit=False) as session:
@@ -546,6 +565,7 @@ class AntiFraudConfigAdmin(BaseView):
                 "minimum": item.minimum,
                 "maximum": item.maximum,
                 "value": stored.get(item.key, ""),
+                "options": item.options,
             }
             for item in describe_settings()
         ]
@@ -556,6 +576,7 @@ class AntiFraudConfigAdmin(BaseView):
                 "fields": fields,
                 "effective_mode": effective.mode.value,
                 "mode_labels": MODE_LABELS,
+                "choice_labels": CHOICE_LABELS,
                 "held": held,
                 "overdue": overdue,
                 "overdue_days": effective.hold_overdue_days,
@@ -569,7 +590,7 @@ class AntiFraudConfigAdmin(BaseView):
     @expose("/config/antifraud/save", methods=["POST"])
     async def save(self, request: Request) -> Response:
         redirect_url = request.url_for("admin:view-config-antifraud")
-        if not require_admin_role(request):
+        if not require_permission(request, "antifraud.write"):
             Flash.error(request, "Доступно только роли admin.")
             return RedirectResponse(redirect_url, status_code=303)
         form = await request.form()

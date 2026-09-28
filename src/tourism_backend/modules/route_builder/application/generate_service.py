@@ -39,6 +39,7 @@ from tourism_backend.modules.route_builder.application.routing import (
     RoutingResult,
     TransportMode,
     normalize_transport_mode,
+    routing_details,
 )
 from tourism_backend.modules.route_builder.application.schemas import (
     ActionsBlockOut,
@@ -70,7 +71,10 @@ from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
 from tourism_backend.modules.route_builder.infrastructure.tsp_factory import (
     get_tsp_provider,
 )
+from tourism_backend.modules.routes.application.difficulty import quick_estimate
 from tourism_backend.modules.routes.application.schemas import RouteGeometryOut, RouteStopOut
+from tourism_backend.modules.routes.application.structure import refresh_route_structure
+from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 from tourism_backend.modules.subscriptions.application import service as travel_plus
 from tourism_backend.modules.subscriptions.application.entitlements import (
@@ -304,7 +308,10 @@ async def _route_places(
     try:
         routing = await provider.route(waypoints=waypoints, transport_mode=transport_mode)
     except RoutingError as exc:
-        if settings.routing_provider == "2gis" and exc.code in _ROUTING_FALLBACK_CODES:
+        if (
+            settings.routing_provider in {"valhalla", "2gis"}
+            and exc.code in _ROUTING_FALLBACK_CODES
+        ):
             _logger.warning(
                 "routing_provider_fallback_to_stub",
                 extra={"routing_error_code": exc.code},
@@ -483,7 +490,11 @@ def _blocks_for_proposal(
         tags=tags[:8],
         budget_label=budget_label,
         budget_caption="Бюджет на день",
-        difficulty_label={"calm": "1/5", "moderate": "3/5", "active": "5/5"}[params.pace],
+        difficulty_label=(
+            f"{proposal.preview['difficulty_level']}/5"
+            if proposal.preview and proposal.preview.get("difficulty_level")
+            else None
+        ),
         primary_action_label="Пройти маршрут",
         card_variant="assembled",
         gallery_urls=gallery[:8],
@@ -603,12 +614,12 @@ async def _persist_generated_route(
             "buffer_duration_seconds": 0,
             "total_duration_seconds": total_duration_seconds,
             "geometry_available": routing.geometry_wkt is not None,
-            "elevation_gain_meters": routing.elevation_gain_meters,
-            "elevation_loss_meters": routing.elevation_loss_meters,
-            "min_altitude_meters": routing.min_altitude_meters,
-            "max_altitude_meters": routing.max_altitude_meters,
-            "max_road_angle_degrees": routing.max_road_angle_degrees,
             "road_types": list(routing.road_types),
+            **routing_details(
+                routing,
+                stop_count=len(places),
+                data_version=get_settings().osm_data_version,
+            ),
         },
     }
 
@@ -654,6 +665,10 @@ async def _persist_generated_route(
                 updated_at=now,
             )
         )
+    await session.flush()
+    # Segments right away: the map image draws the drive and the walks from
+    # them (spec 14b), not only once a run starts.
+    await refresh_route_structure(session, route)
     return route
 
 
@@ -918,6 +933,21 @@ async def _build_preview(
         synthetic=routing.synthetic,
         static_map_url=f"/api/v1/route-builder/proposals/{proposal.id}/map",
         trip_plan=trip_plan,
+        line_mode=segment_mode_for(params.transport_mode),
+        difficulty_level=_quick_difficulty(routing, segment_mode_for(params.transport_mode)),
+    )
+
+
+def _quick_difficulty(routing: RoutingResult, mode: str) -> int | None:
+    """Estimate before the route exists (spec 17, D22)."""
+    return quick_estimate(
+        mode=mode,
+        distance_meters=routing.total_distance_meters,
+        duration_seconds=routing.total_duration_seconds,
+        elevation_gain_meters=routing.elevation_gain_meters,
+        elevation_loss_meters=routing.elevation_loss_meters,
+        segments=routing.segments,
+        synthetic=routing.synthetic,
     )
 
 

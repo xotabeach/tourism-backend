@@ -182,6 +182,17 @@ class GeminiProvider:
             response_text=content,
         )
 
+    async def complete_text(self, *, system: str, user: str, max_tokens: int) -> str:
+        """One bounded request outside the planning chat, for admin helpers
+        that draft a form for an editor to check (spec 12b, D8)."""
+        async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
+            return await self._generate(
+                client,
+                system_instruction=system,
+                contents=[{"role": "user", "parts": [{"text": user}]}],
+                max_output_tokens=max_tokens,
+            )
+
     async def chat_turn(
         self,
         *,

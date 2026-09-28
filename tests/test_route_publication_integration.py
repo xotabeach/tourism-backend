@@ -430,6 +430,7 @@ async def test_route_is_editable_from_another_device_and_requeues_when_live(
             "filters": ["Природа", "С детьми"],
             "pace": "moderate",
             "difficulty": 4,
+            "difficulty_manual": True,
         },
     )
     assert saved.status_code == 200, saved.text
@@ -447,7 +448,11 @@ async def test_route_is_editable_from_another_device_and_requeues_when_live(
     assert all(item["name"] for item in body["places"])
     assert body["filters"] == ["Природа", "С детьми"]
     assert body["pace"] == "moderate"
+    # Spec 17: the author's rating, next to the estimate and its breakdown.
     assert body["difficulty"] == 4
+    assert body["difficulty_manual"] is True
+    assert body["difficulty_auto"] is not None
+    assert body["difficulty_breakdown"]["level"] == body["difficulty_auto"]
 
     # Someone else's route is not editable, and does not leak its content.
     assert (
@@ -877,3 +882,264 @@ async def test_a_bad_client_draft_id_is_rejected(
         json=_draft_payload(place_ids, client_draft_id="x'; DROP TABLE routes;--"),
     )
     assert bad.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_author_day_boundaries_survive_a_save_and_can_be_reset(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """Spec 14a, section 2: «закончить день здесь», then «разделить заново»."""
+    client, _app = publication_context
+    tokens = await _login(client, f"+7907{uuid4().int % 10_000_000:07d}")
+    other = await _login(client, f"+7908{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    places = await client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 3})
+    place_ids = [item["id"] for item in places.json()["items"][:3]]
+    assert len(place_ids) == 3
+    payload = {
+        "name": "Маршрут на два дня",
+        "description": "Проверка ручных дней",
+        "place_ids": place_ids,
+        "filters": ["Природа"],
+        "difficulty": 2,
+    }
+    saved = await client.post("/api/v1/routes/drafts", headers=headers, json=payload)
+    assert saved.status_code == 200, saved.text
+    route_id = saved.json()["id"]
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+
+    async def stop_ids() -> list[str]:
+        async with engine.connect() as conn:
+            rows = await conn.execute(
+                text("SELECT id FROM route_stops WHERE route_id = :id ORDER BY position"),
+                {"id": route_id},
+            )
+            return [str(row[0]) for row in rows]
+
+    async def day_sources() -> list[tuple[int, str]]:
+        async with engine.connect() as conn:
+            rows = await conn.execute(
+                text(
+                    "SELECT day_index, boundary_source FROM route_days "
+                    "WHERE route_id = :id ORDER BY day_index"
+                ),
+                {"id": route_id},
+            )
+            return [(row[0], row[1]) for row in rows]
+
+    try:
+        stops = await stop_ids()
+        set_days = await client.put(
+            f"/api/v1/routes/{route_id}/days",
+            headers=headers,
+            json={"ends_after_stop_ids": [stops[0]]},
+        )
+        assert set_days.status_code == 200, set_days.text
+        days = set_days.json()
+        assert [(d["day_index"], d["boundary_source"]) for d in days] == [
+            (1, "manual"),
+            (2, "manual"),
+        ]
+        assert days[0]["last_stop_id"] == stops[0]
+        assert days[0]["overnight_note"].startswith("Ночлег в районе: ")
+        assert days[1]["overnight_note"] is None
+
+        # A save recreates every stop; the boundary follows its place.
+        resaved = await client.post(
+            "/api/v1/routes/drafts", headers=headers, json={**payload, "route_id": route_id}
+        )
+        assert resaved.status_code == 200, resaved.text
+        new_stops = await stop_ids()
+        assert new_stops != stops
+        async with engine.connect() as conn:
+            first_day_end = await conn.scalar(
+                text("SELECT last_stop_id FROM route_days WHERE route_id = :id AND day_index = 1"),
+                {"id": route_id},
+            )
+            breaks = await conn.scalar(
+                text("SELECT day_breaks FROM routes WHERE id = :id"), {"id": route_id}
+            )
+        assert breaks == [place_ids[0]]
+        assert str(first_day_end) == new_stops[0]
+        assert await day_sources() == [(1, "manual"), (2, "manual")]
+
+        for bad in ([new_stops[-1]], [new_stops[1], new_stops[0]], [str(uuid4())]):
+            refused = await client.put(
+                f"/api/v1/routes/{route_id}/days",
+                headers=headers,
+                json={"ends_after_stop_ids": bad},
+            )
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == "invalid_day_breaks"
+
+        foreign = await client.put(
+            f"/api/v1/routes/{route_id}/days",
+            headers={"Authorization": f"Bearer {other['access_token']}"},
+            json={"ends_after_stop_ids": []},
+        )
+        assert foreign.status_code == 404
+
+        reset = await client.delete(f"/api/v1/routes/{route_id}/days", headers=headers)
+        assert reset.status_code == 200, reset.text
+        assert {d["boundary_source"] for d in reset.json()} == {"auto"}
+        assert await day_sources() == [(d["day_index"], "auto") for d in reset.json()]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_the_editor_saves_day_breaks_and_the_car_tag_with_the_draft(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """Spec 14a/14b: one save carries the author's days and their way of travel."""
+    client, _app = publication_context
+    tokens = await _login(client, f"+7909{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    places = await client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 3})
+    place_ids = [item["id"] for item in places.json()["items"][:3]]
+    payload = {
+        "name": "На машине с ночёвкой",
+        "description": "",
+        "place_ids": place_ids,
+        "filters": ["На машине"],
+        "day_breaks": [place_ids[1]],
+    }
+    saved = await client.post("/api/v1/routes/drafts", headers=headers, json=payload)
+    assert saved.status_code == 200, saved.text
+    route_id = saved.json()["id"]
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "SELECT transport_mode, base_mode, days_manual, "
+                        "accessibility->'routing'->>'transport_mode' FROM routes WHERE id = :id"
+                    ),
+                    {"id": route_id},
+                )
+            ).one()
+            days = (
+                await conn.execute(
+                    text(
+                        "SELECT day_index, boundary_source FROM route_days "
+                        "WHERE route_id = :id ORDER BY day_index"
+                    ),
+                    {"id": route_id},
+                )
+            ).all()
+        assert tuple(row) == ("car", "car", True, "car")
+        assert [tuple(d) for d in days] == [(1, "manual"), (2, "manual")]
+
+        editable = await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)
+        assert editable.status_code == 200, editable.text
+        assert editable.json()["day_breaks"] == [place_ids[1]]
+
+        # Without the key (an older app) the days stay; empty resets them.
+        kept = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**{k: v for k, v in payload.items() if k != "day_breaks"}, "route_id": route_id},
+        )
+        assert kept.status_code == 200, kept.text
+        editable = await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)
+        assert editable.json()["day_breaks"] == [place_ids[1]]
+        reset = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**payload, "route_id": route_id, "day_breaks": []},
+        )
+        assert reset.status_code == 200, reset.text
+        editable = await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)
+        assert editable.json()["day_breaks"] == []
+
+        for bad in ([place_ids[2]], [place_ids[1], place_ids[0]], [str(uuid4())]):
+            refused = await client.post(
+                "/api/v1/routes/drafts",
+                headers=headers,
+                json={**payload, "route_id": route_id, "day_breaks": bad},
+            )
+            assert refused.status_code == 422, refused.text
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_points_map_never_shows_unpublished_places(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """FRONTEND-44: the map of an author's points draws published places only."""
+    client, _app = publication_context
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            hidden = await conn.scalar(
+                text("SELECT id FROM places WHERE publication_status <> 'published' LIMIT 1")
+            )
+    finally:
+        await engine.dispose()
+    for ids in (str(uuid4()), "not-an-id", ",".join(str(uuid4()) for _ in range(23))):
+        response = await client.get(f"/api/v1/maps/static/points/osm2/{ids}")
+        assert response.status_code == 404, response.text
+    if hidden is not None:
+        response = await client.get(f"/api/v1/maps/static/points/osm2/{hidden}")
+        assert response.status_code == 404, response.text
+
+
+@pytest.mark.asyncio
+async def test_author_difficulty_rules_and_older_apps(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """Spec 17: «Авто» by default, not below the estimate, older apps harmless."""
+    client, app = publication_context
+    tokens = await _login(client, f"+7913{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    place_ids = await _two_place_ids(client)
+    base = {"name": "Сложность", "place_ids": place_ids, "filters": [], "pace": "calm"}
+
+    # An older app always sends a number and no flag: the route stays on auto.
+    saved = await client.post(
+        "/api/v1/routes/drafts", headers=headers, json={**base, "difficulty": 5}
+    )
+    route_id = saved.json()["id"]
+    body = (await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)).json()
+    estimate = body["difficulty_auto"]
+    assert body["difficulty_manual"] is False
+    assert body["difficulty"] == estimate
+
+    if estimate >= 3:
+        low = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**base, "route_id": route_id, "difficulty": 1, "difficulty_manual": True},
+        )
+        assert low.status_code == 422
+        assert low.json()["error"]["code"] == "difficulty_below_estimate"
+
+    rated = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json={**base, "route_id": route_id, "difficulty": 5, "difficulty_manual": True},
+    )
+    assert rated.status_code == 200, rated.text
+    # The older app sends back what it was shown: the rating stays.
+    again = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json={**base, "route_id": route_id, "difficulty": 5},
+    )
+    assert again.status_code == 200, again.text
+    body = (await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)).json()
+    assert (body["difficulty"], body["difficulty_manual"]) == (5, True)
+
+    back = await client.post(
+        "/api/v1/routes/drafts",
+        headers=headers,
+        json={**base, "route_id": route_id, "difficulty": 5, "difficulty_manual": False},
+    )
+    assert back.status_code == 200, back.text
+    body = (await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)).json()
+    assert (body["difficulty"], body["difficulty_manual"]) == (estimate, False)
+    await _delete_drafts(app, route_id)

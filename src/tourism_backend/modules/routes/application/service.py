@@ -4,14 +4,14 @@ import logging
 import math
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from typing import cast as type_cast
 from uuid import UUID, uuid4
 
 from geoalchemy2 import Geometry, WKTElement
 from geoalchemy2.functions import ST_X, ST_Y, ST_AsGeoJSON
 from redis.asyncio import Redis
-from sqlalchemy import Select, cast, delete, exists, func, or_, select, update
+from sqlalchemy import ColumnElement, Select, cast, delete, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Exists
@@ -31,6 +31,7 @@ from tourism_backend.modules.route_builder.application.routing import (
     RoutingError,
     RoutingResult,
     TransportMode,
+    routing_details,
 )
 from tourism_backend.modules.route_builder.infrastructure.routing_factory import (
     get_routing_provider,
@@ -38,9 +39,15 @@ from tourism_backend.modules.route_builder.infrastructure.routing_factory import
 from tourism_backend.modules.route_builder.infrastructure.routing_stub import (
     StubRoutingProvider,
 )
+from tourism_backend.modules.routes.application.difficulty import (
+    level_from_legacy,
+    lowest_manual_level,
+    quick_estimate,
+)
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
+    RouteDayOut,
     RouteDetailOut,
     RouteDraftPreviewIn,
     RouteDraftPreviewOut,
@@ -51,6 +58,7 @@ from tourism_backend.modules.routes.application.schemas import (
     RoutePublicationStatus,
     RouteQualityStatus,
     RouteRoutingOut,
+    RouteSegmentOut,
     RouteSource,
     RouteStopOut,
     UserRouteDraftIn,
@@ -60,7 +68,15 @@ from tourism_backend.modules.routes.application.schemas import (
     UserRouteMediaOut,
 )
 from tourism_backend.modules.routes.application.seaside import is_seaside as stops_are_seaside
-from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview, RouteStop
+from tourism_backend.modules.routes.application.structure import refresh_route_structure
+from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
+from tourism_backend.modules.routes.infrastructure.models import (
+    Route,
+    RouteDay,
+    RouteReview,
+    RouteSegment,
+    RouteStop,
+)
 
 _PUBLIC_CATALOG = (
     or_(Route.source == "editorial", Route.source == "user_created"),
@@ -203,7 +219,8 @@ async def _author_fields_for_routes(
             label = users[owner_id].display_name
             avatar = avatars.get(owner_id)
             is_expert = users[owner_id].is_expert
-            rank_title = ranks.get(owner_id)
+            # The editorial profile has no travel rank (spec 16, D6).
+            rank_title = None if users[owner_id].is_system_account else ranks.get(owner_id)
         else:
             # Editorial route: no owning user, so no travel rank to show.
             label = route.author_label
@@ -268,6 +285,13 @@ def _to_list_item(
         estimated_duration_minutes=route.estimated_duration_minutes,
         distance_meters=route.distance_meters,
         difficulty=route.difficulty,
+        difficulty_level=route.difficulty_level,
+        difficulty_auto=route.difficulty_auto,
+        difficulty_source=type_cast(
+            Literal["auto", "author", "editorial", "legacy"],
+            route.difficulty_manual_by if route.difficulty_manual is not None else "auto",
+        ),
+        difficulty_confidence=route.difficulty_confidence,
         transport_mode=route.transport_mode,
         is_round_trip=route.is_round_trip,
         suitable_for_children=route.suitable_for_children,
@@ -280,6 +304,7 @@ def _to_list_item(
         owner_user_id=owner_user_id,
         author_avatar_url=author_avatar_url,
         author_is_expert=author_is_expert,
+        author_is_editorial=route.source == "editorial",
         author_rank_title=author_rank_title,
         rating_average=rating_average,
         rating_count=rating_count,
@@ -420,6 +445,7 @@ async def list_routes(
     source: RouteSource | None,
     sort: RouteCatalogSort,
     seaside: bool | None = None,
+    difficulty_max: int | None = None,
     limit: int,
     offset: int,
 ) -> RouteListOut:
@@ -435,7 +461,11 @@ async def list_routes(
     if transport_mode:
         stmt = stmt.where(Route.transport_mode == transport_mode)
     if difficulty:
-        stmt = stmt.where(Route.difficulty == difficulty)
+        # Older apps filter by the word: its range on the 1..5 scale, so a
+        # level 5 route still shows under «сложный» (spec 17, D22).
+        stmt = stmt.where(_difficulty_word_filter(difficulty))
+    if difficulty_max is not None:
+        stmt = stmt.where(Route.difficulty_level <= difficulty_max)
     if q:
         pattern = f"%{q.strip()}%"
         stmt = stmt.where(Route.name.ilike(pattern))
@@ -562,14 +592,133 @@ async def _route_detail_from_model(
         **base.model_dump(),
         description=route.description,
         budget_notes=route.budget_notes,
-        accessibility=route.accessibility,
+        accessibility=_without_segment_shapes(route.accessibility),
         freshness_status=route.freshness_status,
         geometry=geometry,
         routing=routing,
         stops=stops,
         media=media,
-        static_map_url=f"/api/v1/maps/static/route/{route.id}",
+        static_map_url=f"/api/v1/maps/static/route/{route.id}/{get_settings().map_source_version}",
+        base_mode=route.base_mode,
+        needs_public_transport=route.needs_public_transport,
+        segments=await _segments_for_route(session, route.id),
+        days=await _days_for_route(session, route.id),
     )
+
+
+async def _days_for_route(session: AsyncSession, route_id: UUID) -> list[RouteDayOut]:
+    return [
+        RouteDayOut(
+            day_index=day.day_index,
+            first_stop_id=day.first_stop_id,
+            last_stop_id=day.last_stop_id,
+            boundary_source=day.boundary_source,
+            overnight_note=day.overnight_note,
+            overloaded=day.overloaded,
+            difficulty_level=day.difficulty_level,
+        )
+        for day in await session.scalars(
+            select(RouteDay).where(RouteDay.route_id == route_id).order_by(RouteDay.day_index)
+        )
+    ]
+
+
+async def set_user_route_days(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    owner_user_id: UUID,
+    ends_after_stop_ids: Sequence[UUID],
+) -> list[RouteDayOut]:
+    """The author ends days after these stops («закончить день здесь», D7).
+
+    The boundaries are kept by place, so they survive the author's next save
+    of the stops; from now on the days are not recomputed (D8).
+    """
+    route = await _owned_editable_route(session, route_id=route_id, owner_user_id=owner_user_id)
+    stops = (
+        await session.execute(
+            select(RouteStop.id, RouteStop.place_id)
+            .where(RouteStop.route_id == route.id)
+            .order_by(RouteStop.position)
+        )
+    ).all()
+    order = {stop_id: index for index, (stop_id, _place) in enumerate(stops)}
+    chosen = [order.get(stop_id) for stop_id in ends_after_stop_ids]
+    if (
+        any(index is None for index in chosen)
+        or chosen != sorted(set(chosen))  # type: ignore[type-var]
+        or (chosen and chosen[-1] == len(stops) - 1)
+    ):
+        raise AppError(
+            code="invalid_day_breaks",
+            message="Дни заканчиваются после точек маршрута по порядку, кроме последней",
+            status_code=422,
+        )
+    route.day_breaks = [str(stops[index][1]) for index in chosen if index is not None]
+    route.days_manual = True
+    route.updated_at = datetime.now(UTC)
+    await refresh_route_structure(session, route)
+    await session.commit()
+    return await _days_for_route(session, route.id)
+
+
+async def reset_user_route_days(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    owner_user_id: UUID,
+) -> list[RouteDayOut]:
+    """«Разделить заново»: back to the days the route's norms give (D8)."""
+    route = await _owned_editable_route(session, route_id=route_id, owner_user_id=owner_user_id)
+    route.day_breaks = None
+    route.days_manual = False
+    route.updated_at = datetime.now(UTC)
+    await refresh_route_structure(session, route)
+    await session.commit()
+    return await _days_for_route(session, route.id)
+
+
+def _without_segment_shapes(accessibility: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The encoded segment lines are served as ``segments``; not twice."""
+    if not isinstance(accessibility, dict):
+        return accessibility
+    routing = accessibility.get("routing")
+    if not isinstance(routing, dict) or "segments" not in routing:
+        return accessibility
+    return {**accessibility, "routing": {k: v for k, v in routing.items() if k != "segments"}}
+
+
+async def _segments_for_route(session: AsyncSession, route_id: UUID) -> list[RouteSegmentOut]:
+    rows = (
+        await session.execute(
+            select(RouteSegment, ST_AsGeoJSON(RouteSegment.geometry))
+            .where(RouteSegment.route_id == route_id)
+            .order_by(RouteSegment.leg_index, RouteSegment.seq)
+        )
+    ).all()
+    segments: list[RouteSegmentOut] = []
+    for segment, raw in rows:
+        geometry = None
+        if raw:
+            coordinates = json.loads(raw).get("coordinates") or []
+            geometry = RouteGeometryOut(
+                coordinates=[(float(x), float(y)) for x, y, *_ in coordinates]
+            )
+        segments.append(
+            RouteSegmentOut(
+                leg_index=segment.leg_index,
+                seq=segment.seq,
+                mode=segment.mode,
+                role=segment.role,
+                origin=segment.origin,
+                distance_meters=segment.distance_meters,
+                duration_seconds=segment.duration_seconds,
+                elevation_gain_meters=segment.elevation_gain_meters,
+                geometry=geometry,
+            )
+        )
+    return segments
 
 
 async def _geometry_for_route(
@@ -752,14 +901,32 @@ async def get_owned_route(
 _EDITABLE_ROUTE_STATUSES = frozenset({"draft", "rejected", "pending_review", "published"})
 
 
-def _difficulty_name(value: int) -> str:
-    if value <= 2:
-        return "easy"
-    if value == 3:
-        return "moderate"
-    if value >= 5:
-        return "extreme"
-    return "hard"
+def _difficulty_word_filter(word: str) -> ColumnElement[bool]:
+    level = level_from_legacy(word)
+    if level is None:
+        return Route.difficulty == word
+    if level <= 2:
+        return Route.difficulty_level <= 2
+    if level == 3:
+        return Route.difficulty_level == 3
+    return Route.difficulty_level >= 4
+
+
+def _take_manual_difficulty(
+    route: Route, payload: UserRouteDraftIn, *, shown_before: int | None
+) -> None:
+    """The author's rating from an editor save (spec 17, D9, D15)."""
+    if payload.difficulty_manual is True:
+        route.difficulty_manual = payload.difficulty
+        route.difficulty_manual_by = "author"
+    elif payload.difficulty_manual is False:
+        if route.difficulty_manual_by != "editorial":
+            route.difficulty_manual = None
+            route.difficulty_manual_by = None
+    elif route.difficulty_manual_by == "author" and payload.difficulty != shown_before:
+        # An older app: it always sends a number, a changed one is the
+        # author's new rating. On «Авто» its default 3 means nothing.
+        route.difficulty_manual = payload.difficulty
 
 
 async def _owned_editable_route(
@@ -821,7 +988,6 @@ async def get_user_route_for_edit(
         else []
     )
     pace = accessibility.get("travel_pace")
-    difficulty = accessibility.get("difficulty_level")
     media = list(
         (
             await session.scalars(
@@ -852,7 +1018,16 @@ async def get_user_route_for_edit(
         ],
         filters=filters,
         pace=pace if pace in {"calm", "moderate", "active"} else "calm",
-        difficulty=difficulty if isinstance(difficulty, int) and 1 <= difficulty <= 5 else 3,
+        # The shown level: what an older editor sends back unchanged (D15).
+        difficulty=route.difficulty_level or 3,
+        difficulty_manual=route.difficulty_manual is not None
+        and route.difficulty_manual_by == "author",
+        difficulty_auto=route.difficulty_auto,
+        difficulty_breakdown=(
+            accessibility.get("difficulty")
+            if isinstance(accessibility.get("difficulty"), dict)
+            else None
+        ),
         media=[
             UserRouteMediaOut(
                 id=item.id,
@@ -863,7 +1038,16 @@ async def get_user_route_for_edit(
             for item in media
         ],
         updated_at=route.updated_at,
+        day_breaks=[UUID(value) for value in route.day_breaks or [] if _is_uuid(value)],
     )
+
+
+def _is_uuid(value: object) -> bool:
+    try:
+        UUID(str(value))
+    except ValueError:
+        return False
+    return True
 
 
 _DRAFT_CLOCK_TOLERANCE = timedelta(milliseconds=5)
@@ -987,13 +1171,21 @@ async def save_user_route_draft(
     route.publication_status = (
         "pending_review" if previous_status in {"pending_review", "published"} else "draft"
     )
-    route.difficulty = _difficulty_name(payload.difficulty)
-    route.transport_mode = "walking"
+    shown_before = route.difficulty_level
+    _take_manual_difficulty(route, payload, shown_before=shown_before)
+    # The author's «На машине» tag drives the route, with walks to what a car
+    # cannot reach (spec 14b); anything else is walked, as before.
+    driven = CAR_TAG in payload.filters
+    route_mode: TransportMode = "car" if driven else "walk"
+    route.transport_mode = "car" if driven else "walking"
     route.suitable_for_children = "С детьми" in payload.filters
+    if payload.day_breaks is not None:
+        # Empty is «split by the norms again»; kept by place (spec 14a).
+        route.day_breaks = [str(place_id) for place_id in payload.day_breaks] or None
+        route.days_manual = bool(payload.day_breaks)
     accessibility: dict[str, Any] = {
         "travel_pace": payload.pace,
         "filters": payload.filters,
-        "difficulty_level": payload.difficulty,
     }
     # Road geometry is computed once and read from the database ever after:
     # opening a route redraws it without spending a routing call, and the
@@ -1010,8 +1202,13 @@ async def save_user_route_draft(
     unchanged = (
         isinstance(previous_routing, dict)
         and previous_routing.get("place_ids") == stops_key
+        and previous_routing.get("transport_mode", "walk") == route_mode
         and route.geometry is not None
     )
+    if isinstance(route.accessibility, dict) and "terrain" in route.accessibility:
+        # The ground fetched for these stops; the terrain job fetches it
+        # again when they change (spec 17, D20).
+        accessibility["terrain"] = route.accessibility["terrain"]
     if unchanged:
         accessibility["routing"] = previous_routing
     else:
@@ -1023,11 +1220,16 @@ async def save_user_route_draft(
             places=places,
             place_ids=payload.place_ids,
             redis=redis,
+            transport_mode=route_mode,
         )
         if routed is not None:
             geometry_wkt, routing_meta = routed
             route.geometry = WKTElement(geometry_wkt, srid=4326)
-            accessibility["routing"] = {**routing_meta, "place_ids": stops_key}
+            accessibility["routing"] = {
+                **routing_meta,
+                "place_ids": stops_key,
+                "transport_mode": route_mode,
+            }
     route.accessibility = accessibility
     route.updated_at = now
 
@@ -1042,6 +1244,30 @@ async def save_user_route_draft(
                 created_at=now,
                 updated_at=now,
             )
+        )
+    await session.flush()
+    # The stops are new rows: rebuild days and segments now, keeping the
+    # author's day boundaries by place (spec 14a).
+    await refresh_route_structure(session, route)
+    if (
+        payload.difficulty_manual is True
+        and route.difficulty_manual is not None
+        and route.difficulty_auto is not None
+        and route.difficulty_manual < lowest_manual_level(route.difficulty_auto)
+    ):
+        # Nothing is saved: the author sees the estimate and why (D9).
+        raise AppError(
+            code="difficulty_below_estimate",
+            message=(
+                f"Сложность не может быть ниже {lowest_manual_level(route.difficulty_auto)}: "
+                f"по расчёту маршрут {route.difficulty_auto} из 5"
+            ),
+            status_code=422,
+            details={
+                "estimate": route.difficulty_auto,
+                "lowest": lowest_manual_level(route.difficulty_auto),
+                "breakdown": (route.accessibility or {}).get("difficulty"),
+            },
         )
     await session.commit()
     await session.refresh(route)
@@ -1405,6 +1631,7 @@ async def _route_geometry_for_places(
     places: list[Place],
     place_ids: Sequence[UUID],
     redis: Redis | None = None,
+    transport_mode: TransportMode = "walk",
 ) -> tuple[str, dict[str, Any]] | None:
     """Road line and its provenance for an ordered list of places.
 
@@ -1440,10 +1667,12 @@ async def _route_geometry_for_places(
     ]
     if len(waypoints) < 2:
         return None
-    return await routing_line_for_waypoints(waypoints, redis=redis)
+    return await routing_line_for_waypoints(waypoints, redis=redis, transport_mode=transport_mode)
 
 
 _ROUTING_CACHE_KEY = "route-routing:"
+# The author's tag for a driven route (route_publish tags in the app).
+CAR_TAG = "На машине"
 _ROUTING_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
@@ -1514,6 +1743,7 @@ async def routing_line_for_waypoints(
     waypoints: list[RouteWaypoint],
     *,
     redis: Redis | None = None,
+    transport_mode: TransportMode = "walk",
 ) -> tuple[str, dict[str, Any]]:
     """Road line through [waypoints], with a plain line as the last resort.
 
@@ -1521,7 +1751,7 @@ async def routing_line_for_waypoints(
     to route it. Consults the shared routing cache first, so a save that
     follows a preview of the same points costs nothing.
     """
-    fingerprint = routing_fingerprint(waypoints, transport_mode="walk")
+    fingerprint = routing_fingerprint(waypoints, transport_mode=transport_mode)
     cached = await cached_routing_line(redis, fingerprint)
     if cached is not None:
         return cached
@@ -1530,14 +1760,14 @@ async def routing_line_for_waypoints(
     try:
         routing = await get_routing_provider(settings).route(
             waypoints=waypoints,
-            transport_mode="walk",
+            transport_mode=transport_mode,
         )
     except RoutingError:
         _logger.warning("route_draft_routing_failed", exc_info=True)
         try:
             routing = await StubRoutingProvider().route(
                 waypoints=waypoints,
-                transport_mode="walk",
+                transport_mode=transport_mode,
             )
         except RoutingError:
             # The stub refuses the same things the provider does — a walking
@@ -1565,6 +1795,9 @@ async def routing_line_for_waypoints(
             "warnings": list(routing.warnings),
             "road_types": list(routing.road_types),
             "quality_status": "unverified",
+            **routing_details(
+                routing, stop_count=len(waypoints), data_version=settings.osm_data_version
+            ),
         }
     await store_routing_line(redis, fingerprint, geometry_wkt=line, meta=meta)
     return line, meta
@@ -1618,7 +1851,9 @@ async def preview_user_route_draft(
         )
 
     settings = get_settings()
-    transport_mode = type_cast(TransportMode, payload.transport_mode)
+    # Old spellings (bicycle, public_transport) are routed as walked or
+    # driven: nothing else is routed before 12b (spec 14, R4).
+    transport_mode: TransportMode = segment_mode_for(payload.transport_mode)
     # The form previews the same points repeatedly while the author drags one
     # around, and then saves them. All of that is one routing answer.
     fingerprint = routing_fingerprint(waypoints, transport_mode=transport_mode)
@@ -1635,21 +1870,34 @@ async def preview_user_route_draft(
             )
         except RoutingError:
             _logger.warning("route_draft_preview_routing_failed", exc_info=True)
-            routing = await StubRoutingProvider().route(
-                waypoints=waypoints,
-                transport_mode=transport_mode,
-            )
+            try:
+                routing = await StubRoutingProvider().route(
+                    waypoints=waypoints,
+                    transport_mode=transport_mode,
+                )
+            except RoutingError:
+                # Before D24 a walk leg over 25 km was refused here as well,
+                # and the preview answered 500 (FRONTEND-44): never again.
+                _logger.warning("route_draft_preview_unavailable", exc_info=True)
+                routing = None
         straight = ", ".join(f"{point.lng:.6f} {point.lat:.6f}" for point in waypoints)
-        geometry_wkt = routing.geometry_wkt or f"LINESTRING({straight})"
-        meta = {
-            "provider": routing.provider,
-            "synthetic": routing.synthetic,
-            "distance_meters": routing.total_distance_meters,
-            "movement_duration_seconds": routing.total_duration_seconds,
-            "warnings": list(routing.warnings),
-            "road_types": list(routing.road_types),
-            "quality_status": "unverified",
-        }
+        geometry_wkt = (routing.geometry_wkt if routing else None) or f"LINESTRING({straight})"
+        meta = (
+            {"provider": None, "synthetic": True, "quality_status": "unverified"}
+            if routing is None
+            else {
+                "provider": routing.provider,
+                "synthetic": routing.synthetic,
+                "distance_meters": routing.total_distance_meters,
+                "movement_duration_seconds": routing.total_duration_seconds,
+                "warnings": list(routing.warnings),
+                "road_types": list(routing.road_types),
+                "quality_status": "unverified",
+                **routing_details(
+                    routing, stop_count=len(waypoints), data_version=settings.osm_data_version
+                ),
+            }
+        )
         await store_routing_line(
             redis,
             fingerprint,
@@ -1672,7 +1920,7 @@ async def preview_user_route_draft(
         try:
             await redis.set(
                 f"{_DRAFT_PREVIEW_KEY}{preview_id}",
-                json.dumps({"line": line, "stops": stops}),
+                json.dumps({"line": line, "stops": stops, "mode": transport_mode}),
                 ex=_DRAFT_PREVIEW_TTL_SECONDS,
             )
         except Exception:  # noqa: BLE001 — the raster falls back to the points
@@ -1688,14 +1936,27 @@ async def preview_user_route_draft(
         # it as roads.
         provider=str(meta.get("provider") or "none"),
         synthetic=bool(meta.get("synthetic")),
+        difficulty_level=quick_estimate(
+            mode=transport_mode,
+            distance_meters=_int_value(meta.get("distance_meters")),
+            duration_seconds=_int_value(meta.get("movement_duration_seconds")),
+            elevation_gain_meters=_int_value(meta.get("elevation_gain_meters")),
+            elevation_loss_meters=_int_value(meta.get("elevation_loss_meters")),
+            segments=[item for item in meta.get("segments") or [] if isinstance(item, dict)],
+            synthetic=bool(meta.get("synthetic")),
+        ),
     )
+
+
+def _int_value(value: object) -> int | None:
+    return int(value) if isinstance(value, (int, float)) else None
 
 
 async def draft_preview_shape(
     redis: Redis | None,
     preview_id: str,
-) -> tuple[list[tuple[float, float]], list[tuple[float, float]]] | None:
-    """Cached ``(line, stops)`` for a preview, or None once it has expired."""
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]], str] | None:
+    """Cached ``(line, stops, mode)`` for a preview, or None once it has expired."""
     if redis is None:
         return None
     try:
@@ -1709,7 +1970,33 @@ async def draft_preview_shape(
         data = json.loads(raw)
         line = [(float(x), float(y)) for x, y in data["line"]]
         stops = [(float(x), float(y)) for x, y in data["stops"]]
+        mode = segment_mode_for(data.get("mode"))
     except Exception:  # noqa: BLE001 — a corrupt entry behaves like a miss
         _logger.warning("route_draft_preview_decode_failed", exc_info=True)
         return None
-    return (line, stops) if len(line) >= 2 else None
+    return (line, stops, mode) if len(line) >= 2 else None
+
+
+async def route_segment_lines(
+    session: AsyncSession, route_id: UUID
+) -> list[tuple[str, list[tuple[float, float]]]]:
+    """(mode, line) of each segment, in order, when every segment has a line.
+
+    Only then can the map draw the drive and the walks apart (spec 14, D23);
+    otherwise it draws the route line in the route's own mode. The walk back
+    to the car retraces the approach: drawing both would fill the dashes in.
+    """
+    rows = (
+        await session.execute(
+            select(RouteSegment.mode, ST_AsGeoJSON(RouteSegment.geometry))
+            .where(RouteSegment.route_id == route_id, RouteSegment.role != "return")
+            .order_by(RouteSegment.leg_index, RouteSegment.seq)
+        )
+    ).all()
+    pieces: list[tuple[str, list[tuple[float, float]]]] = []
+    for mode, raw in rows:
+        if not raw:
+            return []
+        coordinates = json.loads(raw).get("coordinates") or []
+        pieces.append((mode, [(float(x), float(y)) for x, y, *_ in coordinates]))
+    return pieces

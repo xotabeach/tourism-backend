@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
-  "corpus_id": "support-help-2026-09-08",
+  "corpus_id": "support-help-2026-09-25",
   "language": "ru",
-  "target_app_version": "0.2.4",
+  "target_app_version": "0.3.0",
   "status": "draft",
   "release_verified": false,
   "approved_by": null,
-  "code_verified_on": "2026-09-08",
-  "backend_commit": "e7a062c4bc4d717a1b20a5103d049d1fb1a08562",
-  "mobile_commit": "4b9813b3bd2e08d4b90b3aae463d19e6ffd337eb",
+  "code_verified_on": "2026-09-25",
+  "backend_commit": "298f7c80ed0b0ab79a6b6a6df7f933aaea527eca",
+  "mobile_commit": "de0e07d743871dcf50cde990c64dff76d343859c",
   "articles": [
     {
-      "id": "routes-difficulty", "revision": 1, "category": "routes", "faq_id": "difficulty",
+      "id": "routes-difficulty", "revision": 2, "category": "routes", "faq_id": "difficulty",
       "title": "Уровень сложности", "question": "Как понять, справлюсь ли я?",
       "body_file": "articles/routes-difficulty.md",
-      "evidence": ["mobile:lib/features/routes/presentation/route_details_screen.dart"]
+      "evidence": ["mobile:lib/features/routes/presentation/route_details_screen.dart", "mobile:lib/features/routes/presentation/widgets/difficulty_breakdown_sheet.dart", "backend:src/tourism_backend/modules/routes/application/difficulty.py"]
     },
     {
       "id": "routes-offline", "revision": 1, "category": "routes", "faq_id": "offline",
@@ -29,10 +29,10 @@
       "evidence": ["mobile:lib/features/settings/presentation/settings_support_screens.dart", "backend:src/tourism_backend/modules/support/application/service.py"]
     },
     {
-      "id": "routes-order", "revision": 1, "category": "routes", "faq_id": "order",
+      "id": "routes-order", "revision": 2, "category": "routes", "faq_id": "order",
       "title": "Порядок точек", "question": "Можно ли пропускать точки и как завершить маршрут?",
       "body_file": "articles/routes-order.md",
-      "evidence": ["backend:src/tourism_backend/modules/route_execution/application/service.py", "mobile:lib/features/route_execution/presentation/route_execution_screen.dart"]
+      "evidence": ["backend:src/tourism_backend/modules/route_execution/application/service.py", "mobile:lib/features/route_execution/presentation/route_execution_screen.dart", "mobile:lib/features/route_execution/presentation/start_route_sheet.dart"]
     },
     {
       "id": "routes-season", "revision": 1, "category": "routes", "faq_id": "season",
@@ -77,10 +77,10 @@
       "evidence": ["mobile:lib/features/settings/presentation/settings_support_screens.dart", "backend:src/tourism_backend/modules/admin/application/support_ops.py"]
     },
     {
-      "id": "points-earn", "revision": 1, "category": "travel_points", "faq_id": "earn",
+      "id": "points-earn", "revision": 2, "category": "travel_points", "faq_id": "earn",
       "title": "Как начисляются баллы", "question": "За что дают ТревелПоинты и кому они начисляются?",
       "body_file": "articles/points-earn.md",
-      "evidence": ["backend:src/tourism_backend/modules/identity/application/travel_points.py", "backend:src/tourism_backend/modules/route_execution/application/service.py", "backend:src/tourism_backend/modules/route_execution/application/rewards.py"]
+      "evidence": ["backend:src/tourism_backend/modules/identity/application/travel_points.py", "backend:src/tourism_backend/modules/route_execution/application/service.py", "backend:src/tourism_backend/modules/route_execution/application/rewards.py", "backend:src/tourism_backend/modules/routes/application/difficulty.py"]
     },
     {
       "id": "points-rank", "revision": 1, "category": "travel_points", "faq_id": "rank",

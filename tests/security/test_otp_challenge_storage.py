@@ -36,6 +36,10 @@ class _RecordingSession:
     async def commit(self) -> None:
         return None
 
+    async def scalar(self, statement: Any) -> Any:
+        # No recorded user is a service account (spec 16, D18).
+        return None
+
     async def execute(self, statement: Any) -> Any:
         if getattr(statement, "is_select", False):
             now = datetime.now(UTC)

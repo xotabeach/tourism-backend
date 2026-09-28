@@ -1193,9 +1193,13 @@ async def test_profile_like_notifies_target_once(live_client: AsyncClient) -> No
 @pytest.mark.asyncio
 async def test_star_rating_after_the_run_and_walked_badge(live_client: AsyncClient) -> None:
     """FRONTEND-42: stars without text from the home card, and «Прошёл маршрут»."""
-    route_id = await _public_route_id()
-    if route_id is None:
+    # From the public catalog itself: a raw "any public route" query can pick
+    # a route other tests left outside the catalog.
+    listed = await live_client.get("/api/v1/routes", params={"limit": 1})
+    items = listed.json()["items"]
+    if not items:
         pytest.skip("No public route seeded")
+    route_id = items[0]["id"]
     auth = await _login(live_client, phone=f"+7902{uuid4().int % 10_000_000:07d}", name="Оценщик")
     headers = {"Authorization": f"Bearer {auth['access_token']}"}
     reviews_url = f"/api/v1/routes/{route_id}/reviews"
@@ -1211,6 +1215,7 @@ async def test_star_rating_after_the_run_and_walked_badge(live_client: AsyncClie
     assert started.status_code == 201, started.text
     # The run shows the same cover as the catalog card.
     catalog = await live_client.get(f"/api/v1/routes/{route_id}")
+    assert catalog.status_code == 200, catalog.text
     assert started.json()["route_cover_url"] == catalog.json()["cover_image_url"]
 
     engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)

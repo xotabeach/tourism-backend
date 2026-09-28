@@ -244,6 +244,7 @@ def _summary_out(
         author_rank_title=ranks.get(article.author_user_id),
         # Без доп. запроса: _authors уже отдаёт целые строки User.
         author_is_expert=bool(author.is_expert) if author is not None else False,
+        author_is_editorial=bool(author.is_system_account) if author is not None else False,
         related_route_id=str(article.related_route_id) if article.related_route_id else None,
         related_place_id=str(article.related_place_id) if article.related_place_id else None,
         cover_image_url=covers.get(article.id),
@@ -330,6 +331,7 @@ async def _article_out(
         author_avatar_url=avatars.get(article.author_user_id),
         author_rank_title=ranks.get(article.author_user_id),
         author_is_expert=bool(author.is_expert) if author is not None else False,
+        author_is_editorial=bool(author.is_system_account) if author is not None else False,
         related_route_id=str(article.related_route_id) if article.related_route_id else None,
         related_place_id=str(article.related_place_id) if article.related_place_id else None,
         cover_image_url=covers.get(article.id),

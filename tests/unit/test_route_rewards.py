@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from tourism_backend.modules.route_execution.application.rewards import (
     MAX_POINTS,
     RouteEffort,
@@ -77,3 +79,17 @@ def test_unknown_difficulty_does_not_change_the_reward() -> None:
     known = RouteEffort(completed_required_stops=4, difficulty="easy")
     unknown = RouteEffort(completed_required_stops=4, difficulty="что-то новое")
     assert travel_points_for_effort(known) == travel_points_for_effort(unknown)
+
+
+def test_estimate_at_start_decides_the_multiplier() -> None:
+    """Spec 17 (D10): an author's «extreme» on an easy walk pays nothing extra."""
+    rated_up = replace(_flat_walk(), difficulty="extreme", difficulty_level=1)
+    honest = replace(_flat_walk(), difficulty="easy", difficulty_level=1)
+    assert travel_points_for_effort(rated_up) == travel_points_for_effort(honest)
+    harder = replace(_flat_walk(), difficulty_level=5)
+    assert travel_points_for_effort(harder) > travel_points_for_effort(honest)
+
+
+def test_runs_started_before_the_estimate_keep_the_word() -> None:
+    old_hard = replace(_flat_walk(), difficulty="hard", difficulty_level=None)
+    assert travel_points_for_effort(old_hard) > travel_points_for_effort(_flat_walk())

@@ -603,3 +603,227 @@ async def test_parallel_starts_leave_one_run_and_name_the_blocking_one(
     again = await start(first["id"])
     assert again.status_code == 201, again.text
     assert again.json()["id"] != run_id
+
+
+@pytest.mark.asyncio
+async def test_run_start_keeps_the_route_days_and_segments_in_its_snapshot(
+    live_client: AsyncClient,
+) -> None:
+    """Spec 14, step 0: one day, a segment per leg, frozen with the snapshot."""
+
+    tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    assert started.status_code == 201, started.text
+    execution = started.json()
+    snapshot_id = execution["routing"]["snapshot_id"]
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            stop_count = await conn.scalar(
+                text("SELECT count(*) FROM route_stops WHERE route_id = :id"), {"id": route_id}
+            )
+            route_segments = await conn.scalar(
+                text("SELECT count(*) FROM route_segments WHERE route_id = :id"),
+                {"id": route_id},
+            )
+            route_days = (
+                await conn.execute(
+                    text(
+                        "SELECT day_index, boundary_source FROM route_days "
+                        "WHERE route_id = :id ORDER BY day_index"
+                    ),
+                    {"id": route_id},
+                )
+            ).all()
+            snapshot_segments = (
+                await conn.execute(
+                    text(
+                        "SELECT leg_index, mode, role FROM routing_snapshot_segments "
+                        "WHERE snapshot_id = :id ORDER BY leg_index, seq"
+                    ),
+                    {"id": snapshot_id},
+                )
+            ).all()
+            snapshot_days = (
+                await conn.execute(
+                    text(
+                        "SELECT day_index, first_position, last_position "
+                        "FROM routing_snapshot_days WHERE snapshot_id = :id"
+                    ),
+                    {"id": snapshot_id},
+                )
+            ).all()
+            base_mode = await conn.scalar(
+                text("SELECT base_mode FROM route_routing_snapshots WHERE id = :id"),
+                {"id": snapshot_id},
+            )
+        assert route_segments == stop_count - 1
+        # Days follow the route's norms (spec 14a): numbered 1..n, all automatic.
+        assert [row.day_index for row in route_days] == list(range(1, len(route_days) + 1))
+        assert {row.boundary_source for row in route_days} == {"auto"}
+        assert [row.leg_index for row in snapshot_segments] == list(range(stop_count - 1))
+        assert {row.role for row in snapshot_segments} <= {"main"}
+        assert {row.mode for row in snapshot_segments} <= {"walk", "car"}
+        assert len(snapshot_days) == len(route_days)
+        ordered = sorted(snapshot_days, key=lambda day: day.day_index)
+        assert ordered[0].first_position == 1
+        for before, after in zip(ordered, ordered[1:], strict=False):
+            assert after.first_position == before.last_position + 1
+        assert base_mode in {"walk", "car", "mixed"}
+
+        with pytest.raises(DBAPIError):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE routing_snapshot_segments SET distance_meters = 1 "
+                        "WHERE snapshot_id = :id"
+                    ),
+                    {"id": snapshot_id},
+                )
+    finally:
+        await engine.dispose()
+        await live_client.post(
+            f"/api/v1/route-executions/{execution['id']}/cancel", headers=headers
+        )
+
+
+@pytest.mark.asyncio
+async def test_route_detail_serves_segments_once(live_client: AsyncClient) -> None:
+    """Spec 14b: segments in their own field, not again inside accessibility."""
+
+    tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    assert started.status_code == 201, started.text
+    try:
+        detail = await live_client.get(f"/api/v1/routes/{route_id}")
+        assert detail.status_code == 200, detail.text
+        body = detail.json()
+        assert body["base_mode"] in {"walk", "car", "mixed"}
+        legs = {segment["leg_index"] for segment in body["segments"]}
+        assert legs == set(range(len(body["stops"]) - 1))
+        for segment in body["segments"]:
+            assert segment["mode"] in {"walk", "car"}
+            assert segment["role"] in {"main", "approach", "return"}
+        routing = (body.get("accessibility") or {}).get("routing") or {}
+        assert "segments" not in routing
+    finally:
+        await live_client.post(
+            f"/api/v1/route-executions/{started.json()['id']}/cancel", headers=headers
+        )
+
+
+async def _second_catalog_route(client: AsyncClient, other_than: str) -> str:
+    response = await client.get("/api/v1/routes", params={"limit": 5})
+    return next(item["id"] for item in response.json()["items"] if item["id"] != other_than)
+
+
+@pytest.mark.asyncio
+async def test_ending_a_day_is_a_night_pause_and_the_next_day_follows(
+    live_client: AsyncClient,
+) -> None:
+    """Spec 14a, section 5: «Закончить день», «День N», the start conflict."""
+    tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    assert started.status_code == 201, started.text
+    execution_id = started.json()["id"]
+    assert (started.json()["current_day"], started.json()["night_paused"]) == (1, False)
+    try:
+        ended = await live_client.post(
+            f"/api/v1/route-executions/{execution_id}/end-day", headers=headers
+        )
+        assert ended.status_code == 200, ended.text
+        body = ended.json()
+        assert (body["status"], body["night_paused"], body["current_day"]) == ("paused", True, 2)
+
+        other = await _second_catalog_route(live_client, route_id)
+        blocked = await live_client.post(
+            "/api/v1/route-executions", json={"route_id": other}, headers=headers
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["details"]["night_paused"] is True
+
+        resumed = await live_client.post(
+            f"/api/v1/route-executions/{execution_id}/resume", headers=headers
+        )
+        assert resumed.status_code == 200, resumed.text
+        assert (resumed.json()["status"], resumed.json()["night_paused"]) == ("active", False)
+        assert resumed.json()["current_day"] == 2
+    finally:
+        await live_client.post(f"/api/v1/route-executions/{execution_id}/cancel", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_finishing_early_pays_only_for_days_walked_in_full(
+    live_client: AsyncClient,
+) -> None:
+    tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    execution_id = started.json()["id"]
+    finished = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/finish-early", headers=headers
+    )
+    assert finished.status_code == 200, finished.text
+    body = finished.json()
+    assert (body["status"], body["ended_early"]) == ("cancelled", True)
+    # No stop marked: no day walked in full, nothing paid.
+    assert body["awarded_points"] == 0
+    again = await live_client.post(
+        f"/api/v1/route-executions/{execution_id}/finish-early", headers=headers
+    )
+    assert again.status_code == 200
+    assert again.json()["ended_early"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_multi_day_run_closes_itself_and_frees_the_start(
+    live_client: AsyncClient,
+) -> None:
+    tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    route_id, _ = await _catalog_route(live_client)
+    started = await live_client.post(
+        "/api/v1/route-executions", json={"route_id": route_id}, headers=headers
+    )
+    execution_id = started.json()["id"]
+    await live_client.post(f"/api/v1/route-executions/{execution_id}/end-day", headers=headers)
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE route_executions SET updated_at = now() - interval '8 days' "
+                    "WHERE id = :id"
+                ),
+                {"id": execution_id},
+            )
+        active = await live_client.get("/api/v1/route-executions/active", headers=headers)
+        assert active.status_code in (200, 204), active.text
+        assert not active.content or active.json() is None
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    text("SELECT status, ended_early FROM route_executions WHERE id = :id"),
+                    {"id": execution_id},
+                )
+            ).one()
+        assert tuple(row) == ("cancelled", True)
+    finally:
+        await engine.dispose()

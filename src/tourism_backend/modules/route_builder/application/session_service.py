@@ -59,8 +59,10 @@ from tourism_backend.modules.route_builder.application.schemas import (
     CatalogMatchBlockOut,
     CatalogRouteItemOut,
     ChatBlockOut,
+    ComparisonRouteOut,
     PlaceChipBlockOut,
     RecommendationCardBlockOut,
+    RouteComparisonBlockOut,
     RouteGenerateIn,
     RouteMatchParamsIn,
     RoutePlanningMessageIn,
@@ -790,6 +792,7 @@ async def post_message(
         elif goal == "discover":
             constraints_dict["planning_mode"] = "discover"
         discovery_replies = None
+        comparison: RouteComparisonBlockOut | None = None
         ask_field = turn.ask_field or prefer_ready_ask_field(confirmed)
         # Модель нередко спрашивает город прозой, не проставив ask_field —
         # тогда доверяем тексту, иначе человек видит вопрос, на который нечем ответить.
@@ -876,11 +879,10 @@ async def post_message(
                 assistant_text = (
                     "Какие маршруты сравнить? Пришлите названия или сначала попросите варианты."
                 )
-            elif fallback:
-                assistant_text = (
-                    "Не удалось получить сравнение помощника. "
-                    "Можно повторить вопрос или открыть показанные карточки."
-                )
+            else:
+                comparison = route_comparison_block(prefetch["comparison_routes"])
+                if fallback:
+                    assistant_text = grounded_comparison_text(comparison)
             discovery_replies = [{"id": "reply", "label": "Предложи варианты"}]
         elif goal in {"place_info", "clarify"}:
             # No route questionnaire/CTA after a factual answer or open clarification.
@@ -941,6 +943,8 @@ async def post_message(
         preview = prefetch.get("catalog_preview")
         if goal == "discover" and isinstance(preview, dict):
             blocks.insert(0, CatalogMatchBlockOut.model_validate(preview))
+        if comparison is not None:
+            blocks.insert(0, comparison)
 
     # Persist merged constraints / confirmed after the turn.
     try:
@@ -1178,6 +1182,14 @@ async def _assistant_from_ai(
         # No unbounded agent loop, and never claim an ungrounded comparison.
         remaining = settings.ai_turn_budget_seconds - (time.perf_counter() - started)
         if remaining <= _MIN_TOOL_ROUND_SECONDS:
+            logger.info(
+                "ai_chat_grounding_skipped",
+                extra={
+                    "goal": semantic_goal,
+                    "reason": "budget",
+                    "remaining_s": round(remaining, 1),
+                },
+            )
             return replace(result, structured_parse="fallback")
         try:
             follow: ChatTurnResult = await asyncio.wait_for(
@@ -1190,7 +1202,11 @@ async def _assistant_from_ai(
                 ),
                 timeout=remaining,
             )
-        except Exception:  # noqa: BLE001 — deterministic grounded response remains available
+        except Exception as exc:  # noqa: BLE001 — deterministic grounded response remains available
+            logger.info(
+                "ai_chat_grounding_skipped",
+                extra={"goal": semantic_goal, "reason": type(exc).__name__},
+            )
             return replace(result, structured_parse="fallback")
         return replace(
             follow,
@@ -1537,7 +1553,7 @@ def _catalog_match_block(
         difficulty = getattr(route, "difficulty", None)
         difficulty_label = None
         if isinstance(difficulty, str) and difficulty.strip():
-            difficulty_label = difficulty.strip()[:40]
+            difficulty_label = _DIFFICULTY_LABELS.get(difficulty.strip(), difficulty.strip()[:40])
         elif isinstance(difficulty, int):
             difficulty_label = f"{difficulty}/5"
         routes.append(
@@ -1748,6 +1764,7 @@ async def _comparison_context(
                 "route_id": str(route.id),
                 "title": route.name,
                 "duration_minutes": route.estimated_duration_minutes,
+                "distance_meters": route.distance_meters,
                 "transport_mode": route.transport_mode,
                 "difficulty": route.difficulty,
                 "stops_count": route.stops_count,
@@ -1755,6 +1772,88 @@ async def _comparison_context(
             for route in routes
         ]
     }
+
+
+_DIFFICULTY_LABELS = {
+    "easy": "лёгкий",
+    "moderate": "средний",
+    "medium": "средний",
+    "hard": "сложный",
+    "extreme": "очень сложный",
+}
+_DIFFICULTY_LEVELS = {"easy": 1, "moderate": 2, "medium": 2, "hard": 3, "extreme": 4}
+_COMPARISON_TRANSPORT_LABELS = {
+    "walk": "Пешком",
+    "walking": "Пешком",
+    "car": "На машине",
+    "public": "Общ. транспорт",
+    "mixed": "Смешанный",
+}
+
+
+def route_comparison_block(routes: list[dict[str, Any]]) -> RouteComparisonBlockOut | None:
+    """Side-by-side figures of the shown cards, with server-computed badges.
+
+    Every number comes from the catalogue, never from the model, so the
+    visual comparison stays true even when the model's prose does not.
+    """
+    items: list[ComparisonRouteOut] = []
+    for route in routes[:5]:
+        meters = route.get("distance_meters")
+        minutes = route.get("duration_minutes")
+        stops = route.get("stops_count")
+        difficulty = str(route.get("difficulty") or "")
+        items.append(
+            ComparisonRouteOut(
+                route_id=str(route.get("route_id") or ""),
+                title=str(route.get("title") or "Маршрут").strip()[:120] or "Маршрут",
+                distance_km=round(meters / 1000, 1)
+                if isinstance(meters, int) and meters > 0
+                else None,
+                duration_minutes=minutes if isinstance(minutes, int) and minutes > 0 else None,
+                transport_label=_COMPARISON_TRANSPORT_LABELS.get(
+                    str(route.get("transport_mode") or "")
+                ),
+                difficulty_label=(_DIFFICULTY_LABELS.get(difficulty) or "").capitalize() or None,
+                difficulty_level=_DIFFICULTY_LEVELS.get(difficulty),
+                stops_count=stops if isinstance(stops, int) and stops > 0 else None,
+            )
+        )
+    items = [item for item in items if item.route_id]
+    if len(items) < 2:
+        return None
+
+    def mark(key: Any, badge: str) -> None:
+        known = [item for item in items if key(item) is not None]
+        if len(known) < 2:
+            return
+        best = min(known, key=key)
+        # A tie is not a superlative: «Короче всех» on one of two equal
+        # routes would be a claim the figures do not support.
+        if sum(1 for item in known if key(item) == key(best)) == 1:
+            best.badges.append(badge)
+
+    mark(lambda item: item.duration_minutes, "Быстрее всех")
+    mark(lambda item: item.distance_km, "Короче всех")
+    mark(lambda item: item.difficulty_level, "Легче всех")
+    return RouteComparisonBlockOut(routes=items)
+
+
+def grounded_comparison_text(block: RouteComparisonBlockOut | None) -> str:
+    """Short reply for a comparison the model did not write.
+
+    Used when the synthesis call ran out of the turn budget or failed; the
+    figures live in the comparison block under the text.
+    """
+    if block is None:
+        return "Какие маршруты сравнить? Пришлите названия или сначала попросите варианты."
+    count = len(block.routes)
+    summary = f"Сравнил {count} {'маршрута' if count < 5 else 'маршрутов'}, цифры ниже."
+    for item in block.routes:
+        if item.badges:
+            badges = ", ".join(badge.lower() for badge in item.badges)
+            summary += f" «{item.title}»: {badges}."
+    return summary + " Что важнее: время, нагрузка или транспорт?"
 
 
 def _retrieval_query(messages: list[ChatMessage], constraints: dict[str, Any]) -> str:
@@ -1936,6 +2035,8 @@ def _try_parse_block(item: dict[str, Any]) -> ChatBlockOut | None:
             return RouteProposalCardBlockOut.model_validate(item)
         if block_type == "catalog_match":
             return CatalogMatchBlockOut.model_validate(item)
+        if block_type == "route_comparison":
+            return RouteComparisonBlockOut.model_validate(item)
         if block_type == "actions":
             return ActionsBlockOut.model_validate(item)
         if block_type == "slider":

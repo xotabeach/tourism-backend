@@ -554,3 +554,16 @@ def choice_formatter(field: str, labels: dict[str, str]) -> Callable[[object, ob
         return escape(labels.get(key, key))
 
     return render
+
+
+def format_route_name_with_structure(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    """Route name with a link to its days and car parks page (spec 14)."""
+    name = getattr(model, "name", "") or ""
+    route_id = getattr(model, "id", None)
+    return Markup('{} · <a href="/admin/route-structure?route_id={}">Дни и парковки</a>').format(
+        name, route_id
+    )

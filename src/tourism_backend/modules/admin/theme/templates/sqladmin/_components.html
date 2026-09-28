@@ -1,8 +1,0 @@
-{# Shared statistic: value and explanatory text never share the large type. #}
-{% macro metric(label, value, hint="", danger=false) -%}
-<dl class="card card-body ct-metric">
-  <dt class="text-secondary">{{ label }}</dt>
-  <dd class="h2 mb-0{% if danger %} text-danger{% endif %}">{{ value }}</dd>
-  {% if hint %}<dd class="text-secondary small">{{ hint }}</dd>{% endif %}
-</dl>
-{%- endmacro %}

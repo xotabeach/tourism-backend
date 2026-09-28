@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
-from sqladmin import BaseView, ModelView, action, expose
+from sqladmin import BaseView, action, expose
 from sqladmin.filters import (
     AllUniqueStringValuesFilter,
     BooleanFilter,
@@ -18,7 +18,7 @@ from sqladmin.flash import Flash
 from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
-from wtforms import FileField, PasswordField  # type: ignore[import-untyped]
+from wtforms import FileField, PasswordField, SelectField  # type: ignore[import-untyped]
 from wtforms.validators import Length, Optional  # type: ignore[import-untyped]
 
 from tourism_backend.api.errors import AppError
@@ -28,9 +28,13 @@ from tourism_backend.modules.admin.application.audit import record_audit
 from tourism_backend.modules.admin.application.passwords import hash_password
 from tourism_backend.modules.admin.application.support_ops import operator_reply
 from tourism_backend.modules.admin.infrastructure.models import (
+    ADMIN_ROLES,
     AdminAuditEvent,
     AdminPrincipal,
     AdminRoleBinding,
+)
+from tourism_backend.modules.admin.presentation.access_permissions_admin import (
+    AccessPermissionsAdmin,
 )
 from tourism_backend.modules.admin.presentation.achievements_admin import (
     AchievementsOperationsAdmin,
@@ -44,12 +48,14 @@ from tourism_backend.modules.admin.presentation.antifraud_admin import (
 )
 from tourism_backend.modules.admin.presentation.auth import (
     require_admin_role,
+    require_permission,
     session_principal_id,
 )
 from tourism_backend.modules.admin.presentation.datetime_fmt import (
     ADMIN_COLUMN_TYPE_FORMATTERS,
     format_moscow_plain,
 )
+from tourism_backend.modules.admin.presentation.difficulty_admin import DifficultyFeedbackAdmin
 from tourism_backend.modules.admin.presentation.filters import (
     AwaitingOperatorReplyFilter,
     OtpLinkedUserIdFilter,
@@ -75,6 +81,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_review_media_gallery,
     format_review_status,
     format_route_fk,
+    format_route_name_with_structure,
     format_route_publication_status,
     format_sms_delivery_status,
     format_ticket_awaiting,
@@ -85,7 +92,12 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_user_fk,
     format_user_id_peek,
 )
+from tourism_backend.modules.admin.presentation.permissions import (
+    PermissionedModelView as ModelView,
+)
+from tourism_backend.modules.admin.presentation.route_structure_admin import RouteStructureAdmin
 from tourism_backend.modules.admin.presentation.stats_admin import StatsAdmin
+from tourism_backend.modules.admin.presentation.transit_admin import TransitAdmin, TransitLineAdmin
 from tourism_backend.modules.content.application import article_comment_service, article_service
 from tourism_backend.modules.content.infrastructure.models import (
     Article,
@@ -148,6 +160,7 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecutionStop,
 )
 from tourism_backend.modules.routes.application import review_service
+from tourism_backend.modules.routes.application.difficulty import level_from_legacy
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 from tourism_backend.modules.runtime_config.application.service import (
     AI_PROVIDER_KEY,
@@ -1120,7 +1133,10 @@ class AdminPrincipalAdmin(ModelView, model=AdminPrincipal):
     form_columns = [AdminPrincipal.login, AdminPrincipal.is_active]
     form_args = {
         "login": {"label": "Логин"},
-        "is_active": {"label": "Активен"},
+        "is_active": {
+            "label": "Активен",
+            "description": "После создания назначьте сотруднику роль в разделе «Роли».",
+        },
     }
     can_create = True
     can_edit = True
@@ -1170,14 +1186,6 @@ class AdminPrincipalAdmin(ModelView, model=AdminPrincipal):
         async with self.session_maker(expire_on_commit=False) as session:
             session.add(principal)
             await session.flush()
-            session.add(
-                AdminRoleBinding(
-                    id=uuid4(),
-                    principal_id=principal.id,
-                    role="admin",
-                    created_at=now,
-                )
-            )
             await record_audit(
                 session,
                 actor_id=actor_id,
@@ -1201,7 +1209,35 @@ class AdminPrincipalAdmin(ModelView, model=AdminPrincipal):
             if login:
                 principal.login = login[:64]
             if "is_active" in data:
-                principal.is_active = bool(data.get("is_active"))
+                new_active = bool(data.get("is_active"))
+                if principal.is_active and not new_active:
+                    has_admin_role = await session.scalar(
+                        select(AdminRoleBinding.id).where(
+                            AdminRoleBinding.principal_id == principal.id,
+                            AdminRoleBinding.role == "admin",
+                        )
+                    )
+                    if has_admin_role is not None:
+                        other_admin = await session.scalar(
+                            select(AdminRoleBinding.id)
+                            .join(
+                                AdminPrincipal,
+                                AdminPrincipal.id == AdminRoleBinding.principal_id,
+                            )
+                            .where(
+                                AdminRoleBinding.role == "admin",
+                                AdminRoleBinding.principal_id != principal.id,
+                                AdminPrincipal.is_active.is_(True),
+                            )
+                            .limit(1)
+                        )
+                        if other_admin is None:
+                            raise AppError(
+                                code="last_admin",
+                                message="Cannot disable the last admin",
+                                status_code=409,
+                            )
+                principal.is_active = new_active
             if password:
                 if len(password) < 12:
                     raise AppError(
@@ -1250,6 +1286,19 @@ class AdminRoleBindingAdmin(ModelView, model=AdminRoleBinding):
         AdminRoleBinding.principal_id,
         AdminRoleBinding.role,
     ]
+    form_overrides = {"role": SelectField}
+    form_args = {
+        "role": {
+            "label": "Роль",
+            "choices": [
+                ("support", "Поддержка"),
+                ("route_manager", "Менеджер маршрутов"),
+                ("content_manager", "Контент-менеджер"),
+                ("admin", "Администратор"),
+                ("ops", "Оператор поддержки (старые учётные записи)"),
+            ],
+        },
+    }
     can_create = True
     can_edit = False
     can_delete = True
@@ -1260,6 +1309,102 @@ class AdminRoleBindingAdmin(ModelView, model=AdminRoleBinding):
 
     def is_visible(self, request: Request) -> bool:
         return require_admin_role(request)
+
+    async def scaffold_form(self, rules: Any = None) -> Any:
+        form_cls = await super().scaffold_form(rules)
+        async with self.session_maker() as session:
+            result = await session.execute(
+                select(AdminPrincipal.id, AdminPrincipal.login)
+                .where(AdminPrincipal.is_active.is_(True))
+                .order_by(AdminPrincipal.login)
+            )
+            principals = result.tuples().all()
+
+        class _Form(form_cls):  # type: ignore[misc,valid-type]
+            principal_id = SelectField(
+                "Сотрудник",
+                choices=[(str(principal_id), login) for principal_id, login in principals],
+            )
+
+        return _Form
+
+    async def insert_model(self, request: Request, data: dict[str, Any]) -> Any:
+        role = str(data.get("role") or "")
+        try:
+            principal_id = UUID(str(data.get("principal_id")))
+        except ValueError as exc:
+            raise AppError(
+                code="validation_error", message="Invalid principal", status_code=400
+            ) from exc
+        if role not in ADMIN_ROLES:
+            raise AppError(code="validation_error", message="Invalid role", status_code=400)
+        async with self.session_maker(expire_on_commit=False) as session:
+            principal = await session.get(AdminPrincipal, principal_id)
+            if principal is None:
+                raise AppError(code="not_found", message="Principal not found", status_code=404)
+            existing = await session.scalar(
+                select(AdminRoleBinding.id).where(
+                    AdminRoleBinding.principal_id == principal_id,
+                    AdminRoleBinding.role == role,
+                )
+            )
+            if existing is not None:
+                raise AppError(
+                    code="validation_error", message="Role already assigned", status_code=400
+                )
+            binding = AdminRoleBinding(
+                id=uuid4(), principal_id=principal_id, role=role, created_at=datetime.now(UTC)
+            )
+            session.add(binding)
+            await record_audit(
+                session,
+                actor_id=session_principal_id(request),
+                action="admin.role_assign",
+                entity_type="admin_principal",
+                entity_id=str(principal_id),
+                metadata={"role": role},
+                ip=request.client.host if request.client else None,
+            )
+            await session.commit()
+            return binding
+
+    async def delete_model(self, request: Request, pk: Any) -> None:
+        try:
+            binding_id = UUID(str(pk))
+        except ValueError as exc:
+            raise AppError(
+                code="validation_error", message="Invalid role ID", status_code=400
+            ) from exc
+        async with self.session_maker(expire_on_commit=False) as session:
+            binding = await session.get(AdminRoleBinding, binding_id)
+            if binding is None:
+                raise AppError(code="not_found", message="Role not found", status_code=404)
+            if binding.role == "admin":
+                other_admin = await session.scalar(
+                    select(AdminRoleBinding.id)
+                    .join(AdminPrincipal, AdminPrincipal.id == AdminRoleBinding.principal_id)
+                    .where(
+                        AdminRoleBinding.role == "admin",
+                        AdminRoleBinding.id != binding.id,
+                        AdminPrincipal.is_active.is_(True),
+                    )
+                    .limit(1)
+                )
+                if other_admin is None:
+                    raise AppError(
+                        code="last_admin", message="Cannot remove the last admin", status_code=409
+                    )
+            await record_audit(
+                session,
+                actor_id=session_principal_id(request),
+                action="admin.role_remove",
+                entity_type="admin_principal",
+                entity_id=str(binding.principal_id),
+                metadata={"role": binding.role},
+                ip=request.client.host if request.client else None,
+            )
+            await session.delete(binding)
+            await session.commit()
 
 
 class AdminAuditEventAdmin(ModelView, model=AdminAuditEvent):
@@ -1438,7 +1583,10 @@ class RouteAdmin(ModelView, model=Route):
             },
         ),
     }
-    column_formatters_detail = column_formatters
+    column_formatters_detail = {
+        **column_formatters,
+        Route.name: format_route_name_with_structure,
+    }
     column_searchable_list = [Route.name, Route.description]
     column_sortable_list = [
         Route.publication_status,
@@ -1479,6 +1627,20 @@ class RouteAdmin(ModelView, model=Route):
     can_delete = False
     can_export = False
     page_size = 50
+
+    async def on_model_change(
+        self, data: dict[str, Any], model: Any, is_created: bool, request: Request
+    ) -> None:
+        # Spec 17: a difficulty picked here is the editors' rating; the next
+        # recalculation keeps it instead of replacing it with the estimate.
+        if "difficulty" not in data:
+            return
+        level = level_from_legacy(data.get("difficulty"))
+        if level is None or level == model.difficulty_level:
+            return
+        model.difficulty_manual = level
+        model.difficulty_manual_by = "editorial"
+        model.difficulty_level = level
 
     async def list(self, request: Request) -> Any:
         pagination = await super().list(request)
@@ -2703,8 +2865,8 @@ class DeviceTokenAdmin(ModelView, model=DeviceToken):
 
 
 class PlaceImageAdmin(ModelView, model=PlaceImage):
-    category = "Медиа"
-    category_icon = "fa-solid fa-photo-film"
+    category = "Места"
+    category_icon = "fa-solid fa-map-location-dot"
     name = "Фото места"
     name_plural = "Фото мест"
     icon = "fa-solid fa-image"
@@ -2833,15 +2995,15 @@ class RuntimeConfigAdmin(BaseView):
     session_maker: ClassVar[Any]
 
     def is_accessible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return require_permission(request, "settings.read")
 
     def is_visible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return self.is_accessible(request)
 
     @expose("/config/ai-provider", methods=["GET"], identity="config-ai-provider")
     async def show(self, request: Request) -> Response:
-        if not require_admin_role(request):
-            Flash.error(request, "Доступно только роли admin.")
+        if not require_permission(request, "settings.read"):
+            Flash.error(request, "Недостаточно прав.")
             return RedirectResponse(request.url_for("admin:index"), status_code=303)
         settings: Settings = request.app.state.settings
         async with self.session_maker(expire_on_commit=False) as session:
@@ -2855,8 +3017,8 @@ class RuntimeConfigAdmin(BaseView):
     @expose("/config/ai-provider/save", methods=["POST"])
     async def save(self, request: Request) -> Response:
         redirect_url = request.url_for("admin:view-config-ai-provider")
-        if not require_admin_role(request):
-            Flash.error(request, "Доступно только роли admin.")
+        if not require_permission(request, "settings.write"):
+            Flash.error(request, "Недостаточно прав.")
             return RedirectResponse(redirect_url, status_code=303)
 
         form = await request.form()
@@ -2918,15 +3080,15 @@ class SmsConfigAdmin(BaseView):
     session_maker: ClassVar[Any]
 
     def is_accessible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return require_permission(request, "settings.read")
 
     def is_visible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return self.is_accessible(request)
 
     @expose("/config/sms", methods=["GET"], identity="config-sms")
     async def show(self, request: Request) -> Response:
-        if not require_admin_role(request):
-            Flash.error(request, "Доступно только роли admin.")
+        if not require_permission(request, "settings.read"):
+            Flash.error(request, "Недостаточно прав.")
             return RedirectResponse(request.url_for("admin:index"), status_code=303)
         settings: Settings = request.app.state.settings
         async with self.session_maker(expire_on_commit=False) as session:
@@ -2952,8 +3114,8 @@ class SmsConfigAdmin(BaseView):
     @expose("/config/sms/save", methods=["POST"])
     async def save(self, request: Request) -> Response:
         redirect_url = request.url_for("admin:view-config-sms")
-        if not require_admin_role(request):
-            Flash.error(request, "Доступно только роли admin.")
+        if not require_permission(request, "settings.write"):
+            Flash.error(request, "Недостаточно прав.")
             return RedirectResponse(redirect_url, status_code=303)
         settings: Settings = request.app.state.settings
         form = await request.form()
@@ -3385,8 +3547,9 @@ class ContentReportAdmin(ModelView, model=ContentReport):
     принимает человек, поэтому здесь есть статусы разбора и заметка.
     """
 
-    category = "Контент"
-    category_icon = "fa-solid fa-newspaper"
+    category = "Жалобы"
+    category_icon = "fa-solid fa-flag"
+    permission_scope = "moderation"
     name = "Жалоба"
     name_plural = "Жалобы на контент"
     icon = "fa-solid fa-flag"
@@ -3444,6 +3607,51 @@ class ContentReportAdmin(ModelView, model=ContentReport):
     can_export = True
     page_size = 50
 
+    @staticmethod
+    def _allowed_types(request: Request, *, write: bool = False) -> tuple[str, ...]:
+        suffix = "write" if write else "read"
+        allowed: list[str] = []
+        if require_permission(request, f"moderation_route.{suffix}"):
+            allowed.extend(("route", "place"))
+        if require_permission(request, f"moderation_content.{suffix}"):
+            allowed.extend(("article", "article_comment"))
+        return tuple(allowed)
+
+    def list_query(self, request: Request) -> Any:
+        return (
+            super()
+            .list_query(request)
+            .where(ContentReport.target_type.in_(self._allowed_types(request)))
+        )
+
+    def count_query(self, request: Request) -> Any:
+        return (
+            super()
+            .count_query(request)
+            .where(ContentReport.target_type.in_(self._allowed_types(request)))
+        )
+
+    def details_query(self, request: Request) -> Any:
+        return (
+            super()
+            .details_query(request)
+            .where(ContentReport.target_type.in_(self._allowed_types(request)))
+        )
+
+    def form_edit_query(self, request: Request) -> Any:
+        return (
+            super()
+            .form_edit_query(request)
+            .where(ContentReport.target_type.in_(self._allowed_types(request, write=True)))
+        )
+
+    async def check_can_edit(self, request: Request, model: Any) -> bool:
+        return bool(
+            model is not None
+            and model.target_type in self._allowed_types(request, write=True)
+            and await super().check_can_edit(request, model)
+        )
+
     async def list(self, request: Request) -> Any:
         pagination = await super().list(request)
         request.state.user_names = await _preload_user_names(
@@ -3463,6 +3671,14 @@ class ContentReportAdmin(ModelView, model=ContentReport):
                 report_ids.append(UUID(raw.strip()))
         if report_ids:
             async with self.session_maker(expire_on_commit=False) as session:
+                allowed_ids = await session.execute(
+                    select(ContentReport.id).where(
+                        ContentReport.id.in_(report_ids),
+                        ContentReport.target_type.in_(self._allowed_types(request, write=True)),
+                    )
+                )
+                if set(allowed_ids.scalars().all()) != set(report_ids):
+                    return Response(status_code=403)
                 await moderation_service.set_report_status(
                     session,
                     report_ids=report_ids,
@@ -3595,10 +3811,10 @@ class SupportHelpRevisionAdmin(ModelView, model=SupportHelpRevision):
     page_size = 50
 
     def is_accessible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return require_permission(request, "support.read")
 
     def is_visible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return self.is_accessible(request)
 
     @action(
         name="publish_help",
@@ -3644,8 +3860,8 @@ class SupportHelpRevisionAdmin(ModelView, model=SupportHelpRevision):
             request.url_for("admin:list", identity=self.identity)
         )
         actor_id = session_principal_id(request)
-        if actor_id is None or not require_admin_role(request):
-            Flash.error(request, "Доступно только роли admin.")
+        if actor_id is None or not require_permission(request, "support.write"):
+            Flash.error(request, "Недостаточно прав.")
             return RedirectResponse(referer, status_code=302)
         ids: list[UUID] = []
         for raw in request.query_params.get("pks", "").split(","):
@@ -3723,14 +3939,14 @@ class SupportHelpIndexAdmin(BaseView):
     session_maker: ClassVar[Any]
 
     def is_accessible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return require_permission(request, "support.read")
 
     def is_visible(self, request: Request) -> bool:
-        return require_admin_role(request)
+        return self.is_accessible(request)
 
     @expose("/support/help-index", methods=["GET"], identity="support-help-index")
     async def show(self, request: Request) -> Response:
-        if not require_admin_role(request):
+        if not require_permission(request, "support.read"):
             Flash.error(request, "Доступно только роли admin.")
             return RedirectResponse(request.url_for("admin:index"), status_code=303)
         settings: Settings = request.app.state.settings
@@ -3764,7 +3980,7 @@ class SupportHelpIndexAdmin(BaseView):
     @expose("/support/help-index/run", methods=["POST"])
     async def run(self, request: Request) -> Response:
         redirect_url = request.url_for("admin:view-support-help-index")
-        if not require_admin_role(request):
+        if not require_permission(request, "support.write"):
             Flash.error(request, "Доступно только роли admin.")
             return RedirectResponse(redirect_url, status_code=303)
         form = await request.form()
@@ -3958,8 +4174,13 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(PlaceReviewAdmin)
     admin.add_view(AdminPrincipalAdmin)
     admin.add_view(AdminRoleBindingAdmin)
+    admin.add_view(AccessPermissionsAdmin)
     admin.add_view(AdminAuditEventAdmin)
     admin.add_view(AchievementsOperationsAdmin)
+    admin.add_view(RouteStructureAdmin)
+    admin.add_view(DifficultyFeedbackAdmin)
+    admin.add_view(TransitAdmin)
+    admin.add_view(TransitLineAdmin)
     admin.add_view(AchievementAdmin)
     admin.add_view(AchievementActionAdmin)
     admin.add_view(UserAchievementAdmin)
@@ -3997,5 +4218,10 @@ def register_views(admin: Any, settings: Settings) -> None:
         SmsConfigAdmin.session_maker = session_maker
         AntiFraudConfigAdmin.session_maker = session_maker
         AchievementsOperationsAdmin.session_maker = session_maker
+        RouteStructureAdmin.session_maker = session_maker
+        DifficultyFeedbackAdmin.session_maker = session_maker
+        TransitAdmin.session_maker = session_maker
+        TransitLineAdmin.session_maker = session_maker
         StatsAdmin.session_maker = session_maker
         SupportHelpIndexAdmin.session_maker = session_maker
+        AccessPermissionsAdmin.session_maker = session_maker

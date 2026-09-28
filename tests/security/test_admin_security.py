@@ -889,7 +889,7 @@ async def test_runtime_config_requires_admin_role_not_just_login(
     show = await admin_client.get(
         "/admin/config/ai-provider", headers=headers, follow_redirects=False
     )
-    assert show.status_code == 303, show.text
+    assert show.status_code == 403, show.text
 
     save = await admin_client.post(
         "/admin/config/ai-provider/save",
@@ -897,7 +897,7 @@ async def test_runtime_config_requires_admin_role_not_just_login(
         headers=headers,
         follow_redirects=False,
     )
-    assert save.status_code == 303, save.text
+    assert save.status_code == 403, save.text
 
 
 def test_article_admin_views_are_registered_and_write_gated() -> None:
@@ -952,7 +952,7 @@ def test_article_admin_views_are_registered_and_write_gated() -> None:
     assert ArticleBlock.media_attachment_id in ArticleBlockAdmin.column_list
 
 
-def test_help_admin_is_admin_only_and_never_edits_article_text() -> None:
+def test_help_admin_requires_support_permission_and_never_edits_article_text() -> None:
     """Publication belongs in the admin; rewriting the text does not.
 
     Search matches embeddings on the article's `content_hash`, and the
@@ -984,14 +984,17 @@ def test_help_admin_is_admin_only_and_never_edits_article_text() -> None:
     assert SupportHelpRevision.status in SupportHelpRevisionAdmin.column_formatters
     assert SupportHelpRevision.review_until in SupportHelpRevisionAdmin.column_formatters
 
-    def _request(roles: list[str]) -> Request:
-        scope = {"type": "http", "session": {"admin_roles": roles}}
-        return Request(scope)  # type: ignore[arg-type]
+    def _request(permissions: set[str]) -> Request:
+        scope = {"type": "http", "session": {}}
+        request = Request(scope)  # type: ignore[arg-type]
+        request.state.admin_permissions = frozenset(permissions)
+        return request
 
     for view in (SupportHelpRevisionAdmin, SupportHelpIndexAdmin):
-        assert view.is_accessible(view, _request(["admin"])) is True  # type: ignore[arg-type]
-        assert view.is_accessible(view, _request(["ops"])) is False  # type: ignore[arg-type]
-        assert view.is_visible(view, _request(["ops"])) is False  # type: ignore[arg-type]
+        instance = view()
+        assert instance.is_accessible(_request({"support.read"})) is True
+        assert instance.is_accessible(_request(set())) is False
+        assert instance.is_visible(_request(set())) is False
 
 
 def test_help_views_are_registered_and_their_template_exists() -> None:
@@ -1026,3 +1029,255 @@ def test_help_views_are_registered_and_their_template_exists() -> None:
     )
     env = Environment(loader=FileSystemLoader(str(templates)), autoescape=True)
     env.parse((templates / "sqladmin/support_help_index.html").read_text(encoding="utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_editors_set_days_and_car_parks_of_a_route(admin_client: AsyncClient) -> None:
+    """Spec 14a/14b: the admin page stores day breaks and car parks by place."""
+    headers = {"Origin": "http://test"}
+    phone = f"+7910{uuid4().int % 10_000_000:07d}"
+    await admin_client.post(
+        "/api/v1/auth/otp/request", json={"display_name": "Автор", "phone": phone}
+    )
+    verified = await admin_client.post(
+        "/api/v1/auth/otp/verify",
+        json={
+            "phone": phone,
+            "code": "1234",
+            "privacy_accepted": True,
+            "personal_data_accepted": True,
+        },
+    )
+    user_headers = {"Authorization": f"Bearer {verified.json()['access_token']}"}
+    places = await admin_client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 3})
+    place_ids = [item["id"] for item in places.json()["items"][:3]]
+    saved = await admin_client.post(
+        "/api/v1/routes/drafts",
+        headers=user_headers,
+        json={"name": "Для редакции", "place_ids": place_ids, "filters": ["На машине"]},
+    )
+    route_id = saved.json()["id"]
+
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+    page = await admin_client.get(f"/admin/route-structure?route_id={route_id}", headers=headers)
+    assert page.status_code == 200, page.text
+    assert "Для редакции" in page.text
+
+    bad = await admin_client.post(
+        f"/admin/route-structure?route_id={route_id}",
+        data={f"parking_{place_ids[1]}": "не координаты"},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert bad.status_code == 303
+    saved_form = await admin_client.post(
+        f"/admin/route-structure?route_id={route_id}",
+        data={f"break_{place_ids[0]}": "on", f"parking_{place_ids[1]}": "44.742, 33.92"},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert saved_form.status_code == 303, saved_form.text
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "SELECT day_breaks, parking_overrides, days_manual "
+                        "FROM routes WHERE id = :id"
+                    ),
+                    {"id": route_id},
+                )
+            ).one()
+            days = await conn.scalar(
+                text("SELECT count(*) FROM route_days WHERE route_id = :id"), {"id": route_id}
+            )
+            audit = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM admin_audit_events "
+                    "WHERE action = 'route.structure.update' AND entity_id = :id"
+                ),
+                {"id": route_id},
+            )
+        assert row.day_breaks == [place_ids[0]]
+        assert row.parking_overrides == {place_ids[1]: [33.92, 44.742]}
+        assert row.days_manual is True
+        assert days == 2
+        assert audit == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_editors_suspend_lines_and_keep_timetables(admin_client: AsyncClient) -> None:
+    """Spec 12b, section 2: line status and timetable periods from the admin."""
+    headers = {"Origin": "http://test"}
+    line_id = uuid4()
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO transit_lines (id, osm_id, kind, ref, name, status, "
+                    "needs_mapping, created_at, updated_at) VALUES (:id, :osm, 'trolleybus', "
+                    "'51', 'Троллейбус для теста', 'active', false, now(), now())"
+                ),
+                {"id": line_id, "osm": f"manual-{line_id.hex[:20]}"},
+            )
+        login = await admin_client.post(
+            "/admin/login",
+            data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert login.status_code in {302, 303}, login.text
+        listing = await admin_client.get("/admin/transit?q=для теста", headers=headers)
+        assert listing.status_code == 200, listing.text
+        assert "Троллейбус для теста" in listing.text
+        # The menu opens the list; the line page has no entry of its own.
+        assert '/admin/transit"' in listing.text
+        assert "Линия транспорта" not in listing.text
+        page = f"/admin/transit/line?id={line_id}"
+
+        no_reason = await admin_client.post(
+            page,
+            data={"action": "line", "status": "suspended"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert no_reason.status_code == 303
+        suspended = await admin_client.post(
+            page,
+            data={
+                "action": "line",
+                "status": "suspended",
+                "suspend_reason": "Ремонт",
+                "speed_kmh": "18",
+            },
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert suspended.status_code == 303
+        bad_period = await admin_client.post(
+            page,
+            data={"action": "schedule", "title": "Будни", "day_0": "on"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert bad_period.status_code == 303
+        period = await admin_client.post(
+            page,
+            data={
+                "action": "schedule",
+                "title": "Будни",
+                "day_0": "on",
+                "day_1": "on",
+                "headway_minutes": "20",
+                "first_departure": "06:00",
+                "last_departure": "22:00",
+                "source": "звонок перевозчику",
+                "checked_at": "2026-09-01",
+            },
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert period.status_code == 303
+        shown = await admin_client.get(page, headers=headers)
+        assert shown.status_code == 200, shown.text
+        assert "каждые 20 мин" in shown.text
+
+        async with engine.connect() as conn:
+            line = (
+                await conn.execute(
+                    text(
+                        "SELECT status, suspend_reason, speed_kmh FROM transit_lines WHERE id = :id"
+                    ),
+                    {"id": line_id},
+                )
+            ).one()
+            schedule_id = await conn.scalar(
+                text("SELECT id FROM transit_schedules WHERE line_id = :id"), {"id": line_id}
+            )
+        assert (line.status, line.suspend_reason, line.speed_kmh) == ("suspended", "Ремонт", 18)
+        assert schedule_id is not None
+
+        edit = await admin_client.get(f"{page}&edit={schedule_id}", headers=headers)
+        assert 'value="20"' in edit.text
+        removed = await admin_client.post(
+            page,
+            data={"action": "delete", "schedule_id": str(schedule_id)},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert removed.status_code == 303
+        async with engine.connect() as conn:
+            left = await conn.scalar(
+                text("SELECT count(*) FROM transit_schedules WHERE line_id = :id"),
+                {"id": line_id},
+            )
+            audit = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM admin_audit_events WHERE action LIKE 'transit.%' "
+                    "AND (entity_id = :line OR entity_id = :schedule)"
+                ),
+                {"line": str(line_id), "schedule": str(schedule_id)},
+            )
+        assert left == 0
+        assert audit == 3
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM transit_lines WHERE id = :id"), {"id": line_id})
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_difficulty_feedback_report_renders(admin_client: AsyncClient) -> None:
+    """Spec 17, section 7: the admin report of post-run answers opens."""
+    headers = {"Origin": "http://test"}
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+    page = await admin_client.get("/admin/difficulty-feedback", headers=headers)
+    assert page.status_code == 200, page.text
+    assert "Сложность: отзывы после прохождения" in page.text
+
+
+@pytest.mark.asyncio
+async def test_difficulty_feedback_only_for_own_finished_runs(admin_client: AsyncClient) -> None:
+    phone = f"+7914{uuid4().int % 10_000_000:07d}"
+    await admin_client.post(
+        "/api/v1/auth/otp/request", json={"display_name": "Путник", "phone": phone}
+    )
+    verified = await admin_client.post(
+        "/api/v1/auth/otp/verify",
+        json={
+            "phone": phone,
+            "code": "1234",
+            "privacy_accepted": True,
+            "personal_data_accepted": True,
+        },
+    )
+    headers = {"Authorization": f"Bearer {verified.json()['access_token']}"}
+    missing = await admin_client.post(
+        f"/api/v1/route-executions/{uuid4()}/difficulty-feedback",
+        json={"answer": "harder"},
+        headers=headers,
+    )
+    assert missing.status_code == 404
+    wrong = await admin_client.post(
+        f"/api/v1/route-executions/{uuid4()}/difficulty-feedback",
+        json={"answer": "too hard"},
+        headers=headers,
+    )
+    assert wrong.status_code == 422

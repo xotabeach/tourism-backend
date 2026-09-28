@@ -1,0 +1,42 @@
+{
+  "specName": "admin-refresh",
+  "timestamp": "2026-09-24",
+  "status": "spec-drafted",
+  "qaLog": [
+    {"area": "Problem", "question": "Что входит в первый объём?", "answer": "Обновить все текущие экраны и сразу сделать дашборд и статистику."},
+    {"area": "Users", "question": "Кто пользуется админкой и нужен ли телефон?", "answer": "Администраторы, поддержка, менеджеры маршрутов, контент-менеджеры и возможные будущие роли; телефон нужен."},
+    {"area": "Users", "question": "Какие действия нужны с телефона?", "answer": "Все рабочие действия каждой роли."},
+    {"area": "Security", "question": "Разделять ли рабочие области ролей?", "answer": "Каждая роль пользуется только своим разделом; администратор может редактировать права в админке."},
+    {"area": "Security", "question": "Нужны ли персональные исключения?", "answer": "Общие права роли и персональное добавление либо удаление прав администратором."},
+    {"area": "Dashboard", "question": "Что на главном экране?", "answer": "Поровну ключевые показатели и рабочие очереди; обязательно обращения в поддержку."},
+    {"area": "Dashboard", "question": "Нужны ли системные показатели памяти?", "answer": "Нет; ресурсы смотреть в панели хостинга."},
+    {"area": "Technical Approach", "question": "Какой подход к обновлению?", "answer": "Сохранить SQLAdmin/Jinja, обновить все экраны, графики добавить отдельно."}
+  ],
+  "coverageMap": {
+    "Problem": "done",
+    "Users": "done",
+    "Technical Approach": "done",
+    "Dashboard": "done",
+    "Security": "done",
+    "Risks": "done",
+    "Constraints": "done"
+  },
+  "capturedAtCommit": "18d7b5e",
+  "baseline": {
+    "derivedFrom": "BACKEND-9 tracker description and tourism-backend code audit",
+    "capturedAtCommit": "18d7b5e",
+    "claims": [
+      {"area": "Technical Approach", "claim": "Admin is SQLAdmin mounted on FastAPI, using Jinja and a local CSS file", "paths": ["src/tourism_backend/modules/admin/presentation/setup.py", "src/tourism_backend/modules/admin/theme/static/crimeatrip-admin.css"]},
+      {"area": "Security", "claim": "Database role constraint currently allows ops and admin", "paths": ["src/tourism_backend/modules/admin/infrastructure/models.py"]},
+      {"area": "Security", "claim": "Authentication refreshes principal active state but uses login-time roles in cookie", "paths": ["src/tourism_backend/modules/admin/presentation/auth.py"]},
+      {"area": "Dashboard", "claim": "Current stats report provides APK downloads and version share for 7, 30, 90 days", "paths": ["src/tourism_backend/modules/app_stats/application/queries.py", "src/tourism_backend/modules/admin/presentation/stats_admin.py"]},
+      {"area": "Problem", "claim": "Main admin index has hub links but no dashboard", "paths": ["src/tourism_backend/modules/admin/theme/templates/sqladmin/index.html"]}
+    ]
+  },
+  "driftLedger": [],
+  "previewUrl": null,
+  "sourceIssue": null,
+  "feedbackRounds": [],
+  "redTeamStatus": "pending",
+  "redTeamFindings": null
+}

@@ -47,6 +47,10 @@ class StatsReport:
     def max_day_downloads(self) -> int:
         return max((n for _, n in self.downloads_by_day), default=0)
 
+    @property
+    def display_share(self) -> VersionShareDay | None:
+        return next((row for row in self.share_series if row.day == self.share_day), None)
+
 
 def normalize_period(raw: str | None) -> int:
     try:

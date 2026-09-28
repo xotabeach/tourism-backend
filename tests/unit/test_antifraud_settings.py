@@ -113,3 +113,19 @@ def test_every_key_is_registered() -> None:
     assert "af_mode" in ALL_KEYS
     assert "af_block_ladder_hours" in ALL_KEYS
     assert all(key.startswith("af_") for key in ALL_KEYS)
+
+
+def test_pace_source_defaults_to_the_straight_line_and_rejects_typos():
+    """Spec 12a, D4: router legs judge pace only once an admin switches it on."""
+    from tourism_backend.modules.route_execution.application.antifraud_settings import (
+        KEY_PACE_SOURCE,
+        parse_settings,
+        validate_setting,
+    )
+
+    assert parse_settings({}).pace_source == "straight_line"
+    assert parse_settings({KEY_PACE_SOURCE: "provider"}).pace_source == "provider"
+    assert parse_settings({KEY_PACE_SOURCE: "router"}).pace_source == "straight_line"
+    assert validate_setting(KEY_PACE_SOURCE, " provider ") == "provider"
+    with pytest.raises(ValueError, match="straight_line или provider"):
+        validate_setting(KEY_PACE_SOURCE, "router")

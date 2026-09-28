@@ -80,6 +80,10 @@ def pack() -> HelpCatalog:
     return replace(catalog, manifest=HelpManifest.model_validate(payload))
 
 
+def revision_of(pack: HelpCatalog, article_id: str) -> int:
+    return next(a.spec.revision for a in pack.articles if a.spec.id == article_id)
+
+
 async def publish_fixture(db: AsyncSession, pack: HelpCatalog) -> None:
     await import_help(db, pack, review_until=datetime.now(UTC) + timedelta(days=1))
 
@@ -130,6 +134,26 @@ async def test_drafts_and_other_builds_are_invisible(db: AsyncSession, pack: Hel
     assert not (await search_help(db, query="баллы", app_version="0.0.0")).available
 
 
+async def test_newer_apps_read_the_latest_pack_not_newer_than_them(
+    db: AsyncSession, pack: HelpCatalog
+) -> None:
+    """BACKEND-29: 0.2.5 and 0.3.0 lost help because only 0.2.4 had a pack."""
+    await publish_fixture(db, pack)
+    version = pack.manifest.target_app_version
+    newer = "99.1.0"
+    result = await search_help(db, query="баллы", app_version=newer)
+    assert result.available
+    assert result.items
+    assert {item.app_version for item in result.items} == {version}
+    article = await read_help(
+        db,
+        article_id="points-earn",
+        revision=revision_of(pack, "points-earn"),
+        app_version=newer,
+    )
+    assert article.app_version == version
+
+
 async def test_withdrawal_expiry_and_no_implicit_renewal(
     db: AsyncSession, pack: HelpCatalog
 ) -> None:
@@ -163,12 +187,13 @@ async def test_revision_content_is_immutable_and_replacement_revokes_old_link(
     changed = replace(article, content_hash="a" * 64, plain_text="Новый текст.")
     with pytest.raises(ValueError, match="increment revision"):
         await publish_fixture(db, replace(pack, articles=(changed,)))
-    revised = replace(changed, spec=changed.spec.model_copy(update={"revision": 2}))
+    old = article.spec.revision
+    revised = replace(changed, spec=changed.spec.model_copy(update={"revision": old + 1}))
     await publish_fixture(db, replace(pack, articles=(revised,)))
     version = pack.manifest.target_app_version
     with pytest.raises(AppError, match="Статья недоступна"):
-        await read_help(db, article_id=article.spec.id, revision=1, app_version=version)
-    result = await read_help(db, article_id=article.spec.id, revision=2, app_version=version)
+        await read_help(db, article_id=article.spec.id, revision=old, app_version=version)
+    result = await read_help(db, article_id=article.spec.id, revision=old + 1, app_version=version)
     assert result.body == "Новый текст."
 
 
@@ -209,7 +234,8 @@ async def test_http_contract_is_read_only_and_does_not_expose_ticket_data(
         )
         assert injection.status_code == 200
         detail = await client.get(
-            "/api/v1/support/help/points-earn", params={"revision": 1, "app_version": version}
+            "/api/v1/support/help/points-earn",
+            params={"revision": revision_of(pack, "points-earn"), "app_version": version},
         )
         assert detail.status_code == 200
         assert detail.json()["body"]

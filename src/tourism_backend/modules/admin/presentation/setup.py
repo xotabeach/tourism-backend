@@ -13,8 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware import Middleware
 
 from tourism_backend.config import AppEnvironment, Settings
-from tourism_backend.modules.admin.presentation.auth import AdminAuthBackend
+from tourism_backend.modules.admin.presentation.auth import AdminAuthBackend, require_permission
 from tourism_backend.modules.admin.presentation.csrf import AdminCsrfMiddleware
+from tourism_backend.modules.admin.presentation.permissions import (
+    PermissionedAdmin,
+    can_write_view,
+)
 from tourism_backend.modules.admin.presentation.views import register_views
 from tourism_backend.modules.identity.infrastructure.models import User
 
@@ -40,7 +44,7 @@ def mount_admin(
         # Secure cookies on staging/prod. Test contour is HTTPS but CI clients use http://.
         https_only=settings.app_env in {AppEnvironment.STAGING, AppEnvironment.PRODUCTION},
     )
-    admin = Admin(
+    admin = PermissionedAdmin(
         app=app,
         session_maker=session_factory,
         base_url="/admin",
@@ -49,6 +53,8 @@ def mount_admin(
         templates_dir=_TEMPLATES_DIR,
         middlewares=[Middleware(AdminCsrfMiddleware, path_prefix="/admin")],
     )
+    admin.templates.env.globals["admin_can_write"] = can_write_view
+    admin.templates.env.globals["admin_has_permission"] = require_permission
     # Nested under /admin so templates can use url_for('admin:theme', ...).
     if not any(getattr(r, "name", None) == "theme" for r in admin.admin.routes):
         admin.admin.mount(
@@ -56,16 +62,21 @@ def mount_admin(
             StaticFiles(directory=str(_STATIC_DIR)),
             name="theme",
         )
-    # SQLAdmin exposed routes run in its nested Starlette app; keep the same
-    # immutable settings object available there as on the parent FastAPI app.
+    # SQLAdmin runs in a nested Starlette app with its own session middleware.
     admin.admin.state.settings = settings
+    admin.admin.state.redis = app.state.redis
     register_views(admin, settings)
     app.state.admin = admin
 
-    @app.get("/admin/api/user-brief/{user_id}")
-    async def admin_user_brief(user_id: UUID, request: Request) -> JSONResponse:
+    async def admin_user_brief(request: Request) -> JSONResponse:
         if not await auth.authenticate(request):
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
+        if not require_permission(request, "users.brief"):
+            return JSONResponse({"detail": "forbidden"}, status_code=403)
+        try:
+            user_id = UUID(request.path_params["user_id"])
+        except ValueError:
+            return JSONResponse({"detail": "invalid_user_id"}, status_code=400)
         async with session_factory() as session:
             user = await session.get(User, user_id)
             if user is None:
@@ -77,5 +88,9 @@ def mount_admin(
                     "phone_e164": user.phone_e164,
                 }
             )
+
+    admin.admin.add_route(
+        "/api/user-brief/{user_id}", admin_user_brief, methods=["GET"], name="user_brief"
+    )
 
     return admin

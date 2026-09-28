@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -113,6 +114,67 @@ class RouteRoutingSnapshot(Base, UUIDPrimaryKeyMixin):
     )
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Taken at start so a later edit cannot raise the reward multiplier
+    # (spec 14, R1). Snapshots before 0069 have none and read the route.
+    difficulty: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Spec 17: the estimate points and achievements go by (D10, D17).
+    difficulty_reward: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    base_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Days the norms give; hand-set days never raise the points cap (D20).
+    auto_day_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class RoutingSnapshotDay(Base, UUIDPrimaryKeyMixin):
+    """A day of the route as it was at start; immutable like its snapshot."""
+
+    __tablename__ = "routing_snapshot_days"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "day_index", name="uq_routing_snapshot_days_day"),
+    )
+
+    snapshot_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "route_routing_snapshots.id",
+            ondelete="CASCADE",
+            name="fk_routing_snapshot_days_snapshot",
+        ),
+        nullable=False,
+        index=True,
+    )
+    day_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_position: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_position: Mapped[int] = mapped_column(Integer, nullable=False)
+    boundary_source: Mapped[str] = mapped_column(String(8), nullable=False)
+
+
+class RoutingSnapshotSegment(Base, UUIDPrimaryKeyMixin):
+    """A segment of a leg as it was at start; points and pace read these."""
+
+    __tablename__ = "routing_snapshot_segments"
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_id", "leg_index", "seq", name="uq_routing_snapshot_segments_leg_seq"
+        ),
+    )
+
+    snapshot_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "route_routing_snapshots.id",
+            ondelete="CASCADE",
+            name="fk_routing_snapshot_segments_snapshot",
+        ),
+        nullable=False,
+        index=True,
+    )
+    leg_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    distance_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    elevation_gain_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    elevation_loss_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -164,6 +226,24 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # When the run entered its current 'paused' state; None otherwise. Used
     # only to compute paused_duration_seconds on resume.
     paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # «Закончить день» (spec 14a): a pause that ends a day of a multi-day run.
+    # The day the walker is on is ``night_pauses + 1``.
+    night_pauses: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    night_paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Cancelled before the last day, by the walker or for being idle: the
+    # finished days are still paid (spec 14, D21).
+    ended_early: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Spec 17: the walker's one-tap answer on the finish screen.
+    difficulty_feedback: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    difficulty_feedback_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Total time spent paused across the whole run, so a completion summary
     # can report elapsed time net of pauses.
     paused_duration_seconds: Mapped[int] = mapped_column(
@@ -245,6 +325,10 @@ class RouteExecutionStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     leg_distance_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
     leg_estimate_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     leg_estimate_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # What the pace check judges by (af_pace_source): the straight-line leg
+    # while router legs are only observed (spec 12a, D4). NULL for runs that
+    # started before, which fall back to leg_estimate_seconds.
+    pace_estimate_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # The mark came so soon after the previous one that it earns no stop points.
     mark_below_floor: Mapped[bool] = mapped_column(
         Boolean,
@@ -268,7 +352,7 @@ class RouteExecutionEvent(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (
         CheckConstraint(
             "action IN ('complete_stop', 'uncomplete_stop', 'complete', 'cancel', 'pause', "
-            "'resume')",
+            "'resume', 'end_day', 'finish_early')",
             name="action",
         ),
         UniqueConstraint(

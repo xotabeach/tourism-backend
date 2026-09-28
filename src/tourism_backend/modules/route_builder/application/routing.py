@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 from uuid import UUID
@@ -15,6 +16,9 @@ class RouteWaypoint:
     lat: float
     place_id: UUID | None = None
     label: str | None = None
+    # A car park an editor chose for this stop (spec 14b): a drive ends there
+    # and the walk starts, whatever the nearest street is.
+    parking: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +56,9 @@ class RoutingResult:
     max_altitude_meters: int | None = None
     max_road_angle_degrees: float | None = None
     road_types: tuple[str, ...] = ()
+    # Segments of a drive with walks to places a car cannot reach, in the
+    # form kept in routing metadata (mixed_legs.BuiltSegment.as_meta).
+    segments: tuple[Mapping[str, object], ...] = ()
 
 
 class RoutingError(Exception):
@@ -84,7 +91,51 @@ def default_max_leg_meters(mode: TransportMode) -> int:
     }[mode]
 
 
+_DRIVE_SPELLINGS = frozenset({"car", "driving", "drive", "auto"})
+
+
 def normalize_transport_mode(mode: str | None) -> TransportMode:
     if mode in {"walk", "car", "public", "mixed"}:
         return mode  # type: ignore[return-value]
+    # Stored routes spell driving several ways; "driving" used to be walked.
+    if (mode or "").casefold().strip() in _DRIVE_SPELLINGS:
+        return "car"
     return "walk"
+
+
+# A 50 m stretch at least this steep makes a route a candidate for «очень
+# сложный» with editor review; it never blocks anything (spec 12a, D19). The
+# value is provisional until the elevation profiles are tuned on real routes.
+STEEP_SEGMENT_DEGREES = 30.0
+
+
+def routing_details(
+    result: RoutingResult, *, stop_count: int, data_version: str | None
+) -> dict[str, object]:
+    """Per-leg and elevation fields a route keeps from its routing answer.
+
+    ``legs`` is written only when there is exactly one leg per stop pair: the
+    run's anti-fraud plan reads it as such (provider_legs_from_metadata).
+    """
+    legs = result.legs
+    per_pair = len(legs) == stop_count - 1 and all(
+        leg.from_index == index and leg.to_index == index + 1 for index, leg in enumerate(legs)
+    )
+    details: dict[str, object] = {
+        "provider_version": data_version,
+        "elevation_gain_meters": result.elevation_gain_meters,
+        "elevation_loss_meters": result.elevation_loss_meters,
+        "min_altitude_meters": result.min_altitude_meters,
+        "max_altitude_meters": result.max_altitude_meters,
+        "max_road_angle_degrees": result.max_road_angle_degrees,
+    }
+    if per_pair and not result.synthetic:
+        details["legs"] = [
+            {"distance_meters": leg.distance_meters, "duration_seconds": leg.duration_seconds}
+            for leg in legs
+        ]
+    if (result.max_road_angle_degrees or 0) >= STEEP_SEGMENT_DEGREES:
+        details["steep_segment"] = True
+    if result.segments:
+        details["segments"] = [dict(segment) for segment in result.segments]
+    return details
