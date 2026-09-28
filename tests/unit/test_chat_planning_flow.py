@@ -329,6 +329,69 @@ async def test_compare_keeps_the_shown_options_and_does_not_search(chat: SimpleN
     chat.match.assert_not_awaited()
 
 
+async def test_compare_without_model_answer_compares_the_cards_itself(chat: SimpleNamespace):
+    """FRONTEND-46: a timed-out synthesis used to answer with an apology."""
+    chat.ai.return_value = (
+        ChatTurnResult(assistant_text="", goal="compare", ask_field="ready"),
+        None,
+        True,
+        {
+            "comparison_routes": [
+                {
+                    "route_id": "a",
+                    "title": "Ай-Петри",
+                    "distance_meters": 51_000,
+                    "duration_minutes": 420,
+                    "transport_mode": "mixed",
+                    "difficulty": "hard",
+                    "stops_count": 6,
+                },
+                {
+                    "route_id": "b",
+                    "title": "Набережная Ялты",
+                    "distance_meters": 4_200,
+                    "duration_minutes": 90,
+                    "transport_mode": "walking",
+                    "difficulty": "easy",
+                    "stops_count": 4,
+                },
+            ]
+        },
+        [],
+    )
+    result = await _post(chat, text="Сравни эти варианты")
+    assert "Не удалось" not in result.text
+    assert result.text.startswith("Сравнил 2 маршрута, цифры ниже.")
+    assert "«Набережная Ялты»: быстрее всех, короче всех, легче всех." in result.text
+    comparison = next(block for block in result.blocks if block.type == "route_comparison")
+    first, second = comparison.routes
+    assert (first.distance_km, first.duration_minutes, first.stops_count) == (51.0, 420, 6)
+    assert (first.transport_label, first.difficulty_label) == ("Смешанный", "Сложный")
+    assert first.badges == []
+    assert second.badges == ["Быстрее всех", "Короче всех", "Легче всех"]
+    chat.match.assert_not_awaited()
+
+
+async def test_compare_attaches_the_figures_to_the_model_answer(chat: SimpleNamespace):
+    chat.ai.return_value = (
+        ChatTurnResult(assistant_text="Первый про горы, второй про море.", goal="compare"),
+        "test",
+        False,
+        {
+            "comparison_routes": [
+                {"route_id": "a", "title": "Горы", "duration_minutes": 240},
+                {"route_id": "b", "title": "Море", "duration_minutes": 240},
+            ]
+        },
+        [],
+    )
+    result = await _post(chat, text="Чем они отличаются?")
+    assert result.text == "Первый про горы, второй про море."
+    comparison = next(block for block in result.blocks if block.type == "route_comparison")
+    # Equal durations: nobody is «быстрее всех».
+    assert [route.badges for route in comparison.routes] == [[], []]
+
+
 async def test_custom_goal_does_not_authorize_generation(chat: SimpleNamespace):
     chat.ai.return_value = (
         ChatTurnResult(assistant_text="Обсудим собственный план", goal="custom", ask_field="ready"),
