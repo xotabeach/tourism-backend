@@ -151,6 +151,11 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     has_hard_day: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # The cover picked by the editors from a stop's photos (spec 16a, D33).
+    # Empty means the first stop that has a cover photo, as before.
+    cover_place_image_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("place_images.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
 
 class RouteStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):

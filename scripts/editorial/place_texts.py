@@ -52,7 +52,43 @@ _EMOJI = re.compile("[\U0001f300-\U0001faff☀-➿]")
 _CALL = re.compile(r"\b(звоните|бронируйте|купите|закажите|скидк|акци[яи]|подписывайтесь)", re.I)
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 _WORD = re.compile(r"[а-яёa-z]{5,}", re.I)
-MAX_NEW_WORDS = 0.35
+MAX_NEW_WORDS = 0.5
+# Plain connective words a retelling adds without adding facts.
+_FILLER = {
+    "предс",
+    "являе",
+    "объек",
+    "распо",
+    "наход",
+    "котор",
+    "также",
+    "место",
+    "этого",
+    "более",
+    "может",
+    "можно",
+    "здесь",
+    "очень",
+    "время",
+    "своей",
+    "своим",
+    "своих",
+    "данны",
+    "имеет",
+    "являю",
+    "будет",
+    "одним",
+    "одной",
+    "среди",
+    "благо",
+    "позво",
+    "интер",
+    "путеш",
+    "посет",
+    "стоит",
+    "город",
+    "район",
+}
 
 _CLEAN_SOURCE = [
     (re.compile(r"https?://\S+"), ""),
@@ -104,7 +140,7 @@ def check(source: str, place_name: str, text: str) -> list[str]:
     if extra:
         problems.append("числа не из источника: " + ", ".join(sorted(set(extra))[:5]))
     known = {_stem(w) for w in _WORD.findall(source + " " + place_name)}
-    words = [_stem(w) for w in _WORD.findall(text)]
+    words = [w for w in (_stem(w) for w in _WORD.findall(text)) if w not in _FILLER]
     if words:
         new_share = sum(1 for w in words if w not in known) / len(words)
         if new_share > MAX_NEW_WORDS:
@@ -184,11 +220,43 @@ async def run(limit: int | None, concurrency: int) -> None:
                 print(f"  {min(start + len(batch), len(pending))}/{len(pending)} {counts}")
 
 
+def recheck() -> None:
+    """Apply the current checks to texts already written, without the model."""
+    places = {p["id"]: p for p in state.places()}
+    with state.connect() as db:
+        sources = state.load(db, "wiki_extract")
+        changed = 0
+        for key, (status, payload) in state.load(db, "place_text").items():
+            if status not in ("done", "needs_review") or key not in sources:
+                continue
+            place = places[key]
+            full = " ".join(osm_facts(place)) + " " + clean_source(sources[key][1]["text"])
+            problems = check(
+                full, place["name"], f"{payload.get('short', '')} {payload.get('description', '')}"
+            )
+            new_status = "needs_review" if problems else "done"
+            if new_status != status or problems != payload.get("problems"):
+                state.save(
+                    db,
+                    "place_text",
+                    key,
+                    new_status,
+                    {**payload, "problems": problems},
+                    model=gemma.MODEL,
+                )
+                changed += 1
+        print(f"rechecked, {changed} changed")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--concurrency", type=int, default=2)
+    parser.add_argument("--recheck", action="store_true")
     args = parser.parse_args()
+    if args.recheck:
+        recheck()
+        return
     asyncio.run(run(args.limit, args.concurrency))
 
 

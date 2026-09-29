@@ -119,7 +119,9 @@ async def _cover_urls_for_routes(
     session: AsyncSession,
     route_ids: list[UUID],
 ) -> dict[UUID, str]:
-    """Prefer cover of the earliest stop that has an active cover photo."""
+    """The route's own uploaded cover, then the stop photo the editors chose
+    (``cover_place_image_id``, spec 16a D33), then the cover of the earliest
+    stop that has an active cover photo."""
     if not route_ids:
         return {}
     direct_stmt = select(
@@ -136,11 +138,28 @@ async def _cover_urls_for_routes(
         for route_id, public_path in (await session.execute(direct_stmt)).all()
         if public_path
     }
+    # Prefer media_attachments linked via place_images; fall back to source_url.
+    attachment_url = func.coalesce(MediaAttachment.public_path, PlaceImage.source_url)
+    chosen_ids = [route_id for route_id in route_ids if route_id not in covers]
+    if chosen_ids:
+        chosen_stmt = (
+            select(Route.id, attachment_url)
+            .join(PlaceImage, PlaceImage.id == Route.cover_place_image_id)
+            .outerjoin(
+                MediaAttachment,
+                (MediaAttachment.id == PlaceImage.media_asset_id)
+                & (MediaAttachment.status == "active"),
+            )
+            .where(
+                Route.id.in_(chosen_ids),
+                PlaceImage.status == "active",
+                attachment_url.is_not(None),
+            )
+        )
+        covers.update(dict((await session.execute(chosen_stmt)).tuples().all()))
     fallback_ids = [route_id for route_id in route_ids if route_id not in covers]
     if not fallback_ids:
         return covers
-    # Prefer media_attachments linked via place_images; fall back to source_url.
-    attachment_url = func.coalesce(MediaAttachment.public_path, PlaceImage.source_url)
     ranked = (
         select(
             RouteStop.route_id.label("route_id"),

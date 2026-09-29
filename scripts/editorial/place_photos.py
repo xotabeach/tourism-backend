@@ -173,12 +173,17 @@ async def _thumb(client: httpx.AsyncClient, title: str) -> bytes | None:
     return data if is_image and len(data) < 1_500_000 else None
 
 
-async def run(limit: int | None, concurrency: int) -> None:
+async def run(limit: int | None, concurrency: int, published_without_photos: bool) -> None:
     places = {p["id"]: p for p in state.places()}
     with state.connect() as db:
         texts = state.load(db, "place_text")
         extracts = state.load(db, "wiki_extract")
-        wanted = [k for k, (status, _p) in texts.items() if status in ("done", "needs_review")]
+        if published_without_photos:
+            # Published places that never went through this pipeline (the
+            # first hand-made seed) and have no photo at all.
+            wanted = [p["id"] for p in state.published() if not p.get("photos")]
+        else:
+            wanted = [k for k, (status, _p) in texts.items() if status in ("done", "needs_review")]
         done = state.done_keys(db, "place_photo")
         pending = [k for k in wanted if k not in done and k in places][: limit or None]
         print(f"{len(wanted)} places with text, {len(pending)} to find photos for")
@@ -266,8 +271,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--concurrency", type=int, default=2)
+    parser.add_argument(
+        "--published-without-photos",
+        action="store_true",
+        help="published places (published.jsonl) that have no photo, instead of new texts",
+    )
     args = parser.parse_args()
-    asyncio.run(run(args.limit, args.concurrency))
+    asyncio.run(run(args.limit, args.concurrency, args.published_without_photos))
 
 
 if __name__ == "__main__":

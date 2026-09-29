@@ -77,6 +77,20 @@ def load(connection: sqlite3.Connection, step: str) -> dict[str, tuple[str, dict
     return {key: (status, json.loads(payload)) for key, status, payload in rows}
 
 
-def places() -> list[dict[str, Any]]:
-    path = WORK_DIR / "places.jsonl"
+def _jsonl(name: str) -> list[dict[str, Any]]:
+    path = WORK_DIR / name
+    if not path.exists():
+        return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def published() -> list[dict[str, Any]]:
+    """Published places as exported for route generation (published.jsonl)."""
+    return _jsonl("published.jsonl")
+
+
+def places() -> list[dict[str, Any]]:
+    """Candidate places (places.jsonl) plus published ones not among them."""
+    rows = _jsonl("places.jsonl")
+    seen = {row["id"] for row in rows}
+    return rows + [row for row in published() if row["id"] not in seen]
