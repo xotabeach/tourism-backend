@@ -12,6 +12,7 @@ outside the list, or a wow point without a photo, is dropped.
 
   uv run python scripts/editorial/route_ideas.py --rounds 3
   uv run python scripts/editorial/route_ideas.py --region Керчь --rounds 1
+  uv run python scripts/editorial/route_ideas.py --region ЮБК --focus multiday --rounds 1
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import argparse
 import asyncio
 import math
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,32 @@ REGIONS: dict[str, list[str]] = {
     "Восток": ["Судак", "Феодосия"],
     "Север и Запад": ["Евпатория", "Саки"],
     "Керчь": ["Керчь"],
+}
+# Targeted rounds for cells the free rounds leave empty (D26: the code asks
+# again for what is missing).
+FOCUS = {
+    "multiday": (
+        "Сейчас нужны ТОЛЬКО многодневные маршруты: duration 2_days или 3_days. "
+        "Каждый день заканчивается в городе или посёлке, где можно переночевать, "
+        "или у официальной туристской стоянки; назови место ночёвки в сюжете "
+        "(«ночь в Судаке»). Не больше 6 точек в день, дни идут один за другим "
+        "без возвратов."
+    ),
+    "car": (
+        "Сейчас нужны ТОЛЬКО маршруты на машине с пешими подходами (type car_trip, "
+        "transport car или mixed): точки далеко друг от друга, у каждой короткая "
+        "прогулка. Разной длительности и сложности."
+    ),
+    "walk": (
+        "Сейчас нужны ТОЛЬКО маршруты без машины (abilities no_car, transport walk): "
+        "от центра города или от точки, куда легко добраться, пешком. Городские "
+        "прогулки, набережные, парки, ближние тропы."
+    ),
+    "fresh": (
+        "Сейчас нужны идеи на ДРУГИХ точках: места из списка «Часто используются» "
+        "бери только если без них никак. Ищи замыслы вокруг мест, которые ещё ни "
+        "разу не попадали в идеи."
+    ),
 }
 TYPES = ("city_walk", "hike", "car_trip", "family", "history", "sea")
 DURATIONS = ("2h", "half_day", "day", "2_days", "3_days")
@@ -198,7 +226,7 @@ def _as_ids(idea: dict[str, Any], places: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
-async def run(only: str | None, rounds: int) -> None:
+async def run(only: str | None, rounds: int, focus: str | None = None) -> None:
     by_region = regions()
     async with httpx.AsyncClient() as client:
         for region, places in by_region.items():
@@ -214,17 +242,24 @@ async def run(only: str | None, rounds: int) -> None:
             ideas = [idea for payload in saved.values() for idea in payload["ideas"]]
             names = {p["id"]: p["name"] for p in places}
             for number in range(1, rounds + 1):
-                key = f"{region}:{number}"
+                key = f"{region}:{focus or ''}{number}"
                 if key in saved:
                     continue
                 proposed = "\n".join(
                     f"- {i['title']}: {', '.join(names.get(s, '?') for s in i['stops'])}"
                     for i in ideas
                 )
+                task = f"Предложи {IDEAS_PER_ROUND} новых идей."
+                if focus:
+                    task = f"{FOCUS[focus]}\n\n{task}"
+                if focus == "fresh":
+                    used = Counter(s for i in ideas for s in i["stops"])
+                    busy = ", ".join(names[k] for k, n in used.most_common() if n >= 3)
+                    task = f"Часто используются: {busy or '—'}.\n\n{task}"
                 user = (
                     f"Район: {region}. Мест: {len(places)}.\n\n{listing}\n\n"
                     f"Уже предложены ({len(ideas)}):\n{proposed or '— пока ничего'}\n\n"
-                    f"Предложи {IDEAS_PER_ROUND} новых идей."
+                    f"{task}"
                 )
                 try:
                     answer = await gemma.chat_json(
@@ -271,8 +306,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--region", choices=list(REGIONS))
     parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--focus", choices=list(FOCUS), help="a targeted round for a thin cell")
     args = parser.parse_args()
-    asyncio.run(run(args.region, args.rounds))
+    asyncio.run(run(args.region, args.rounds, args.focus))
 
 
 if __name__ == "__main__":
