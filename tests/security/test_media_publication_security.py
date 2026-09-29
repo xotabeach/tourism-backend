@@ -107,3 +107,69 @@ async def test_generic_fallback_cover_belongs_to_published_place(
         )
     )
     assert published_attachment is not None or published_image is not None
+
+
+@pytest.mark.asyncio
+async def test_route_cover_uses_the_chosen_stop_photo(session: AsyncSession) -> None:
+    """Spec 16a, D33: the editors' pick beats the first stop's cover, and a
+    removed pick falls back to it."""
+    from uuid import uuid4
+
+    from geoalchemy2 import WKTElement
+
+    from tourism_backend.modules.geography.infrastructure.models import Region
+    from tourism_backend.modules.routes.application.service import _cover_urls_for_routes
+    from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
+
+    region_id = await session.scalar(select(Region.id).where(Region.slug == "crimea"))
+    if region_id is None:
+        pytest.skip("no Crimea region in local DB")
+    route = Route(
+        id=uuid4(),
+        region_id=region_id,
+        name="Cover pick",
+        slug=f"cover-pick-{uuid4()}",
+        source="editorial",
+        visibility="public",
+        lifecycle_status="active",
+        freshness_status="fresh",
+    )
+    session.add(route)
+    urls: list[str] = []
+    images: list[PlaceImage] = []
+    for position in (1, 2):
+        place = Place(
+            id=uuid4(),
+            region_id=region_id,
+            name=f"Cover pick stop {position}",
+            slug=f"cover-pick-stop-{uuid4()}",
+            location=WKTElement("POINT(34.0 44.0)", srid=4326),
+            publication_status="published",
+            freshness_status="fresh",
+        )
+        session.add(place)
+        await session.flush()
+        url = f"https://example.test/cover-pick-{position}-{uuid4()}.jpg"
+        image = PlaceImage(
+            id=uuid4(),
+            place_id=place.id,
+            kind="photo",
+            source_url=url,
+            is_cover=True,
+            status="active",
+        )
+        session.add(image)
+        session.add(RouteStop(route_id=route.id, place_id=place.id, position=position))
+        urls.append(url)
+        images.append(image)
+    await session.flush()
+    try:
+        assert (await _cover_urls_for_routes(session, [route.id]))[route.id] == urls[0]
+        route.cover_place_image_id = images[1].id
+        await session.flush()
+        assert (await _cover_urls_for_routes(session, [route.id]))[route.id] == urls[1]
+        images[1].status = "archived"
+        await session.flush()
+        assert (await _cover_urls_for_routes(session, [route.id]))[route.id] == urls[0]
+    finally:
+        await session.rollback()
