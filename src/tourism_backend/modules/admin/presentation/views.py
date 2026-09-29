@@ -46,6 +46,7 @@ from tourism_backend.modules.admin.presentation.antifraud_admin import (
     UserFraudStateAdmin,
     apply_user_fraud_action,
 )
+from tourism_backend.modules.admin.presentation.app_update_admin import AppUpdateConfigAdmin
 from tourism_backend.modules.admin.presentation.auth import (
     require_admin_role,
     require_permission,
@@ -61,6 +62,7 @@ from tourism_backend.modules.admin.presentation.filters import (
     OtpLinkedUserIdFilter,
 )
 from tourism_backend.modules.admin.presentation.formatters import (
+    choice_formatter,
     format_admin_role,
     format_article_block_image,
     format_article_status,
@@ -1500,7 +1502,17 @@ class TravelPlusSubscriptionAdmin(ModelView, model=TravelPlusSubscription):
     }
     column_formatters = {
         TravelPlusSubscription.user_id: format_user_id_peek,
+        TravelPlusSubscription.plan: choice_formatter(
+            "plan", {"monthly": "Месяц", "yearly": "Год"}
+        ),
+        TravelPlusSubscription.status: choice_formatter(
+            "status", {"active": "Активна", "canceled": "Отменена", "expired": "Истекла"}
+        ),
+        TravelPlusSubscription.source: choice_formatter(
+            "source", {"admin": "Администратор", "mock_checkout": "Тестовая покупка"}
+        ),
     }
+    column_formatters_detail = column_formatters
     column_default_sort = (TravelPlusSubscription.created_at, True)
     column_filters = [
         OperationColumnFilter(TravelPlusSubscription.status, title="Статус"),
@@ -1555,10 +1567,39 @@ class RouteAdmin(ModelView, model=Route):
     column_formatters = {
         Route.publication_status: format_route_publication_status,
         Route.owner_user_id: format_user_fk,
+        Route.source: choice_formatter(
+            "source",
+            {"editorial": "Редакция", "generated": "Сгенерирован", "user_created": "Пользователь"},
+        ),
+        Route.visibility: choice_formatter(
+            "visibility", {"private": "Личный", "unlisted": "По ссылке", "public": "Публичный"}
+        ),
+        Route.difficulty: choice_formatter(
+            "difficulty",
+            {
+                "easy": "Лёгкий",
+                "moderate": "Средний",
+                "hard": "Сложный",
+                "extreme": "Очень сложный",
+            },
+        ),
+        Route.lifecycle_status: choice_formatter(
+            "lifecycle_status",
+            {"draft": "Черновик", "active": "Действует", "archived": "В архиве"},
+        ),
+        Route.transport_mode: choice_formatter(
+            "transport_mode",
+            {
+                "walk": "Пешком",
+                "walking": "Пешком",
+                "car": "На машине",
+                "public": "Общественный транспорт",
+                "mixed": "Смешанный",
+            },
+        ),
     }
     column_formatters_detail = {
-        Route.publication_status: format_route_publication_status,
-        Route.owner_user_id: format_user_fk,
+        **column_formatters,
         Route.name: format_route_name_with_structure,
     }
     column_searchable_list = [Route.name, Route.description]
@@ -2310,6 +2351,22 @@ class AchievementActionAdmin(ModelView, model=AchievementAdminAction):
         AchievementAdminAction.admin_id,
         AchievementAdminAction.created_at,
     ]
+    column_type_formatters = ADMIN_COLUMN_TYPE_FORMATTERS
+    column_labels = {
+        AchievementAdminAction.user_id: "Пользователь",
+        AchievementAdminAction.achievement_id: "Достижение",
+        AchievementAdminAction.action: "Действие",
+        AchievementAdminAction.reason: "Причина",
+        AchievementAdminAction.admin_id: "Администратор",
+        AchievementAdminAction.created_at: "Когда",
+    }
+    column_formatters = {
+        AchievementAdminAction.user_id: format_user_fk,
+        AchievementAdminAction.action: choice_formatter(
+            "action", {"grant": "Выдано", "revoke": "Отозвано"}
+        ),
+    }
+    column_formatters_detail = column_formatters
     can_create = False
     can_edit = False
     can_delete = False
@@ -2337,7 +2394,13 @@ class UserAchievementAdmin(ModelView, model=UserAchievement):
         UserAchievement.source: "Источник",
         UserAchievement.reason: "Причина",
     }
-    column_formatters = {UserAchievement.user_id: format_user_fk}
+    column_formatters = {
+        UserAchievement.user_id: format_user_fk,
+        UserAchievement.source: choice_formatter(
+            "source", {"rule": "По правилу", "backfill": "Пересчёт истории", "operator": "Оператор"}
+        ),
+    }
+    column_formatters_detail = column_formatters
     column_sortable_list = [UserAchievement.unlocked_at]
     column_default_sort = (UserAchievement.unlocked_at, True)
     column_filters = [OperationColumnFilter(UserAchievement.user_id, title="ID пользователя")]
@@ -2381,7 +2444,17 @@ class RouteExecutionAdmin(ModelView, model=RouteExecution):
         RouteExecution.user_id: format_user_fk,
         RouteExecution.route_id: format_route_fk,
         RouteExecution.points_status: format_points_status,
+        RouteExecution.status: choice_formatter(
+            "status",
+            {
+                "active": "В пути",
+                "paused": "На паузе",
+                "completed": "Завершено",
+                "cancelled": "Отменено",
+            },
+        ),
     }
+    column_formatters_detail = column_formatters
     column_sortable_list = [RouteExecution.started_at, RouteExecution.status]
     column_default_sort = (RouteExecution.started_at, True)
     column_filters = [
@@ -2457,7 +2530,19 @@ class RecommendationDeckItemAdmin(ModelView, model=RouteRecommendationDeckItem):
     column_formatters = {
         RouteRecommendationDeckItem.user_id: format_user_fk,
         RouteRecommendationDeckItem.route_id: format_route_fk,
+        RouteRecommendationDeckItem.explanation_code: choice_formatter(
+            "explanation_code",
+            {
+                "matches_interest": "По интересам",
+                "nearby_exploration": "Новые места рядом",
+                "fresh_route": "Новый маршрут",
+                "popular_route": "Популярный маршрут",
+                "cold_start": "Начальная подборка",
+                "catalog_fallback": "Из каталога",
+            },
+        ),
     }
+    column_formatters_detail = column_formatters
     column_sortable_list = [
         RouteRecommendationDeckItem.deck_date,
         RouteRecommendationDeckItem.rank,
@@ -2497,7 +2582,9 @@ class RecommendationFeedbackAdmin(ModelView, model=RouteRecommendationFeedback):
     column_formatters = {
         RouteRecommendationFeedback.user_id: format_user_fk,
         RouteRecommendationFeedback.route_id: format_route_fk,
+        RouteRecommendationFeedback.action: choice_formatter("action", {"skip": "Пропущено"}),
     }
+    column_formatters_detail = column_formatters
     column_sortable_list = [RouteRecommendationFeedback.created_at]
     column_default_sort = (RouteRecommendationFeedback.created_at, True)
     column_filters = [
@@ -2525,6 +2612,10 @@ class CountryAdmin(ModelView, model=Country):
         Country.status: "Статус",
         Country.timezone: "Часовой пояс",
     }
+    column_formatters = {
+        Country.status: choice_formatter("status", {"active": "Активна", "inactive": "Выключена"})
+    }
+    column_formatters_detail = column_formatters
     form_columns = [Country.name, Country.status, Country.timezone]
     column_searchable_list = [Country.name]
     can_create = False
@@ -2547,6 +2638,10 @@ class RegionAdmin(ModelView, model=Region):
         Region.status: "Статус",
         Region.timezone: "Часовой пояс",
     }
+    column_formatters = {
+        Region.status: choice_formatter("status", {"active": "Активен", "inactive": "Выключен"})
+    }
+    column_formatters_detail = column_formatters
     form_columns = [Region.name, Region.status, Region.timezone]
     column_searchable_list = [Region.name]
     can_create = False
@@ -2569,6 +2664,10 @@ class LocalityAdmin(ModelView, model=Locality):
         Locality.type: "Тип",
         Locality.status: "Статус",
     }
+    column_formatters = {
+        Locality.status: choice_formatter("status", {"active": "Активен", "inactive": "Выключен"})
+    }
+    column_formatters_detail = column_formatters
     form_columns = [Locality.name, Locality.type, Locality.status]
     column_searchable_list = [Locality.name]
     column_sortable_list = [Locality.name]
@@ -2601,6 +2700,10 @@ class CategoryAdmin(ModelView, model=Category):
         Category.description: "Описание",
         Category.icon_key: "Иконка",
     }
+    column_formatters = {
+        Category.status: choice_formatter("status", {"active": "Активна", "inactive": "Выключена"})
+    }
+    column_formatters_detail = column_formatters
     form_columns = [
         Category.name,
         Category.description,
@@ -2640,6 +2743,34 @@ class RoadEventAdmin(ModelView, model=RoadEvent):
         RoadEvent.affects_transport: "Влияет на транспорт",
         RoadEvent.source_url: "Источник",
     }
+    column_formatters = {
+        RoadEvent.status: choice_formatter(
+            "status", {"active": "Действует", "scheduled": "Запланировано", "resolved": "Завершено"}
+        ),
+        RoadEvent.event_kind: choice_formatter(
+            "event_kind",
+            {
+                "closure": "Перекрытие",
+                "restriction": "Ограничение",
+                "congestion": "Затор",
+                "other": "Другое",
+            },
+        ),
+    }
+    column_formatters_detail = column_formatters
+    form_choices = {
+        "status": [
+            ("active", "Действует"),
+            ("scheduled", "Запланировано"),
+            ("resolved", "Завершено"),
+        ],
+        "event_kind": [
+            ("closure", "Перекрытие"),
+            ("restriction", "Ограничение"),
+            ("congestion", "Затор"),
+            ("other", "Другое"),
+        ],
+    }
     form_columns = [
         RoadEvent.title,
         RoadEvent.description,
@@ -2678,7 +2809,33 @@ class NotificationAdmin(ModelView, model=Notification):
         Notification.body: "Текст",
         Notification.is_read: "Прочитано",
     }
-    column_formatters = {Notification.user_id: format_user_fk}
+    column_formatters = {
+        Notification.user_id: format_user_fk,
+        Notification.kind: choice_formatter(
+            "kind",
+            {
+                "route_review": "Маршрут на проверке",
+                "route_published": "Маршрут опубликован",
+                "route_rejected": "Маршрут отклонён",
+                "review_published": "Отзыв опубликован",
+                "review_rejected": "Отзыв отклонён",
+                "profile_like": "Отметка профиля",
+                "achievement_unlocked": "Достижение получено",
+                "support_reply": "Ответ поддержки",
+                "review_reply": "Ответ на отзыв",
+                "expert_granted": "Статус эксперта выдан",
+                "expert_revoked": "Статус эксперта отозван",
+                "article_published": "Статья опубликована",
+                "article_rejected": "Статья отклонена",
+                "article_comment": "Комментарий к статье",
+                "article_about_your_route": "Статья о маршруте",
+                "antifraud_flagged": "Отметка антифрода",
+                "antifraud_blocked": "Блокировка антифрода",
+                "antifraud_points_decision": "Решение по очкам",
+            },
+        ),
+    }
+    column_formatters_detail = column_formatters
     column_sortable_list = [Notification.created_at]
     column_default_sort = (Notification.created_at, True)
     column_filters = [OperationColumnFilter(Notification.user_id, title="ID пользователя")]
@@ -2746,7 +2903,13 @@ class PlaceImageAdmin(ModelView, model=PlaceImage):
         PlaceImage.license: "Лицензия",
         PlaceImage.alt_text: "Alt-текст",
     }
-    column_formatters = {PlaceImage.place_id: format_place_fk}
+    column_formatters = {
+        PlaceImage.place_id: format_place_fk,
+        PlaceImage.status: choice_formatter(
+            "status", {"active": "Активно", "archived": "В архиве"}
+        ),
+    }
+    column_formatters_detail = column_formatters
     form_columns = [
         PlaceImage.alt_text,
         PlaceImage.sort_order,
@@ -2900,7 +3063,8 @@ class RuntimeConfigAdmin(BaseView):
             )
         Flash.success(
             request,
-            f"Провайдер ИИ переключён на «{value}». Подхватится на следующем ходу чата, "
+            f"Провайдер ИИ переключён на «{dict(_SELECTABLE_AI_PROVIDERS)[value]}». "
+            "Подхватится на следующем ходу чата, "
             "без перезапуска бэкенда.",
         )
         return RedirectResponse(redirect_url, status_code=303)
@@ -3040,6 +3204,27 @@ class MediaAttachmentAdmin(ModelView, model=MediaAttachment):
         MediaAttachment.sort_order: "Порядок",
         MediaAttachment.public_path: "Путь",
     }
+    column_formatters = {
+        MediaAttachment.entity_type: choice_formatter(
+            "entity_type",
+            {
+                "user": "Пользователь",
+                "place": "Место",
+                "route": "Маршрут",
+                "review": "Отзыв о маршруте",
+                "place_review": "Отзыв о месте",
+                "support_ticket": "Обращение в поддержку",
+                "article": "Статья",
+            },
+        ),
+        MediaAttachment.role: choice_formatter(
+            "role", {"avatar": "Аватар", "cover": "Обложка", "gallery": "Галерея"}
+        ),
+        MediaAttachment.status: choice_formatter(
+            "status", {"active": "Активно", "archived": "В архиве"}
+        ),
+    }
+    column_formatters_detail = column_formatters
     column_sortable_list = [MediaAttachment.byte_size]
     column_filters = [OperationColumnFilter(MediaAttachment.entity_id, title="ID сущности")]
     form_columns = [MediaAttachment.status, MediaAttachment.sort_order, MediaAttachment.alt_text]
@@ -3968,6 +4153,7 @@ def register_views(admin: Any, settings: Settings) -> None:
             SmsDeliveryJob.updated_at: "Обновлено",
         }
         column_formatters = {SmsDeliveryJob.status: format_sms_delivery_status}
+        column_formatters_detail = column_formatters
         column_searchable_list = [SmsDeliveryJob.phone_e164, SmsDeliveryJob.provider_sms_id]
         column_sortable_list = [
             SmsDeliveryJob.created_at,
@@ -4031,6 +4217,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(SupportHelpIndexAdmin)
     admin.add_view(RuntimeConfigAdmin)
     admin.add_view(SmsConfigAdmin)
+    admin.add_view(AppUpdateConfigAdmin)
     admin.add_view(RoutePointsHoldAdmin)
     admin.add_view(UserFraudStateAdmin)
     admin.add_view(RoutePaceViolationAdmin)
@@ -4045,6 +4232,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     if session_maker is not None:
         RuntimeConfigAdmin.session_maker = session_maker
         SmsConfigAdmin.session_maker = session_maker
+        AppUpdateConfigAdmin.session_maker = session_maker
         AntiFraudConfigAdmin.session_maker = session_maker
         AchievementsOperationsAdmin.session_maker = session_maker
         RouteStructureAdmin.session_maker = session_maker

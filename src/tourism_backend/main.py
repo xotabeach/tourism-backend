@@ -125,6 +125,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_exception_handlers(app)
     app.include_router(api_router)
     _MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    # The version policy reads the published APK manifest from here.
+    app.state.media_dir = _MEDIA_DIR
     # The slim image carries no /etc/mime.types, so Python guesses nothing for
     # .apk and StaticFiles falls back to text/plain — a browser then renders
     # the installer as mojibake instead of downloading it. The build published
