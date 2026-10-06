@@ -209,6 +209,9 @@ async def _build(session: Any, idea: dict[str, Any], owner: UUID, region: UUID) 
     result = await reroute_route(session, route)
     report["route_id"] = str(route.id)
     report["routed"] = result is not None
+    # Shown on the card: travel plus the visits, as generated routes count it.
+    travel = (result.total_duration_seconds + 59) // 60 if result is not None else 0
+    route.estimated_duration_minutes = sum(visits) + max(0, travel)
 
     wow = UUID(idea["wow"]) if idea.get("wow") else places[0].id
     cover = await session.scalar(
