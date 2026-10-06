@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,42 @@ def closing(idea: dict[str, Any], report: dict[str, Any], places: dict[str, Any]
     return " ".join(parts)
 
 
+HISTORY = {"fortress", "palace", "museum", "monument", "religious_site"}
+NATURE = {"mountain", "nature", "cave", "park", "beach"}
+CHILD_DAY_HOURS, CHILD_WALK_KM, CHILD_LEVEL = 6.0, 5.0, 2
+
+
+def tags(
+    idea: dict[str, Any],
+    report: dict[str, Any],
+    places: dict[str, dict[str, Any]],
+    notes: dict[str, str],
+) -> list[str]:
+    """Catalog tags from the facts, in the app's vocabulary (content_tags.dart).
+
+    «Море» is not here: the server works it out from the stops. «Гастрономия»
+    and «Леса» are never set: the places carry no such data."""
+    stops = [places[s] for s in idea["stops"]]
+    kinds = [set(p.get("categories") or []) for p in stops]
+    out = ["Пешком" if idea.get("transport") == "walk" else "На машине"]
+    if 2 * sum(1 for k in kinds if k & HISTORY) >= len(kinds):
+        out.append("История")
+    if 2 * sum(1 for k in kinds if k & NATURE) >= len(kinds):
+        out.append("Природа")
+    if any("viewpoint" in k for k in kinds):
+        out.append("Смотровые площадки")
+    if any("водопад" in f"{p['name']} {notes[p['id']]}".casefold() for p in stops):
+        out.append("Водопады")
+    if (idea.get("axes") or {}).get("time_of_day") in ("dawn", "sunset"):
+        out.append("Романтика")
+    days = report["days"]
+    if report["difficulty"] <= CHILD_LEVEL and all(
+        d["day_h"] <= CHILD_DAY_HOURS and d["walk_km"] <= CHILD_WALK_KM for d in days
+    ):
+        out.append("С детьми")
+    return out
+
+
 def main() -> None:
     source, report_path, target = (Path(a) for a in sys.argv[1:4])
     work = state.WORK_DIR
@@ -90,6 +127,7 @@ def main() -> None:
     saved = place_texts.MAX_NEW_WORDS
     place_texts.MAX_NEW_WORDS = MAX_NEW_WORDS
     flagged = 0
+    tag_counts: Counter[str] = Counter()
     with target.open("w") as out:
         for line in source.read_text().splitlines():
             idea = json.loads(line)
@@ -122,9 +160,12 @@ def main() -> None:
                 flagged += 1
                 print(f"{key}: {'; '.join(problems)}")
             idea["text"] = text
+            idea["tags"] = tags(idea, report, places, notes)
+            tag_counts.update(idea["tags"])
             out.write(json.dumps(idea, ensure_ascii=False) + "\n")
     place_texts.MAX_NEW_WORDS = saved
     print(f"{len(texts)} texts, flagged {flagged}")
+    print("tags:", dict(tag_counts.most_common()))
 
 
 if __name__ == "__main__":

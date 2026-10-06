@@ -6,7 +6,8 @@ Reads JSON lines from stdin, one approved idea each:
   {"key", "title", "story", "stops": [place ids in order],
    "day_breaks": [place ids that end a day] | [], "transport": "walk"|"car",
    "wow": place id, "find": place id | null, "axes": {...},
-   "nights": [...], "text": {"title", "short", "description", "stops": {"1": note}}}
+   "nights": [...], "text": {"title", "short", "description", "stops": {"1": note}},
+   "tags": ["История", "Пешком", ...]}
 
 For every idea the route is created (or rebuilt, found by its key) as a
 draft of the КРЫМТРИП profile, never shown in the catalog before launch:
@@ -47,6 +48,7 @@ from tourism_backend.modules.places.infrastructure.models import (
     PlaceImage,
 )
 from tourism_backend.modules.routes.application.rerouting import reroute_route
+from tourism_backend.modules.routes.application.seaside import is_seaside as stops_are_seaside
 from tourism_backend.modules.routes.infrastructure.models import (
     Route,
     RouteDay,
@@ -206,6 +208,13 @@ async def _build(session: Any, idea: dict[str, Any], owner: UUID, region: UUID) 
             )
         )
     await session.flush()
+    # Tags the catalog filters by (the app's own vocabulary): the editor's
+    # list, «С детьми», and «Море» worked out from the stops like for any
+    # route (BACKEND-19).
+    if "tags" in idea:
+        route.accessibility = {**(route.accessibility or {}), "filters": list(idea["tags"])}
+        route.suitable_for_children = "С детьми" in idea["tags"]
+        route.is_seaside = await stops_are_seaside(session, [p.id for p in places])
     result = await reroute_route(session, route)
     report["route_id"] = str(route.id)
     report["routed"] = result is not None
