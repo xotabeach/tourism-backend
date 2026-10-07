@@ -18,13 +18,18 @@ Examples:
   uv run python scripts/ingest_knowledge.py --apply --embed
   uv run python scripts/ingest_knowledge.py --apply --limit 1000 --source internal
   uv run python scripts/ingest_knowledge.py --apply --reembed-all
+  uv run python scripts/ingest_knowledge.py --apply --embed --prune --limit 5000
+  nice -n 19 python scripts/ingest_knowledge.py --apply --embed --prune --limit 5000 --threads 1
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import os
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import create_engine, select, text
@@ -39,14 +44,15 @@ from tourism_backend.modules.knowledge.application.chunker import (
 )
 from tourism_backend.modules.knowledge.application.embedder import (
     EmbeddingProvider,
+    SentenceTransformerEmbeddingProvider,
     build_embedder,
 )
 from tourism_backend.modules.knowledge.infrastructure.models import KnowledgeChunk
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.routes.infrastructure.models import Route
 
-#: Cap concurrent embedding requests against a single home-lab LM Studio
-#: instance — cheap to compute but the box only has one GPU.
+#: Cap concurrent embedding requests against a remote embedding server (a
+#: home-lab LM Studio has one GPU). The in-process model gets one at a time.
 _EMBED_CONCURRENCY = 4
 
 _ = _geo
@@ -111,6 +117,9 @@ def _iter_routes(session: Session, *, limit: int) -> list[tuple[Route, str | Non
         .where(
             Route.publication_status == "published",
             Route.visibility == "public",
+            # An archived route is out of the catalog; the agent must not
+            # offer it either.
+            Route.lifecycle_status == "active",
         )
         .order_by(Route.name)
         .limit(limit)
@@ -136,6 +145,105 @@ def _route_locality(session: Session, route_id: UUID) -> str | None:
         .limit(1)
     ).first()
     return row[0] if row is not None else None
+
+
+_LEVELS = {1: "лёгкий", 2: "несложный", 3: "средней сложности", 4: "трудный", 5: "очень трудный"}
+
+
+def _route_facts(session: Session, route: Route) -> str:
+    """The route's stops and days from the database, as `route_facts` text."""
+    from tourism_backend.modules.places.infrastructure.models import Place
+    from tourism_backend.modules.routes.infrastructure.models import RouteDay, RouteStop
+
+    stops = session.execute(
+        select(RouteStop.id, RouteStop.position, Place.name)
+        .join(Place, Place.id == RouteStop.place_id)
+        .where(RouteStop.route_id == route.id)
+        .order_by(RouteStop.position)
+    ).all()
+    days = session.scalars(
+        select(RouteDay).where(RouteDay.route_id == route.id).order_by(RouteDay.day_index)
+    ).all()
+    position = {stop.id: stop.position for stop in stops}
+    return route_facts(
+        route,
+        stops=[(stop.position, stop.name) for stop in stops],
+        days=[
+            (
+                day.day_index,
+                position.get(day.first_stop_id, 0),
+                position.get(day.last_stop_id, 0),
+                day.overnight_note,
+            )
+            for day in days
+        ],
+    )
+
+
+def route_facts(
+    route: Any,
+    *,
+    stops: list[tuple[int, str]],
+    days: list[tuple[int, int, int, str | None]],
+) -> str:
+    """What the agent matches a request against besides the prose: how the
+    route is travelled, how long and hard it is, its tags and its stops by
+    day. Numbers come from the stored calculation, never from the text.
+
+    ``stops`` are (position, name); ``days`` are (index, first position,
+    last position, overnight note)."""
+    lines = ["## Параметры"]
+    lines.append("Способ: " + ("на машине" if route.base_mode != "walk" else "пешком"))
+    if len(days) > 1:
+        lines.append(f"Дней: {len(days)} (многодневный маршрут)")
+    elif route.estimated_duration_minutes:
+        hours = route.estimated_duration_minutes / 60
+        lines.append("Длительность: " + ("полдня" if hours <= 4.5 else "один день"))
+    if route.distance_meters:
+        lines.append(f"Длина пути: {route.distance_meters / 1000:.1f} км")
+    if route.difficulty_level:
+        lines.append(
+            f"Сложность: {route.difficulty_level} из 5, {_LEVELS.get(route.difficulty_level, '')}"
+        )
+    filters = (route.accessibility or {}).get("filters") or []
+    tags = [str(tag) for tag in filters if isinstance(tag, str)]
+    if route.is_seaside and "Море" not in tags:
+        tags.append("Море")
+    if tags:
+        lines.append("Метки: " + ", ".join(tags))
+    if route.suitable_for_children:
+        lines.append("Подходит для поездки с детьми")
+    if route.source == "editorial":
+        lines.append("Автор: редакция КРЫМТРИП")
+    lines.append("\n## Точки маршрута")
+    if len(days) > 1:
+        for index, first, last, night in days:
+            names = [name for position, name in stops if first <= position <= last]
+            line = f"День {index}: " + ", ".join(names)
+            if night:
+                line += f". {night}"
+            lines.append(line)
+    else:
+        lines.append(", ".join(name for _position, name in stops))
+    return "\n".join(lines)
+
+
+def _prune(session: Session, *, keep: set[tuple[str, int]], source: str, dry_run: bool) -> int:
+    """Drop what is no longer indexed: every chunk of an unpublished or merged
+    place and of an archived or deleted route, and a leftover chunk of a
+    document that now splits into fewer parts. Returns the number of chunks."""
+    stale = [
+        chunk_id
+        for chunk_id, doc_id, seq in session.execute(
+            select(KnowledgeChunk.id, KnowledgeChunk.doc_id, KnowledgeChunk.chunk_seq).where(
+                KnowledgeChunk.source == source
+            )
+        )
+        if doc_id.split(":", 1)[0] in {"place", "route"} and (doc_id, seq) not in keep
+    ]
+    if stale and not dry_run:
+        session.execute(KnowledgeChunk.__table__.delete().where(KnowledgeChunk.id.in_(stale)))
+    return len(stale)
 
 
 def _upsert_chunk(
@@ -186,6 +294,7 @@ def _write_embedding(
 async def _embed_batch(
     embedder: EmbeddingProvider,
     pending: list[tuple[UUID, str, str]],
+    concurrency: int = _EMBED_CONCURRENCY,
 ) -> list[tuple[UUID, list[float]]]:
     """Embed (chunk_id, title, body) triples concurrently, capped.
 
@@ -193,7 +302,7 @@ async def _embed_batch(
     skipped rather than aborting the whole batch — it keeps whatever
     embedding it had before (or none), and a later run picks it up again.
     """
-    semaphore = asyncio.Semaphore(_EMBED_CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
 
     async def _one(chunk_id: UUID, title: str, body: str) -> tuple[UUID, list[float]] | None:
         async with semaphore:
@@ -242,6 +351,23 @@ def main() -> None:
             "configured embedder (requires --apply); does not touch chunk content"
         ),
     )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help=(
+            "Drop chunks of places and routes that are no longer indexed "
+            "(unpublished, merged, archived). Use with a --limit that covers everything"
+        ),
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help=(
+            "Cap the local embedding model to this many CPU threads and one "
+            "request at a time; use 1 next to a live API"
+        ),
+    )
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--source", default="internal", help="internal|osm|wikivoyage")
     args = parser.parse_args()
@@ -252,8 +378,28 @@ def main() -> None:
     if args.reembed_all and not args.apply:
         raise SystemExit("--reembed-all requires --apply")
 
+    concurrency = _EMBED_CONCURRENCY
+    if args.threads:
+        # On the production host the local model otherwise takes every core,
+        # four requests at once, and the API stops answering (2026-10-08).
+        # The limits must be set before the model library is first loaded.
+        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            os.environ[name] = str(args.threads)
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        with contextlib.suppress(ImportError):
+            import torch
+
+            torch.set_num_threads(args.threads)
+        concurrency = 1
+
     settings = get_settings()
     embedder = build_embedder(settings)
+    if isinstance(embedder, SentenceTransformerEmbeddingProvider):
+        # The in-process model is not safe to call from several threads at
+        # once: four parallel requests segfaulted on macOS and hung for 48
+        # minutes on the production host (2026-10-08). The cap of four is for
+        # a remote embedding server only.
+        concurrency = 1
     embed_model = settings.rag_embedding_model
     engine = create_engine(settings.database_url_sync)
 
@@ -265,6 +411,8 @@ def main() -> None:
 
     counters = {"inserted": 0, "updated": 0, "unchanged": 0, "embedded": 0}
     total = 0
+    seen_docs: set[tuple[str, int]] = set()
+    pruned = 0
     with Session(engine) as session:
         places = _iter_places(session, limit=args.limit)
         routes = _iter_routes(session, limit=args.limit)
@@ -296,6 +444,7 @@ def main() -> None:
                     "ttl_days": 365,
                     "payload": {"source": cand.source, "place_id": str(place.id)},
                 }
+                seen_docs.add((cand.doc_id, cand.chunk_seq))
                 status, chunk_id = _upsert_chunk(session, attrs=attrs, dry_run=not args.apply)
                 counters[status] += 1
                 total += 1
@@ -306,7 +455,9 @@ def main() -> None:
                 route_id=str(route.id),
                 name=route.name,
                 short_description=route.short_description,
-                description=route.description,
+                description="\n\n".join(
+                    part for part in (route.description, _route_facts(session, route)) if part
+                ),
                 locality=locality,
                 source=args.source,
             ):
@@ -327,14 +478,17 @@ def main() -> None:
                     "ttl_days": 365,
                     "payload": {"source": cand.source, "route_id": str(route.id)},
                 }
+                seen_docs.add((cand.doc_id, cand.chunk_seq))
                 status, chunk_id = _upsert_chunk(session, attrs=attrs, dry_run=not args.apply)
                 counters[status] += 1
                 total += 1
                 if args.embed and chunk_id is not None:
                     pending_embed.append((chunk_id, cand.title, cand.body))
+        if args.prune:
+            pruned = _prune(session, keep=seen_docs, source=args.source, dry_run=not args.apply)
         if args.apply:
             session.flush()
-            embedded = asyncio.run(_embed_batch(embedder, pending_embed))
+            embedded = asyncio.run(_embed_batch(embedder, pending_embed, concurrency))
             for chunk_id, vector in embedded:
                 _write_embedding(session, chunk_id=chunk_id, vector=vector, model=embed_model)
                 counters["embedded"] += 1
@@ -344,7 +498,7 @@ def main() -> None:
         f"[{mode}] places+routes scanned={total} "
         f"inserted/updated/unchanged={counters['inserted']}/"
         f"{counters['updated']}/{counters['unchanged']} "
-        f"embedded={counters['embedded']}"
+        f"embedded={counters['embedded']} pruned_chunks={pruned}"
     )
 
 
