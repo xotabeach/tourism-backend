@@ -60,11 +60,20 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     terrain_poller = asyncio.create_task(
         poll_route_terrain(app.state.session_factory, settings), name="route-terrain-poller"
     )
+    from tourism_backend.modules.knowledge.application.reindex_job import (
+        poll_knowledge_reindex,
+        stop_knowledge_reindex,
+    )
+
+    knowledge_reindex = asyncio.create_task(
+        poll_knowledge_reindex(app.state.session_factory, settings), name="knowledge-reindex"
+    )
     loop_watch = asyncio.create_task(watch_event_loop_lag(), name="event-loop-lag")
     try:
         yield
     finally:
         loop_watch.cancel()
+        await stop_knowledge_reindex(knowledge_reindex)
         await stop_terrain_poller(terrain_poller)
         await stop_delivery_poller(sms_poller)
         await stop_immediate_deliveries()
