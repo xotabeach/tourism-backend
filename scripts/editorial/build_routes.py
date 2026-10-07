@@ -5,7 +5,9 @@ Reads JSON lines from stdin, one approved idea each:
 
   {"key", "title", "story", "stops": [place ids in order],
    "day_breaks": [place ids that end a day] | [], "transport": "walk"|"car",
-   "wow": place id, "find": place id | null, "axes": {...}}
+   "wow": place id, "find": place id | null, "axes": {...},
+   "nights": [...], "text": {"title", "short", "description", "stops": {"1": note}},
+   "tags": ["История", "Пешком", ...]}
 
 For every idea the route is created (or rebuilt, found by its key) as a
 draft of the КРЫМТРИП profile, never shown in the catalog before launch:
@@ -46,6 +48,7 @@ from tourism_backend.modules.places.infrastructure.models import (
     PlaceImage,
 )
 from tourism_backend.modules.routes.application.rerouting import reroute_route
+from tourism_backend.modules.routes.application.seaside import is_seaside as stops_are_seaside
 from tourism_backend.modules.routes.infrastructure.models import (
     Route,
     RouteDay,
@@ -168,8 +171,13 @@ async def _build(session: Any, idea: dict[str, Any], owner: UUID, region: UUID) 
         await session.execute(delete(RouteStop).where(RouteStop.route_id == route.id))
         report["action"] = "rebuilt"
     route.owner_user_id = owner
-    route.name = idea["title"]
-    route.short_description = idea.get("story")
+    # The written text when the idea carries one; until then the idea's own
+    # title and story stand in.
+    text = idea.get("text") or {}
+    route.name = text.get("title") or idea["title"]
+    route.short_description = text.get("short") or idea.get("story")
+    route.description = text.get("description") or route.description
+    notes = text.get("stops") or {}
     route.transport_mode = "walk" if idea.get("transport") == "walk" else "car"
     breaks = [str(b) for b in idea.get("day_breaks") or []]
     route.days_manual = bool(breaks)
@@ -196,12 +204,23 @@ async def _build(session: Any, idea: dict[str, Any], owner: UUID, region: UUID) 
                 place_id=place.id,
                 position=position,
                 visit_duration_minutes=minutes,
+                note=notes.get(str(position)),
             )
         )
     await session.flush()
+    # Tags the catalog filters by (the app's own vocabulary): the editor's
+    # list, «С детьми», and «Море» worked out from the stops like for any
+    # route (BACKEND-19).
+    if "tags" in idea:
+        route.accessibility = {**(route.accessibility or {}), "filters": list(idea["tags"])}
+        route.suitable_for_children = "С детьми" in idea["tags"]
+        route.is_seaside = await stops_are_seaside(session, [p.id for p in places])
     result = await reroute_route(session, route)
     report["route_id"] = str(route.id)
     report["routed"] = result is not None
+    # Shown on the card: travel plus the visits, as generated routes count it.
+    travel = (result.total_duration_seconds + 59) // 60 if result is not None else 0
+    route.estimated_duration_minutes = sum(visits) + max(0, travel)
 
     wow = UUID(idea["wow"]) if idea.get("wow") else places[0].id
     cover = await session.scalar(
