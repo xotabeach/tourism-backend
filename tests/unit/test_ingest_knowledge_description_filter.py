@@ -33,7 +33,7 @@ def test_boilerplate_template_is_not_real_description() -> None:
             "редакционной проверки."
         ),
     )
-    assert ingest_knowledge._has_real_description(place) is False
+    assert ingest_knowledge.has_real_description(place) is False
 
 
 def test_boilerplate_text_is_rejected_even_with_stale_or_missing_metadata() -> None:
@@ -47,20 +47,20 @@ def test_boilerplate_text_is_rejected_even_with_stale_or_missing_metadata() -> N
         "Описание сгенерировано автоматически как черновик и требует "
         "редакционной проверки.",
     )
-    assert ingest_knowledge._has_real_description(place) is False
+    assert ingest_knowledge.has_real_description(place) is False
 
 
 def test_wikipedia_extract_is_real_description() -> None:
     place = _place(content_enrichment={"prompt_version": "heuristic-wikipedia-v1"})
-    assert ingest_knowledge._has_real_description(place) is True
+    assert ingest_knowledge.has_real_description(place) is True
 
 
 def test_missing_enrichment_metadata_defaults_to_real() -> None:
     # A place enriched by some future/other path this frozenset doesn't know
     # about should not be silently excluded — fail open, not closed.
-    assert ingest_knowledge._has_real_description(_place(content_enrichment=None)) is True
+    assert ingest_knowledge.has_real_description(_place(content_enrichment=None)) is True
     other = _place(content_enrichment={"prompt_version": "llm-v1"})
-    assert ingest_knowledge._has_real_description(other) is True
+    assert ingest_knowledge.has_real_description(other) is True
 
 
 def _route(**fields: object) -> SimpleNamespace:

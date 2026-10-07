@@ -29,7 +29,6 @@ import asyncio
 import contextlib
 import os
 from datetime import UTC, datetime
-from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import create_engine, select, text
@@ -41,6 +40,11 @@ from tourism_backend.modules.knowledge.application.chunker import (
     chunk_place_markdown,
     chunk_route_markdown,
     content_hash,
+)
+from tourism_backend.modules.knowledge.application.documents import (
+    has_real_description,
+    route_description,
+    route_facts,
 )
 from tourism_backend.modules.knowledge.application.embedder import (
     EmbeddingProvider,
@@ -56,38 +60,6 @@ from tourism_backend.modules.routes.infrastructure.models import Route
 _EMBED_CONCURRENCY = 4
 
 _ = _geo
-
-
-_BOILERPLATE_PROMPT_VERSIONS = frozenset({"heuristic-v1"})
-# The literal marker `content_enrichment.py` writes into `description` when
-# no source text existed. Checked directly rather than trusted to imply
-# `prompt_version` == "heuristic-v1": three seed places (Ливадийский дворец,
-# Херсонес Таврический, Долина привидений) carry this exact text in
-# `description` with `content_enrichment_status = "missing"` and no
-# `prompt_version` at all — their status was reset at some point without
-# clearing the stale text it had written. Metadata drifted; the string in
-# the column that actually gets indexed did not.
-_BOILERPLATE_MARKER = "Описание сгенерировано автоматически как черновик"
-
-
-def _has_real_description(place: Place) -> bool:
-    """True unless `description` is the templated placeholder.
-
-    `content_enrichment.prompt_version` distinguishes the two heuristics in
-    `content_enrichment.py`: "heuristic-wikipedia-v1" wraps a real extract,
-    "heuristic-v1" is the "Описание сгенерировано автоматически..." template
-    used when no source text existed. 82.6% of `generated_draft` places are
-    the template (measured 2026-09-03) — indexing it teaches the retriever
-    nothing about the place and puts "требует редакционной проверки" one
-    retrieval away from a user's screen.
-    """
-    description = place.description or ""
-    if _BOILERPLATE_MARKER in description:
-        return False
-    enrichment = place.content_enrichment
-    if not isinstance(enrichment, dict):
-        return True
-    return enrichment.get("prompt_version") not in _BOILERPLATE_PROMPT_VERSIONS
 
 
 def _iter_places(session: Session, *, limit: int) -> list[tuple[Place, str | None]]:
@@ -147,9 +119,6 @@ def _route_locality(session: Session, route_id: UUID) -> str | None:
     return row[0] if row is not None else None
 
 
-_LEVELS = {1: "лёгкий", 2: "несложный", 3: "средней сложности", 4: "трудный", 5: "очень трудный"}
-
-
 def _route_facts(session: Session, route: Route) -> str:
     """The route's stops and days from the database, as `route_facts` text."""
     from tourism_backend.modules.places.infrastructure.models import Place
@@ -178,54 +147,6 @@ def _route_facts(session: Session, route: Route) -> str:
             for day in days
         ],
     )
-
-
-def route_facts(
-    route: Any,
-    *,
-    stops: list[tuple[int, str]],
-    days: list[tuple[int, int, int, str | None]],
-) -> str:
-    """What the agent matches a request against besides the prose: how the
-    route is travelled, how long and hard it is, its tags and its stops by
-    day. Numbers come from the stored calculation, never from the text.
-
-    ``stops`` are (position, name); ``days`` are (index, first position,
-    last position, overnight note)."""
-    lines = ["## Параметры"]
-    lines.append("Способ: " + ("на машине" if route.base_mode != "walk" else "пешком"))
-    if len(days) > 1:
-        lines.append(f"Дней: {len(days)} (многодневный маршрут)")
-    elif route.estimated_duration_minutes:
-        hours = route.estimated_duration_minutes / 60
-        lines.append("Длительность: " + ("полдня" if hours <= 4.5 else "один день"))
-    if route.distance_meters:
-        lines.append(f"Длина пути: {route.distance_meters / 1000:.1f} км")
-    if route.difficulty_level:
-        lines.append(
-            f"Сложность: {route.difficulty_level} из 5, {_LEVELS.get(route.difficulty_level, '')}"
-        )
-    filters = (route.accessibility or {}).get("filters") or []
-    tags = [str(tag) for tag in filters if isinstance(tag, str)]
-    if route.is_seaside and "Море" not in tags:
-        tags.append("Море")
-    if tags:
-        lines.append("Метки: " + ", ".join(tags))
-    if route.suitable_for_children:
-        lines.append("Подходит для поездки с детьми")
-    if route.source == "editorial":
-        lines.append("Автор: редакция КРЫМТРИП")
-    lines.append("\n## Точки маршрута")
-    if len(days) > 1:
-        for index, first, last, night in days:
-            names = [name for position, name in stops if first <= position <= last]
-            line = f"День {index}: " + ", ".join(names)
-            if night:
-                line += f". {night}"
-            lines.append(line)
-    else:
-        lines.append(", ".join(name for _position, name in stops))
-    return "\n".join(lines)
 
 
 def _prune(session: Session, *, keep: set[tuple[str, int]], source: str, dry_run: bool) -> int:
@@ -418,7 +339,7 @@ def main() -> None:
         routes = _iter_routes(session, limit=args.limit)
         pending_embed: list[tuple[UUID, str, str]] = []
         for place, locality in places:
-            real_description = place.description if _has_real_description(place) else None
+            real_description = place.description if has_real_description(place) else None
             for cand in chunk_place_markdown(
                 place_id=str(place.id),
                 name=place.name,
@@ -455,9 +376,7 @@ def main() -> None:
                 route_id=str(route.id),
                 name=route.name,
                 short_description=route.short_description,
-                description="\n\n".join(
-                    part for part in (route.description, _route_facts(session, route)) if part
-                ),
+                description=route_description(route.description, _route_facts(session, route)),
                 locality=locality,
                 source=args.source,
             ):

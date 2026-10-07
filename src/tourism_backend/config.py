@@ -167,6 +167,13 @@ class Settings(BaseSettings):
     # the same knowledge_chunks rows — cache the retrieval, not the LLM
     # answer, since the answer is still personalized per session.
     rag_faq_cache_ttl_seconds: int = Field(default=86400, ge=60)
+    # The index is brought in line with what is published once a night, at
+    # this Moscow time, inside the API process (spec 18, D13). The pause
+    # between embedded chunks leaves the CPU to the requests.
+    rag_reindex_enabled: bool = True
+    rag_reindex_hour: int = Field(default=3, ge=0, le=23)
+    rag_reindex_minute: int = Field(default=30, ge=0, le=59)
+    rag_reindex_pause_seconds: float = Field(default=0.3, ge=0, le=10)
 
     # Separate help index, same MiniLM provider/weights as RAG. Opt-in only
     # after publication, indexing and a retrieval-quality check. Never use hash-v1.
