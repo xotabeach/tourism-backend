@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -148,6 +149,20 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     # Car parks editors chose, {place_id: [lng, lat]} (spec 14b); kept by
     # place so they survive the stops being recreated.
     parking_overrides: Mapped[dict[str, list[float]] | None] = mapped_column(JSONB, nullable=True)
+    # Spec 19: 0..100 from what people do in the app only, recalculated
+    # nightly by scripts/recalculate_popularity.py.
+    popularity: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    popularity_people: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    is_popular: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    popularity_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     has_hard_day: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )

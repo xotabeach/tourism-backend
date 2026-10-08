@@ -327,7 +327,18 @@ def _to_list_item(
         author_rank_title=author_rank_title,
         rating_average=rating_average,
         rating_count=rating_count,
+        badge=route_badge(route),
     )
+
+
+def route_badge(route: Route) -> Literal["popular", "editors_choice"] | None:
+    """The catalog badge of a route (spec 19, D43)."""
+
+    if route.is_popular:
+        return "popular"
+    if route.source == "editorial":
+        return "editors_choice"
+    return None
 
 
 async def route_ratings(
@@ -417,7 +428,12 @@ async def _list_from_stmt(
         .scalar_subquery()
     )
     order_by = {
-        "popular": (favorites_count.desc(), Route.updated_at.desc(), Route.id),
+        "popular": (
+            Route.popularity.desc(),
+            favorites_count.desc(),
+            Route.updated_at.desc(),
+            Route.id,
+        ),
         "recent": (Route.updated_at.desc(), Route.id),
         "name_asc": (Route.name, Route.id),
         "name_desc": (Route.name.desc(), Route.id),

@@ -367,6 +367,7 @@ class UserAdmin(ModelView, model=User):
         User.travel_plus_plan: "Travel+ план",
         User.notify_sms_enabled: "SMS",
         User.notify_haptics_enabled: "Тактильность",
+        User.is_internal_account: "Аккаунт команды",
     }
     column_formatters = {
         User.id: format_user_cover,
@@ -401,6 +402,7 @@ class UserAdmin(ModelView, model=User):
         User.notify_sms_enabled,
         User.notify_haptics_enabled,
         User.is_expert,
+        User.is_internal_account,
     ]
     form_args = {
         "display_name": {
@@ -412,6 +414,10 @@ class UserAdmin(ModelView, model=User):
         "notify_sms_enabled": {"label": "SMS"},
         "notify_haptics_enabled": {"label": "Тактильность"},
         "is_expert": {"label": "Эксперт"},
+        "is_internal_account": {
+            "label": "Аккаунт команды",
+            "description": "Действия не учитываются в популярности мест и маршрутов",
+        },
     }
     can_create = False
     can_edit = True

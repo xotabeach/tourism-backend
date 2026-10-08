@@ -1,8 +1,10 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from geoalchemy2 import Geometry
 from geoalchemy2.functions import ST_X, ST_Y
 from sqlalchemy import Select, cast, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -22,6 +24,7 @@ from tourism_backend.modules.places.infrastructure.models import (
     PlaceCategory,
     PlaceEntrance,
     PlaceImage,
+    PlaceViewEvent,
 )
 
 
@@ -181,6 +184,7 @@ async def list_places(
     total = int((await session.execute(count_stmt)).scalar_one())
 
     order_by = {
+        "popular": (Place.popularity.desc(), Place.name, Place.id),
         "name_asc": (Place.name, Place.id),
         "name_desc": (Place.name.desc(), Place.id),
         "date_newest": (Place.created_at.desc(), Place.id),
@@ -224,6 +228,7 @@ async def list_places(
                 publication_status=place.publication_status,
                 categories=categories.get(place.id, []),
                 cover_image_url=covers.get(place.id),
+                badge="popular" if place.is_popular else None,
             )
         )
     return PlaceListOut(items=items, total=total, limit=limit, offset=offset)
@@ -290,6 +295,7 @@ async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
         publication_status=place.publication_status,
         categories=categories,
         cover_image_url=covers.get(place.id),
+        badge="popular" if place.is_popular else None,
         image_urls=image_urls,
         description=place.description,
         address=place.address,
@@ -311,3 +317,21 @@ async def get_place(session: AsyncSession, place_id: UUID) -> PlaceDetailOut:
         primary_entrance=primary_entrance,
         static_map_url=f"/api/v1/maps/static/place/{place.id}/{get_settings().map_source_version}",
     )
+
+
+async def record_place_view(session: AsyncSession, *, user_id: UUID, place_id: UUID) -> None:
+    """Remember that this person opened this place's card today (spec 19).
+
+    One row per person, place and day, so opening the card again the same
+    day changes nothing and the endpoint is safe to retry.
+    """
+
+    place = await session.get(Place, place_id)
+    if place is None or place.publication_status != "published":
+        raise AppError(code="place_not_found", message="Place not found", status_code=404)
+    await session.execute(
+        pg_insert(PlaceViewEvent)
+        .values(user_id=user_id, place_id=place_id, day=datetime.now(UTC).date())
+        .on_conflict_do_nothing()
+    )
+    await session.commit()

@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 PlaceCatalogSort = Literal[
     "default",
+    "popular",
     "name_asc",
     "name_desc",
     "date_newest",
@@ -49,6 +50,8 @@ class PlaceListItemOut(BaseModel):
     publication_status: str
     categories: list[CategoryOut] = Field(default_factory=list)
     cover_image_url: str | None = None
+    #: Spec 19: «Популярное» for the top tenth by popularity, else ``None``.
+    badge: Literal["popular"] | None = None
 
 
 class PlaceEntranceOut(BaseModel):
