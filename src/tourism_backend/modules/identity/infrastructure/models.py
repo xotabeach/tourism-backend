@@ -130,6 +130,14 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default=False,
         server_default="false",
     )
+    # A team member's own account. Its views, favourites and runs never
+    # count towards popularity (spec 19, D45); set from the admin panel.
+    is_internal_account: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
     travel_plus_active: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,

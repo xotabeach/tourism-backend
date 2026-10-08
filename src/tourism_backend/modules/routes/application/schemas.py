@@ -297,6 +297,9 @@ class RouteListItemOut(BaseModel):
     #: has at least one — a card must not imply a score nobody has given.
     rating_average: float | None = None
     rating_count: int = 0
+    #: Spec 19: «Популярное» once enough people use the route, «Выбор
+    #: редакции» for an editorial route without it, else ``None``.
+    badge: Literal["popular", "editors_choice"] | None = None
 
 
 class RouteSegmentOut(BaseModel):

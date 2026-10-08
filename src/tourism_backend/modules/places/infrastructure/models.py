@@ -8,9 +8,11 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     SmallInteger,
     String,
     Text,
@@ -153,6 +155,45 @@ class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
         nullable=True,
         index=True,
     )
+    # Spec 19. ``popularity_external`` is the 0..100 fame from Wikipedia,
+    # Wikidata, Commons and OSM tags (step 19-1, filled by its own script;
+    # NULL until then). ``popularity`` is what the catalog sorts by: the
+    # external score blended with what people do in the app, recalculated
+    # nightly by scripts/recalculate_popularity.py.
+    popularity_external: Mapped[float | None] = mapped_column(Float, nullable=True)
+    popularity: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    popularity_people: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    is_popular: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    popularity_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class PlaceViewEvent(Base):
+    """One row per person, place and day: a place card was opened (spec 19)."""
+
+    __tablename__ = "place_view_events"
+    __table_args__ = (
+        PrimaryKeyConstraint("user_id", "place_id", "day", name="pk_place_view_events"),
+        Index("ix_place_view_events_place_day", "place_id", "day"),
+        Index("ix_place_view_events_day", "day"),
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    place_id: Mapped[UUID] = mapped_column(
+        ForeignKey("places.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    day: Mapped[date] = mapped_column(Date, nullable=False)
 
 
 class PlaceCategory(Base):

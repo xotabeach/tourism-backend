@@ -72,6 +72,15 @@ async def get_place(session: DbSession, place_id: UUID) -> PlaceDetailOut:
     return await places_service.get_place(session, place_id)
 
 
+@router.post("/places/{place_id}/view", status_code=204)
+async def record_place_view(
+    place_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> None:
+    await places_service.record_place_view(session, user_id=user_id, place_id=place_id)
+
+
 @router.get("/places/{place_id}/reviews", response_model=PlaceReviewListOut)
 async def list_place_reviews(
     place_id: UUID,
