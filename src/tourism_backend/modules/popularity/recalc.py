@@ -192,13 +192,17 @@ def compute(session: Session, *, now: datetime | None = None) -> PopularityRepor
         for route_id in route_popularity
     }
 
+    # ``.all()`` matters: a Result has ``keys()``, so ``dict(result)`` would
+    # take it for a mapping and try to subscript it.
     external: dict[UUID, float | None] = dict(
         session.execute(
             select(Place.id, Place.popularity_external).where(
                 Place.publication_status == "published",
                 Place.merged_into_place_id.is_(None),
             )
-        ).tuples()
+        )
+        .tuples()
+        .all()
     )
     report.places_published = len(external)
     place_scores = {
