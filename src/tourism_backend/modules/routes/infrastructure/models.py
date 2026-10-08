@@ -149,6 +149,11 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     # Car parks editors chose, {place_id: [lng, lat]} (spec 14b); kept by
     # place so they survive the stops being recreated.
     parking_overrides: Mapped[dict[str, list[float]] | None] = mapped_column(JSONB, nullable=True)
+    # Why a moderator returned the route to its author (spec 15, D6): a code
+    # from routes/application/rejection.py and the moderator's own words.
+    # Cleared when the author sends the route for review again.
+    rejection_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    moderator_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # Spec 19: 0..100 from what people do in the app only, recalculated
     # nightly by scripts/recalculate_popularity.py.
     popularity: Mapped[float] = mapped_column(

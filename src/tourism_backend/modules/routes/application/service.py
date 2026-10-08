@@ -45,6 +45,7 @@ from tourism_backend.modules.routes.application.difficulty import (
     quick_estimate,
 )
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
+from tourism_backend.modules.routes.application.rejection import rejection_text
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
     RouteDayOut,
@@ -327,8 +328,22 @@ def _to_list_item(
         author_rank_title=author_rank_title,
         rating_average=rating_average,
         rating_count=rating_count,
+        rejection_reason=author_rejection_text(route),
         badge=route_badge(route),
     )
+
+
+def author_rejection_text(route: Route) -> str | None:
+    """What the moderator asked to fix, for a route its author still has to resend.
+
+    A published or queued route never carries it: the reason is cleared when
+    the author sends the route again, and this guard keeps a stale one from
+    leaking into the public catalog.
+    """
+
+    if route.publication_status not in {"rejected", "draft"}:
+        return None
+    return rejection_text(route.rejection_reason, route.moderator_note)
 
 
 def route_badge(route: Route) -> Literal["popular", "editors_choice"] | None:
@@ -1063,6 +1078,7 @@ async def get_user_route_for_edit(
             if isinstance(accessibility.get("difficulty"), dict)
             else None
         ),
+        rejection_reason=author_rejection_text(route),
         media=[
             UserRouteMediaOut(
                 id=item.id,
@@ -1353,6 +1369,9 @@ async def submit_user_route(
             status_code=400,
         )
     route.publication_status = "pending_review"
+    # The author answered the moderator's note by sending the route again.
+    route.rejection_reason = None
+    route.moderator_note = None
     route.visibility = "private"
     route.lifecycle_status = "draft"
     route.updated_at = datetime.now(UTC)

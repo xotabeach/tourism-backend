@@ -110,8 +110,13 @@ async def create_route_moderation_notification(
     route_id: UUID,
     route_name: str,
     approved: bool,
+    reason: str | None = None,
 ) -> Notification:
-    """Notify route author after ops approve/reject publication."""
+    """Notify route author after ops approve/reject publication.
+
+    ``reason`` is what the moderator asks to fix; a rejection without one
+    (stored before reasons existed) falls back to the general wording.
+    """
     short_route = _clip(route_name, 48)
     if approved:
         kind = "route_published"
@@ -120,9 +125,13 @@ async def create_route_moderation_notification(
     else:
         kind = "route_rejected"
         title = "Маршрут на доработке"
-        body = (
-            f"Маршрут «{short_route}» вернули на доработку. Исправьте замечания и отправьте снова"
-        )
+        if reason:
+            body = _clip(f"Маршрут «{short_route}» вернули на доработку. {reason}", 500)
+        else:
+            body = (
+                f"Маршрут «{short_route}» вернули на доработку. "
+                "Исправьте замечания и отправьте снова"
+            )
     notification = _build_notification(
         user_id=owner_user_id,
         kind=kind,
