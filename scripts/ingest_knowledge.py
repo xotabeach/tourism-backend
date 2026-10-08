@@ -18,12 +18,16 @@ Examples:
   uv run python scripts/ingest_knowledge.py --apply --embed
   uv run python scripts/ingest_knowledge.py --apply --limit 1000 --source internal
   uv run python scripts/ingest_knowledge.py --apply --reembed-all
+  uv run python scripts/ingest_knowledge.py --apply --embed --prune --limit 5000
+  nice -n 19 python scripts/ingest_knowledge.py --apply --embed --prune --limit 5000 --threads 1
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import os
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -37,51 +41,25 @@ from tourism_backend.modules.knowledge.application.chunker import (
     chunk_route_markdown,
     content_hash,
 )
+from tourism_backend.modules.knowledge.application.documents import (
+    has_real_description,
+    route_description,
+    route_facts,
+)
 from tourism_backend.modules.knowledge.application.embedder import (
     EmbeddingProvider,
+    SentenceTransformerEmbeddingProvider,
     build_embedder,
 )
 from tourism_backend.modules.knowledge.infrastructure.models import KnowledgeChunk
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.routes.infrastructure.models import Route
 
-#: Cap concurrent embedding requests against a single home-lab LM Studio
-#: instance — cheap to compute but the box only has one GPU.
+#: Cap concurrent embedding requests against a remote embedding server (a
+#: home-lab LM Studio has one GPU). The in-process model gets one at a time.
 _EMBED_CONCURRENCY = 4
 
 _ = _geo
-
-
-_BOILERPLATE_PROMPT_VERSIONS = frozenset({"heuristic-v1"})
-# The literal marker `content_enrichment.py` writes into `description` when
-# no source text existed. Checked directly rather than trusted to imply
-# `prompt_version` == "heuristic-v1": three seed places (Ливадийский дворец,
-# Херсонес Таврический, Долина привидений) carry this exact text in
-# `description` with `content_enrichment_status = "missing"` and no
-# `prompt_version` at all — their status was reset at some point without
-# clearing the stale text it had written. Metadata drifted; the string in
-# the column that actually gets indexed did not.
-_BOILERPLATE_MARKER = "Описание сгенерировано автоматически как черновик"
-
-
-def _has_real_description(place: Place) -> bool:
-    """True unless `description` is the templated placeholder.
-
-    `content_enrichment.prompt_version` distinguishes the two heuristics in
-    `content_enrichment.py`: "heuristic-wikipedia-v1" wraps a real extract,
-    "heuristic-v1" is the "Описание сгенерировано автоматически..." template
-    used when no source text existed. 82.6% of `generated_draft` places are
-    the template (measured 2026-09-03) — indexing it teaches the retriever
-    nothing about the place and puts "требует редакционной проверки" one
-    retrieval away from a user's screen.
-    """
-    description = place.description or ""
-    if _BOILERPLATE_MARKER in description:
-        return False
-    enrichment = place.content_enrichment
-    if not isinstance(enrichment, dict):
-        return True
-    return enrichment.get("prompt_version") not in _BOILERPLATE_PROMPT_VERSIONS
 
 
 def _iter_places(session: Session, *, limit: int) -> list[tuple[Place, str | None]]:
@@ -111,6 +89,9 @@ def _iter_routes(session: Session, *, limit: int) -> list[tuple[Route, str | Non
         .where(
             Route.publication_status == "published",
             Route.visibility == "public",
+            # An archived route is out of the catalog; the agent must not
+            # offer it either.
+            Route.lifecycle_status == "active",
         )
         .order_by(Route.name)
         .limit(limit)
@@ -136,6 +117,54 @@ def _route_locality(session: Session, route_id: UUID) -> str | None:
         .limit(1)
     ).first()
     return row[0] if row is not None else None
+
+
+def _route_facts(session: Session, route: Route) -> str:
+    """The route's stops and days from the database, as `route_facts` text."""
+    from tourism_backend.modules.places.infrastructure.models import Place
+    from tourism_backend.modules.routes.infrastructure.models import RouteDay, RouteStop
+
+    stops = session.execute(
+        select(RouteStop.id, RouteStop.position, Place.name)
+        .join(Place, Place.id == RouteStop.place_id)
+        .where(RouteStop.route_id == route.id)
+        .order_by(RouteStop.position)
+    ).all()
+    days = session.scalars(
+        select(RouteDay).where(RouteDay.route_id == route.id).order_by(RouteDay.day_index)
+    ).all()
+    position = {stop.id: stop.position for stop in stops}
+    return route_facts(
+        route,
+        stops=[(stop.position, stop.name) for stop in stops],
+        days=[
+            (
+                day.day_index,
+                position.get(day.first_stop_id, 0),
+                position.get(day.last_stop_id, 0),
+                day.overnight_note,
+            )
+            for day in days
+        ],
+    )
+
+
+def _prune(session: Session, *, keep: set[tuple[str, int]], source: str, dry_run: bool) -> int:
+    """Drop what is no longer indexed: every chunk of an unpublished or merged
+    place and of an archived or deleted route, and a leftover chunk of a
+    document that now splits into fewer parts. Returns the number of chunks."""
+    stale = [
+        chunk_id
+        for chunk_id, doc_id, seq in session.execute(
+            select(KnowledgeChunk.id, KnowledgeChunk.doc_id, KnowledgeChunk.chunk_seq).where(
+                KnowledgeChunk.source == source
+            )
+        )
+        if doc_id.split(":", 1)[0] in {"place", "route"} and (doc_id, seq) not in keep
+    ]
+    if stale and not dry_run:
+        session.execute(KnowledgeChunk.__table__.delete().where(KnowledgeChunk.id.in_(stale)))
+    return len(stale)
 
 
 def _upsert_chunk(
@@ -186,6 +215,7 @@ def _write_embedding(
 async def _embed_batch(
     embedder: EmbeddingProvider,
     pending: list[tuple[UUID, str, str]],
+    concurrency: int = _EMBED_CONCURRENCY,
 ) -> list[tuple[UUID, list[float]]]:
     """Embed (chunk_id, title, body) triples concurrently, capped.
 
@@ -193,7 +223,7 @@ async def _embed_batch(
     skipped rather than aborting the whole batch — it keeps whatever
     embedding it had before (or none), and a later run picks it up again.
     """
-    semaphore = asyncio.Semaphore(_EMBED_CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
 
     async def _one(chunk_id: UUID, title: str, body: str) -> tuple[UUID, list[float]] | None:
         async with semaphore:
@@ -242,6 +272,23 @@ def main() -> None:
             "configured embedder (requires --apply); does not touch chunk content"
         ),
     )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help=(
+            "Drop chunks of places and routes that are no longer indexed "
+            "(unpublished, merged, archived). Use with a --limit that covers everything"
+        ),
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help=(
+            "Cap the local embedding model to this many CPU threads and one "
+            "request at a time; use 1 next to a live API"
+        ),
+    )
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--source", default="internal", help="internal|osm|wikivoyage")
     args = parser.parse_args()
@@ -252,8 +299,28 @@ def main() -> None:
     if args.reembed_all and not args.apply:
         raise SystemExit("--reembed-all requires --apply")
 
+    concurrency = _EMBED_CONCURRENCY
+    if args.threads:
+        # On the production host the local model otherwise takes every core,
+        # four requests at once, and the API stops answering (2026-10-08).
+        # The limits must be set before the model library is first loaded.
+        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            os.environ[name] = str(args.threads)
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        with contextlib.suppress(ImportError):
+            import torch
+
+            torch.set_num_threads(args.threads)
+        concurrency = 1
+
     settings = get_settings()
     embedder = build_embedder(settings)
+    if isinstance(embedder, SentenceTransformerEmbeddingProvider):
+        # The in-process model is not safe to call from several threads at
+        # once: four parallel requests segfaulted on macOS and hung for 48
+        # minutes on the production host (2026-10-08). The cap of four is for
+        # a remote embedding server only.
+        concurrency = 1
     embed_model = settings.rag_embedding_model
     engine = create_engine(settings.database_url_sync)
 
@@ -265,12 +332,14 @@ def main() -> None:
 
     counters = {"inserted": 0, "updated": 0, "unchanged": 0, "embedded": 0}
     total = 0
+    seen_docs: set[tuple[str, int]] = set()
+    pruned = 0
     with Session(engine) as session:
         places = _iter_places(session, limit=args.limit)
         routes = _iter_routes(session, limit=args.limit)
         pending_embed: list[tuple[UUID, str, str]] = []
         for place, locality in places:
-            real_description = place.description if _has_real_description(place) else None
+            real_description = place.description if has_real_description(place) else None
             for cand in chunk_place_markdown(
                 place_id=str(place.id),
                 name=place.name,
@@ -296,6 +365,7 @@ def main() -> None:
                     "ttl_days": 365,
                     "payload": {"source": cand.source, "place_id": str(place.id)},
                 }
+                seen_docs.add((cand.doc_id, cand.chunk_seq))
                 status, chunk_id = _upsert_chunk(session, attrs=attrs, dry_run=not args.apply)
                 counters[status] += 1
                 total += 1
@@ -306,7 +376,7 @@ def main() -> None:
                 route_id=str(route.id),
                 name=route.name,
                 short_description=route.short_description,
-                description=route.description,
+                description=route_description(route.description, _route_facts(session, route)),
                 locality=locality,
                 source=args.source,
             ):
@@ -327,14 +397,17 @@ def main() -> None:
                     "ttl_days": 365,
                     "payload": {"source": cand.source, "route_id": str(route.id)},
                 }
+                seen_docs.add((cand.doc_id, cand.chunk_seq))
                 status, chunk_id = _upsert_chunk(session, attrs=attrs, dry_run=not args.apply)
                 counters[status] += 1
                 total += 1
                 if args.embed and chunk_id is not None:
                     pending_embed.append((chunk_id, cand.title, cand.body))
+        if args.prune:
+            pruned = _prune(session, keep=seen_docs, source=args.source, dry_run=not args.apply)
         if args.apply:
             session.flush()
-            embedded = asyncio.run(_embed_batch(embedder, pending_embed))
+            embedded = asyncio.run(_embed_batch(embedder, pending_embed, concurrency))
             for chunk_id, vector in embedded:
                 _write_embedding(session, chunk_id=chunk_id, vector=vector, model=embed_model)
                 counters["embedded"] += 1
@@ -344,7 +417,7 @@ def main() -> None:
         f"[{mode}] places+routes scanned={total} "
         f"inserted/updated/unchanged={counters['inserted']}/"
         f"{counters['updated']}/{counters['unchanged']} "
-        f"embedded={counters['embedded']}"
+        f"embedded={counters['embedded']} pruned_chunks={pruned}"
     )
 
 

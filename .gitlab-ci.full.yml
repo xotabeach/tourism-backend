@@ -35,12 +35,8 @@ variables:
     paths:
       - .uv-cache
 
-# Plain postgis/postgis has no pgvector extension (prod/dev use the custom
-# crimeatrip/postgis-pgvector image built from
-# tourism-platform/docker/postgres/Dockerfile, which this CI job cannot build
-# — that Dockerfile lives in a sibling repo). Installing the same
-# postgresql-16-pgvector package via an entrypoint override gets the same
-# result without a separate image or registry push.
+# The database of the test jobs: Postgres 16 with pgvector and PostGIS baked
+# in (docker/ci-postgres/Dockerfile), pulled from this project's registry.
 .wait-for-postgres: &wait-for-postgres |
   for i in $(seq 1 60); do
     uv run python -c "import psycopg; psycopg.connect('postgresql://tourism:local-tourism-password@postgres:5432/tourism').close()" && break
@@ -52,25 +48,8 @@ variables:
   done
 
 .postgres-service: &postgres-service
-  name: postgis/postgis:16-3.4
+  name: "${CI_REGISTRY_IMAGE}/ci-postgres:16"
   alias: postgres
-  entrypoint:
-    - sh
-    - -c
-    # -o Acquire::Check-Valid-Until=false: this image's baked-in Debian
-    # bullseye-security suite has a Release file whose Valid-Until keeps
-    # sliding into the past as real time passes (seen 2026-09-08: "expired
-    # since 7h57m"), independent of anything in this repo. Without the flag
-    # apt-get update fails, the && chain never reaches docker-entrypoint.sh,
-    # and postgres never starts — every job needing the DB times out at
-    # "postgres did not become reachable" with no code to point at.
-    - apt-get update -qq -o Acquire::Check-Valid-Until=false && apt-get install -y --no-install-recommends postgresql-16-pgvector >/dev/null && exec docker-entrypoint.sh "$0" "$@"
-  # GitLab does not inherit the image's own CMD when only `entrypoint` is
-  # set for a service (unlike plain `docker run --entrypoint`) — without an
-  # explicit command, "$0"/"$@" above are empty and docker-entrypoint.sh
-  # never starts postgres at all.
-  command:
-    - postgres
 
 # Baked-in python + uv, so every job below only pulls one already-cached
 # image instead of apt-get/curl-installing the same tools on every run.
@@ -92,6 +71,24 @@ backend-ci-base-image:
   rules:
     - changes:
         - docker/ci-base/Dockerfile
+
+# Rebuilt only when its Dockerfile changes; the test jobs run a stage later
+# and use whatever tag is in the registry.
+backend-ci-postgres-image:
+  stage: code-style
+  image: docker:27-cli
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build --pull --tag "$CI_REGISTRY_IMAGE/ci-postgres:16" docker/ci-postgres
+    - docker push "$CI_REGISTRY_IMAGE/ci-postgres:16"
+  rules:
+    - changes:
+        - docker/ci-postgres/Dockerfile
 
 backend-code-style:
   stage: code-style
