@@ -33,6 +33,7 @@ from tourism_backend.modules.route_execution.application.schemas import (
     RouteExecutionStatus,
     RouteExecutionStopOut,
     RouteExecutionSyncOut,
+    StopSkipReason,
 )
 from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecution,
@@ -100,6 +101,7 @@ async def _execution_out(
     completed = sum(stop.completed_at is not None for stop in stops)
     required = [stop for stop in stops if not stop.is_optional]
     completed_required = sum(stop.completed_at is not None for stop in required)
+    skipped_required = sum(stop.skipped_at is not None for stop in required)
     routing = await routing_snapshot_out(session, execution.routing_snapshot_id)
     antifraud_settings = await load_settings(session)
     hints_enabled = False
@@ -161,6 +163,8 @@ async def _execution_out(
         completed_stops=completed,
         required_stops=len(required),
         completed_required_stops=completed_required,
+        skipped_required_stops=skipped_required,
+        counted=execution.counted,
         stops=[
             RouteExecutionStopOut(
                 id=stop.id,
@@ -172,6 +176,8 @@ async def _execution_out(
                 lng=stop.lng,
                 is_optional=stop.is_optional,
                 completed_at=stop.completed_at,
+                skipped_at=stop.skipped_at,
+                skip_reason=cast(StopSkipReason | None, stop.skip_reason),
                 leg_distance_meters=stop.leg_distance_meters,
                 leg_estimate_seconds=stop.leg_estimate_seconds,
                 leg_estimate_source=cast(

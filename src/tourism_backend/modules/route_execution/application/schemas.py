@@ -21,7 +21,10 @@ RouteExecutionEventAction = Literal[
     "resume",
     "end_day",
     "finish_early",
+    "skip_stop",
+    "unskip_stop",
 ]
+StopSkipReason = Literal["closed", "no_time", "hard", "other"]
 PointsStatus = Literal["none", "awarded", "held", "rejected"]
 PaceVerdictOut = Literal["ok", "too_fast", "ahead", "unknown", "skipped"]
 
@@ -60,6 +63,16 @@ class RouteExecutionStopMarkIn(RouteExecutionEventIn):
     """Stop mark: the idempotency envelope plus an optional position."""
 
     position: PositionIn | None = None
+
+
+class RouteExecutionStopSkipIn(RouteExecutionEventIn):
+    """Skipping a stop: the idempotency envelope plus the one-tap reason.
+
+    «closed»: got there, it was shut. «no_time», «hard» (too hard or unsafe)
+    and «other»: did not go.
+    """
+
+    reason: StopSkipReason
 
 
 class RouteExecutionSyncOut(BaseModel):
@@ -112,6 +125,10 @@ class RouteExecutionStopOut(BaseModel):
     lng: float | None
     is_optional: bool
     completed_at: datetime | None
+    # Passed by instead of marked (spec 15): when and why. A stop is never
+    # both marked and skipped.
+    skipped_at: datetime | None = None
+    skip_reason: StopSkipReason | None = None
     # Expected leg from the previous stop; None for the first stop, for stops
     # without coordinates and for runs that started before anti-fraud shipped.
     leg_distance_meters: int | None = Field(default=None, ge=0)
@@ -147,6 +164,12 @@ class RouteExecutionOut(BaseModel):
     completed_stops: int = Field(ge=0)
     required_stops: int = Field(ge=0)
     completed_required_stops: int = Field(ge=0)
+    # Required stops the walker passed by. The run can be completed once
+    # every required stop is either marked or skipped.
+    skipped_required_stops: int = Field(default=0, ge=0)
+    # Whether the finished run counts as «прошёл маршрут»; a run with a
+    # skipped required stop pays for what was walked but does not count.
+    counted: bool = True
     stops: list[RouteExecutionStopOut]
     # Travel points granted for finishing this route (0 while it is active).
     awarded_points: int = Field(default=0, ge=0)

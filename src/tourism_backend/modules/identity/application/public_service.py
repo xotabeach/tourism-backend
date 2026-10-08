@@ -151,7 +151,12 @@ async def _profile_activity_stats(session: AsyncSession, user_id: UUID) -> Profi
                 RouteRoutingSnapshot,
                 RouteRoutingSnapshot.id == RouteExecution.routing_snapshot_id,
             )
-            .where(RouteExecution.user_id == user_id, RouteExecution.status == "completed")
+            .where(
+                RouteExecution.user_id == user_id,
+                RouteExecution.status == "completed",
+                # A run with a skipped stop is paid but is not «прошёл маршрут».
+                RouteExecution.counted.is_(True),
+            )
         )
     ).one()
 

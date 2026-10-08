@@ -13,6 +13,7 @@ from tourism_backend.modules.route_execution.application.schemas import (
     RouteExecutionOut,
     RouteExecutionStartIn,
     RouteExecutionStopMarkIn,
+    RouteExecutionStopSkipIn,
 )
 
 router = APIRouter(prefix="/route-executions", tags=["route-executions"])
@@ -93,6 +94,40 @@ async def uncomplete_route_execution_stop(
     payload: RouteExecutionEventIn | None = None,
 ) -> RouteExecutionOut:
     return await service.uncomplete_stop(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        stop_id=stop_id,
+        event=payload,
+    )
+
+
+@router.put("/{execution_id}/stops/{stop_id}/skip", response_model=RouteExecutionOut)
+async def skip_route_execution_stop(
+    execution_id: UUID,
+    stop_id: UUID,
+    payload: RouteExecutionStopSkipIn,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> RouteExecutionOut:
+    return await service.skip_stop(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        stop_id=stop_id,
+        event=payload,
+    )
+
+
+@router.delete("/{execution_id}/stops/{stop_id}/skip", response_model=RouteExecutionOut)
+async def unskip_route_execution_stop(
+    execution_id: UUID,
+    stop_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+    payload: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    return await service.unskip_stop(
         session,
         user_id=user_id,
         execution_id=execution_id,

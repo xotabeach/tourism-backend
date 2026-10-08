@@ -90,6 +90,7 @@ def _route_actions(session: Session, *, since: datetime) -> list[Action]:
     for user_id, route_id, at in session.execute(
         select(RouteExecution.user_id, RouteExecution.route_id, RouteExecution.completed_at).where(
             RouteExecution.status == "completed",
+            RouteExecution.counted.is_(True),
             RouteExecution.points_status.notin_(_DISHONEST_POINTS),
             RouteExecution.route_id.is_not(None),
             RouteExecution.completed_at >= since,

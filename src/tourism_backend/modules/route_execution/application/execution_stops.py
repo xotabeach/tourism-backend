@@ -31,6 +31,7 @@ from tourism_backend.modules.route_execution.application.schemas import (
     RouteExecutionEventIn,
     RouteExecutionOut,
     RouteExecutionStopMarkIn,
+    RouteExecutionStopSkipIn,
 )
 from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecutionStop,
@@ -99,6 +100,9 @@ async def complete_stop(
     assessment = antifraud_service.MarkAssessment()
     if applied:
         stop.completed_at = resolved.effective
+        # The walker got there after all: the mark replaces the skip.
+        stop.skipped_at = None
+        stop.skip_reason = None
         stop.updated_at = now
         execution.updated_at = now
         position = event.position if event is not None else None
@@ -213,6 +217,166 @@ async def uncomplete_stop(
         session,
         execution=execution,
         action="uncomplete_stop",
+        resolved=resolved,
+        now=now,
+        applied=True,
+        stop_id=stop.id,
+        client_event_id=client_event_id,
+    )
+
+
+async def skip_stop(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    execution_id: UUID,
+    stop_id: UUID,
+    event: RouteExecutionStopSkipIn,
+) -> RouteExecutionOut:
+    """Pass a stop by, with the reason (spec 15, D1, D4).
+
+    A skipped required stop no longer blocks completing the run. The walker
+    can take the skip back, or simply mark the stop if they reach it later.
+    Skipping again with another reason replaces the reason.
+    """
+    now = datetime.now(UTC)
+    client_event_id = event.client_event_id
+    if client_event_id is not None:
+        replayed = await _replayed_out(
+            session,
+            user_id=user_id,
+            execution_id=execution_id,
+            client_event_id=client_event_id,
+        )
+        if replayed is not None:
+            return replayed
+
+    await antifraud_service.lock_user(session, user_id)
+    execution = await _owned_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        for_update=True,
+    )
+    stop = await session.scalar(
+        select(RouteExecutionStop).where(
+            RouteExecutionStop.id == stop_id,
+            RouteExecutionStop.execution_id == execution.id,
+        )
+    )
+    if stop is None:
+        raise AppError(
+            code="route_execution_stop_not_found",
+            message="Route execution stop not found",
+            status_code=404,
+        )
+    if execution.status != "active":
+        # A queued skip the run already recorded is not an error; anything
+        # else cannot be applied to a paused or finished run.
+        if stop.skipped_at is not None:
+            return await _execution_out(session, execution)
+        raise AppError(
+            code="route_execution_not_active",
+            message="Route execution is not active",
+            status_code=409,
+            details=terminal_conflict_details(execution.status),
+        )
+    if stop.completed_at is not None:
+        raise AppError(
+            code="route_execution_stop_already_marked",
+            message="A marked stop cannot be skipped",
+            status_code=409,
+            details={"retryable": False},
+        )
+
+    resolved = resolve_event_time(
+        event.occurred_at,
+        now=now,
+        not_before=execution.started_at,
+    )
+    applied = stop.skipped_at is None or stop.skip_reason != event.reason
+    if applied:
+        if stop.skipped_at is None:
+            stop.skipped_at = resolved.effective
+        stop.skip_reason = event.reason
+        stop.updated_at = now
+        execution.updated_at = now
+    return await _commit_event(
+        session,
+        execution=execution,
+        action="skip_stop",
+        resolved=resolved,
+        now=now,
+        applied=applied,
+        stop_id=stop.id,
+        client_event_id=client_event_id,
+    )
+
+
+async def unskip_stop(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    execution_id: UUID,
+    stop_id: UUID,
+    event: RouteExecutionEventIn | None = None,
+) -> RouteExecutionOut:
+    """Take a skip back while the run is still going."""
+    now = datetime.now(UTC)
+    client_event_id = event.client_event_id if event is not None else None
+    if client_event_id is not None:
+        replayed = await _replayed_out(
+            session,
+            user_id=user_id,
+            execution_id=execution_id,
+            client_event_id=client_event_id,
+        )
+        if replayed is not None:
+            return replayed
+
+    await antifraud_service.lock_user(session, user_id)
+    execution = await _owned_execution(
+        session,
+        user_id=user_id,
+        execution_id=execution_id,
+        for_update=True,
+    )
+    stop = await session.scalar(
+        select(RouteExecutionStop).where(
+            RouteExecutionStop.id == stop_id,
+            RouteExecutionStop.execution_id == execution.id,
+        )
+    )
+    if stop is None:
+        raise AppError(
+            code="route_execution_stop_not_found",
+            message="Route execution stop not found",
+            status_code=404,
+        )
+    if stop.skipped_at is None:
+        # Already taken back (a retried request), or marked since.
+        return await _execution_out(session, execution)
+    if execution.status not in {"active", "paused"}:
+        raise AppError(
+            code="route_execution_not_active",
+            message="Route execution is not active",
+            status_code=409,
+            details=terminal_conflict_details(execution.status),
+        )
+
+    resolved = resolve_event_time(
+        event.occurred_at if event is not None else None,
+        now=now,
+        not_before=stop.skipped_at,
+    )
+    stop.skipped_at = None
+    stop.skip_reason = None
+    stop.updated_at = now
+    execution.updated_at = now
+    return await _commit_event(
+        session,
+        execution=execution,
+        action="unskip_stop",
         resolved=resolved,
         now=now,
         applied=True,

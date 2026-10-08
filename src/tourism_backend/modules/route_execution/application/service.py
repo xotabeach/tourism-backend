@@ -22,7 +22,9 @@ from tourism_backend.modules.route_execution.application.execution_start import 
 )
 from tourism_backend.modules.route_execution.application.execution_stops import (
     complete_stop,
+    skip_stop,
     uncomplete_stop,
+    unskip_stop,
 )
 
 __all__ = [
@@ -36,6 +38,8 @@ __all__ = [
     "pause_execution",
     "record_difficulty_feedback",
     "resume_execution",
+    "skip_stop",
     "start_execution",
     "uncomplete_stop",
+    "unskip_stop",
 ]

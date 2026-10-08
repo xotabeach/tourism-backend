@@ -766,7 +766,7 @@ async def test_ending_a_day_is_a_night_pause_and_the_next_day_follows(
 
 
 @pytest.mark.asyncio
-async def test_finishing_early_pays_only_for_days_walked_in_full(
+async def test_finishing_early_with_no_stop_marked_pays_nothing(
     live_client: AsyncClient,
 ) -> None:
     tokens = await _login(live_client, f"+7900{uuid4().int % 10_000_000:07d}")
@@ -782,7 +782,8 @@ async def test_finishing_early_pays_only_for_days_walked_in_full(
     assert finished.status_code == 200, finished.text
     body = finished.json()
     assert (body["status"], body["ended_early"]) == ("cancelled", True)
-    # No stop marked: no day walked in full, nothing paid.
+    # No stop marked: nothing was walked, nothing paid. With marks an early
+    # end pays for the legs walked (see test_route_execution_skip.py).
     assert body["awarded_points"] == 0
     again = await live_client.post(
         f"/api/v1/route-executions/{execution_id}/finish-early", headers=headers

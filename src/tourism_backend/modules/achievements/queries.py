@@ -185,6 +185,8 @@ async def collect(session: AsyncSession, user_id: UUID, *, historical: bool = Fa
     eligible_runs = select(RouteExecution.id).where(
         RouteExecution.user_id == user_id,
         RouteExecution.status == "completed",
+        # A run with a skipped stop is paid but is not «прошёл маршрут».
+        RouteExecution.counted.is_(True),
         RouteExecution.points_status.not_in(("held", "rejected")),
     )
     # Stop-only awards can be earned before finishing; held/rejected runs are

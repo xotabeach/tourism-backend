@@ -20,6 +20,7 @@ rules they started with (spec 14, D18).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from tourism_backend.modules.routes.application.difficulty import reward_multiplier
@@ -74,6 +75,82 @@ class RouteEffort:
     difficulty_level: int | None = None
     segments: tuple[SegmentEffort, ...] = ()
     day_count: int = 1
+    # How much of the route's way was really walked, 0..1 (spec 15, D14).
+    # Below 1 the difficulty multiplier shrinks with it and the steep slope
+    # bonus is not paid: skipping the hard part must not keep its premium.
+    paid_share: float = 1.0
+
+
+#: Skip reasons after which the way to the stop was still walked: the walker
+#: got there and found it shut (spec 15, D14).
+SKIP_REASONS_PAYING_THE_LEG = frozenset({"closed"})
+
+
+@dataclass(frozen=True, slots=True)
+class StopState:
+    """What happened to one stop of a run, for deciding which legs to pay."""
+
+    position: int
+    is_optional: bool
+    marked: bool
+    skip_reason: str | None = None
+
+
+def paid_leg_positions(stops: Sequence[StopState], *, run_completed: bool) -> set[int]:
+    """Positions of the stops whose incoming leg was walked.
+
+    A marked stop was reached, and so was one skipped as «closed». A stop
+    skipped for any other reason was not gone to. An optional stop nobody
+    touched does not break the way: it is paid when the walker went past it,
+    which is always in a completed run and only up to the last reached stop
+    in one ended early.
+    """
+
+    reached = {
+        stop.position
+        for stop in stops
+        if stop.marked or stop.skip_reason in SKIP_REASONS_PAYING_THE_LEG
+    }
+    last_reached = max(reached, default=0)
+    passed_by = {
+        stop.position
+        for stop in stops
+        if stop.is_optional
+        and not stop.marked
+        and stop.skip_reason is None
+        and (run_completed or stop.position < last_reached)
+    }
+    return reached | passed_by
+
+
+def paid_way_share(
+    segments: Sequence[tuple[SegmentEffort, bool]],
+    legs: Sequence[tuple[int | None, bool]] = (),
+) -> float:
+    """The walked part of the route's way, 0..1.
+
+    ``segments`` pairs every snapshot segment with whether its leg is paid;
+    ``legs`` does the same for the length of every leg as the run recorded
+    it at the start. Segment distances are the most exact; a snapshot that
+    has none falls back to the leg lengths, and legs without a length to
+    their plain count.
+    """
+
+    countable = [
+        (segment, paid)
+        for segment, paid in segments
+        if segment.role != "return" and segment.mode in {"walk", "car"}
+    ]
+    if countable and all(segment.distance_meters for segment, _paid in countable):
+        total = sum(segment.distance_meters or 0 for segment, _paid in countable)
+        walked = sum(segment.distance_meters or 0 for segment, paid in countable if paid)
+        return walked / total
+    if not legs:
+        return 1.0
+    if all(meters for meters, _paid in legs):
+        total = sum(meters or 0 for meters, _paid in legs)
+        return sum(meters or 0 for meters, paid in legs if paid) / total
+    return sum(1 for _meters, paid in legs if paid) / len(legs)
 
 
 def difficulty_multiplier(difficulty: str | None) -> float:
@@ -134,13 +211,18 @@ def travel_points_for_effort(effort: RouteEffort) -> int:
     else:
         distance, elevation, walked = _legacy_distance_and_climb(effort)
 
+    share = min(1.0, max(0.0, effort.paid_share))
     angle = effort.max_road_angle_degrees or 0.0
-    slope_bonus = STEEP_SLOPE_BONUS if walked and angle > STEEP_SLOPE_DEGREES else 0
+    # The snapshot knows the steepest slope of the route, not where it is:
+    # with a part of the way skipped it cannot be shown to have been walked.
+    steep = walked and angle > STEEP_SLOPE_DEGREES and share >= 1.0
+    slope_bonus = STEEP_SLOPE_BONUS if steep else 0
 
     multiplier = (
         reward_multiplier(effort.difficulty_level)
         if effort.difficulty_level is not None
         else difficulty_multiplier(effort.difficulty)
     )
+    multiplier = 1.0 + (multiplier - 1.0) * share
     raw = (BASE_POINTS + stops + distance + elevation + slope_bonus) * multiplier
     return max(0, min(MAX_POINTS * days, round(raw)))
