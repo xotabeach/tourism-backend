@@ -19,10 +19,12 @@ import contextlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, literal_column, select, text
+from sqlalchemy import delete, func, literal_column, select, text, update
+from sqlalchemy.engine import Result
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tourism_backend.config import Settings
@@ -233,7 +235,7 @@ async def reconcile_once(
             return None
         try:
             candidates = await _candidates(session)
-            rows = await session.execute(
+            rows: Result[Any] = await session.execute(
                 select(
                     KnowledgeChunk.id,
                     KnowledgeChunk.doc_id,
@@ -263,7 +265,7 @@ async def reconcile_once(
                 to_embed.append((chunk_id, candidate))
             for chunk_id, candidate in plan.update:
                 await session.execute(
-                    KnowledgeChunk.__table__.update()
+                    update(KnowledgeChunk)
                     .where(KnowledgeChunk.id == chunk_id)
                     .values(
                         **_attrs(candidate, route_id=_route_id(candidate)),
@@ -273,7 +275,7 @@ async def reconcile_once(
                 to_embed.append((chunk_id, candidate))
             if plan.stale:
                 await session.execute(
-                    KnowledgeChunk.__table__.delete().where(KnowledgeChunk.id.in_(plan.stale))
+                    delete(KnowledgeChunk).where(KnowledgeChunk.id.in_(plan.stale))
                 )
             await session.commit()
 
