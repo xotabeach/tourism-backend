@@ -240,9 +240,11 @@ async def _load_candidates(
 
     places_by_route: dict[UUID, list[str]] = defaultdict(list)
     localities_by_route: dict[UUID, list[str]] = defaultdict(list)
+    stop_localities_by_route: dict[UUID, list[str | None]] = defaultdict(list)
     coordinates_by_route: dict[UUID, list[tuple[float, float]]] = defaultdict(list)
     for route_id, place_name, locality_name, lng, lat in stop_rows:
         places_by_route[route_id].append(place_name)
+        stop_localities_by_route[route_id].append(locality_name)
         if locality_name:
             localities_by_route[route_id].append(locality_name)
         if lng is not None and lat is not None:
@@ -279,6 +281,7 @@ async def _load_candidates(
                 pets_allowed=route.pets_allowed,
                 place_names=tuple(places_by_route.get(route.id, ())),
                 locality_names=tuple(dict.fromkeys(localities_by_route.get(route.id, ()))),
+                stop_localities=tuple(stop_localities_by_route.get(route.id, ())),
                 stop_coordinates=tuple(coordinates_by_route.get(route.id, ())),
                 stops_count=counts.get(route.id, 0),
                 category_slugs=frozenset(categories_by_route.get(route.id, frozenset())),

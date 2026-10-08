@@ -93,6 +93,46 @@ def test_preferred_towns_rank_softly_not_as_mandatory_stops() -> None:
     assert preferred.score > other_coastal.score > 0
 
 
+def test_a_named_town_alone_is_the_area_not_a_wish() -> None:
+    """«Маршруты по Евпатории» was answered with Севастополь: with no wider
+    area named, the town only added weight (BACKEND-64)."""
+    params = RouteMatchParamsIn(preferred_localities=["Евпатория"])
+    confirmed = ["preferred_localities"]
+
+    def scored(*localities: str | None):
+        return score_candidate(
+            params,
+            _candidate(
+                name="Маршрут",
+                place_names=tuple(f"Место {i}" for i in range(len(localities))),
+                locality_names=tuple(dict.fromkeys(x for x in localities if x)),
+                stop_localities=localities,
+            ),
+            confirmed_fields=confirmed,
+        )
+
+    in_town = scored("Евпатория", "Евпатория", "Евпатория")
+    mostly = scored("Евпатория", "Евпатория", "Саки", None)
+    passing_through = scored("Евпатория", *["Ялта"] * 9)
+    elsewhere = scored("Севастополь", "Севастополь")
+    assert in_town.score > mostly.score > 0
+    assert not in_town.excluded
+    assert not mostly.excluded
+    assert elsewhere.excluded
+    assert elsewhere.score == 0
+    assert passing_through.excluded
+
+
+def test_whole_crimea_as_the_area_keeps_the_named_town_strict() -> None:
+    params = RouteMatchParamsIn(search_area="Крым", preferred_localities=["Евпатория"])
+    elsewhere = score_candidate(
+        params,
+        _candidate(locality_names=("Севастополь",), stop_localities=("Севастополь",)),
+        confirmed_fields=["search_area", "preferred_localities"],
+    )
+    assert elsewhere.excluded
+
+
 def test_select_hits_offers_generate_without_ideal() -> None:
     weak = score_candidate(
         RouteMatchParamsIn(city="Керчь", duration="d1_2"),

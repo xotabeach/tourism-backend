@@ -75,19 +75,73 @@ def _name_score(query: str, names: list[str]) -> int:
     return best
 
 
+def _edit_distance(left: str, right: str, limit: int) -> int:
+    """Optimal string alignment distance, capped just above ``limit``."""
+
+    if abs(len(left) - len(right)) > limit:
+        return limit + 1
+    before: list[int] = []
+    previous = list(range(len(right) + 1))
+    for i, a in enumerate(left, start=1):
+        current = [i]
+        for j, b in enumerate(right, start=1):
+            cost = 0 if a == b else 1
+            value = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            if i > 1 and j > 1 and a == right[j - 2] and left[i - 2] == b:
+                value = min(value, before[j - 2] + 1)
+            current.append(value)
+        before, previous = previous, current
+    return previous[-1]
+
+
+def _misspelt_name_word(actual: str, expected: str) -> bool:
+    """«Евратории» for Евпатория: one wrong letter in a long enough name.
+
+    Short names (Ялта, Саки, Керчь) are left to the exact rule: one letter
+    away from them are ordinary words.
+    """
+
+    stem = _word_stem(expected)
+    if len(stem) < 5 or len(actual) < 5 or actual[0] != stem[0]:
+        return False
+    limit = 2 if len(stem) >= 8 else 1
+    # The typed word may carry a longer case ending than the stem rule cuts.
+    forms = {_word_stem(actual), actual[: len(stem)]}
+    return any(_edit_distance(form, stem, limit) <= limit for form in forms)
+
+
+_SHORT_NAME_ENDINGS = frozenset(
+    {"", "а", "ы", "е", "у", "ой", "ою", "и", "ах", "ам", "ами", "я", "ю", "ей"}
+)
+
+
+def _short_name_form(actual: str, expected: str) -> bool:
+    """«в Ялте», «из Ялты», «в Саках»: case forms of a four-letter name,
+    which the stem rule leaves alone."""
+
+    if len(expected) != 4:
+        return False
+    root = expected[:-1]
+    return actual.startswith(root) and actual[len(root) :] in _SHORT_NAME_ENDINGS
+
+
 def locality_names_mentioned(text: str, localities: list[Locality]) -> list[Locality]:
     """Find arbitrary catalogue localities in a user utterance.
 
     Names come from data, not a city allowlist.  The conservative stem rule
     covers common forms such as «Фороса», «Симеиза» and «в Алупке» while
-    avoiding fuzzy matches against unrelated short words.
+    avoiding fuzzy matches against unrelated short words. A long name typed
+    with a slip («Евратории») is matched only when no locality was named
+    by that word exactly (BACKEND-64).
     """
 
     folded_text = _fold(text)
     words = folded_text.split()
     mentioned: list[Locality] = []
+    # Words that already named a locality are not guessed at again.
+    taken: set[str] = set()
     for locality in localities:
-        variants = [locality.name, *(locality.aliases or [])]
+        variants = [locality.name, *(getattr(locality, "aliases", None) or [])]
         found = False
         for variant in variants:
             name = _fold(variant)
@@ -99,7 +153,13 @@ def locality_names_mentioned(text: str, localities: list[Locality]) -> list[Loca
             name_words = name.split()
             if len(name_words) == 1 and len(name_words[0]) >= 4:
                 stem = _word_stem(name_words[0])
-                if any(_same_name_word(word, stem) for word in words):
+                hits = [
+                    word
+                    for word in words
+                    if _same_name_word(word, stem) or _short_name_form(word, name_words[0])
+                ]
+                if hits:
+                    taken.update(hits)
                     found = True
                     break
             elif len(name_words) > 1:
@@ -113,7 +173,47 @@ def locality_names_mentioned(text: str, localities: list[Locality]) -> list[Loca
                         break
         if found:
             mentioned.append(locality)
+    loose = [word for word in words if word not in taken]
+    for locality in localities:
+        if locality in mentioned:
+            continue
+        name_words = _fold(locality.name).split()
+        if len(name_words) == 1 and any(_misspelt_name_word(word, name_words[0]) for word in loose):
+            mentioned.append(locality)
     return mentioned[:8]
+
+
+_CLAUSE_RE = re.compile(r"[,.;:!?()\n]+|\s+(?:а|но|зато)\s+")
+_COMPLAINT_RE = re.compile(r"\b(?:зачем|почему|откуда|при\s*ч[её]м|причем)\b")
+_NEGATION_RE = re.compile(r"\b(?:не|нет|кроме|без|убери|уберите|исключи|исключить)\b")
+
+
+def rejected_localities(text: str, localities: list[Locality]) -> list[Locality]:
+    """Localities the person named in order to turn them down.
+
+    «Евпатория, зачем ты Севастополь скинул» asks for Евпатория and
+    complains about Севастополь; «хочу в Ялту, а не в Алушту» refuses
+    Алушта. A complaint that something is missing («почему нет Евпатории»)
+    asks for it instead. Clause-level wording only: finer meaning is the
+    main model's job.
+    """
+
+    rejected: list[Locality] = []
+    for clause in _CLAUSE_RE.split(text.casefold().replace("ё", "е")):
+        complaint = bool(_COMPLAINT_RE.search(clause))
+        negation = _NEGATION_RE.search(clause)
+        if complaint and negation is None:
+            scope = clause
+        elif negation is not None and not complaint:
+            # «Феодосию без Судака» turns down only what follows the «без».
+            scope = clause[negation.start() :]
+        else:
+            # Neither: a plain mention. Both: «почему нет ...» wants it.
+            continue
+        for locality in locality_names_mentioned(scope, localities):
+            if locality not in rejected:
+                rejected.append(locality)
+    return rejected
 
 
 async def list_countries(session: AsyncSession) -> list[CountryOut]:

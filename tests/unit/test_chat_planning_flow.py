@@ -534,3 +534,38 @@ def test_profile_only_fills_fields_not_explicitly_selected(chat: SimpleNamespace
         {"interests": ["море"], "with_pets": False}, ["interests", "with_pets"], chat.user
     )
     assert params == {"interests": ["море"], "with_pets": False}
+
+
+async def test_a_newly_named_town_replaces_the_one_complained_about(chat: SimpleNamespace):
+    """«Евпатория, зачем ты Севастополь скинул» left both towns in the
+    wishes, and the answer was Севастополь again (BACKEND-64)."""
+    chat.planning.confirmed_fields = []
+    chat.planning.constraints = {}
+    chat.ai.return_value = (
+        ChatTurnResult(assistant_text="Смотри", ask_field="ready", structured_parse="fallback"),
+        "deepseek",
+        True,
+        {},
+        [],
+    )
+    await _post(chat, text="подбери маршруты по Форосу")
+    assert chat.planning.constraints["preferred_localities"] == ["Форос"]
+    await _post(chat, text="Симеиз, зачем ты Форос скинул")
+    assert chat.planning.constraints["preferred_localities"] == ["Симеиз"]
+    assert chat.match.call_args.kwargs["params"].preferred_localities == ["Симеиз"]
+    # A complaint alone takes the town out and keeps the rest.
+    await _post(chat, text="при чём тут Симеиз, подбери другие маршруты")
+    assert chat.planning.constraints["preferred_localities"] == []
+
+
+async def test_cards_without_any_wish_are_not_called_chosen_by_parameters(chat: SimpleNamespace):
+    chat.planning.confirmed_fields = []
+    chat.planning.constraints = {}
+    chat.match.return_value = SimpleNamespace(
+        ideal=[SimpleNamespace(route=SimpleNamespace(id=uuid4(), name="Балаклава"))],
+        close=[],
+        requested_signals=0,
+    )
+    result = await _post(chat, text="Подбери маршрут", want_generate=True)
+    assert "по выбранным параметрам" not in result.text
+    assert "Назови город" in result.text
