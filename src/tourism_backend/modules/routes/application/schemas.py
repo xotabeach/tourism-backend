@@ -149,6 +149,8 @@ class UserRouteEditableOut(BaseModel):
     difficulty_auto: int | None = None
     #: The estimate's breakdown for the editor's hint.
     difficulty_breakdown: dict[str, object] | None = None
+    #: What the moderator asked to fix, while the route waits to be resent.
+    rejection_reason: str | None = None
     media: list["UserRouteMediaOut"]
     updated_at: datetime
     #: Places after which the author ended a day; empty when split by norms.
@@ -297,6 +299,9 @@ class RouteListItemOut(BaseModel):
     #: has at least one — a card must not imply a score nobody has given.
     rating_average: float | None = None
     rating_count: int = 0
+    #: What the moderator asked to fix when the route was returned to its
+    #: author. Only ever set on the author's own unpublished route.
+    rejection_reason: str | None = None
     #: Spec 19: «Популярное» once enough people use the route, «Выбор
     #: редакции» for an editorial route without it, else ``None``.
     badge: Literal["popular", "editors_choice"] | None = None

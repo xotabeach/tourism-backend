@@ -162,6 +162,18 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
 )
 from tourism_backend.modules.routes.application import review_service
 from tourism_backend.modules.routes.application.difficulty import level_from_legacy
+from tourism_backend.modules.routes.application.rejection import (
+    RejectionReason,
+)
+from tourism_backend.modules.routes.application.rejection import (
+    clean_note as clean_route_moderator_note,
+)
+from tourism_backend.modules.routes.application.rejection import (
+    reason_by_code as route_rejection_reason,
+)
+from tourism_backend.modules.routes.application.rejection import (
+    rejection_text as route_rejection_text,
+)
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 from tourism_backend.modules.runtime_config.application.service import (
     AI_PROVIDER_KEY,
@@ -1642,7 +1654,18 @@ class RouteAdmin(ModelView, model=Route):
         Route.suitable_for_children,
         Route.pets_allowed,
         Route.is_seaside,
+        Route.moderator_note,
     ]
+    form_args = {
+        "moderator_note": {
+            "label": "Заметка модератора",
+            "description": (
+                "Автор увидит этот текст, когда маршрут вернут на доработку. "
+                "Сначала сохраните заметку, затем нажмите нужное «Вернуть»."
+            ),
+            "validators": [Length(max=500)],
+        },
+    }
     can_create = False
     can_edit = True
     can_delete = False
@@ -1685,6 +1708,7 @@ class RouteAdmin(ModelView, model=Route):
         request: Request,
         *,
         publication_status: str,
+        rejection: RejectionReason | None = None,
     ) -> Response:
         actor_id = session_principal_id(request)
         if actor_id is None:
@@ -1700,6 +1724,7 @@ class RouteAdmin(ModelView, model=Route):
                     (await session.scalars(select(Route).where(Route.id.in_(route_ids)))).all()
                 )
                 now = datetime.now(UTC)
+                without_note: list[str] = []
                 for route in routes:
                     previous = route.publication_status
                     if (
@@ -1707,6 +1732,19 @@ class RouteAdmin(ModelView, model=Route):
                         and previous != "pending_review"
                     ):
                         continue
+                    if publication_status == "rejected":
+                        # A rejection always tells the author what to fix
+                        # (spec 15, D6). This reason is nothing but the
+                        # moderator's note, so without one it says nothing.
+                        note = clean_route_moderator_note(route.moderator_note)
+                        if rejection is not None and rejection.needs_note and note is None:
+                            without_note.append(route.name)
+                            continue
+                        route.rejection_reason = rejection.code if rejection else None
+                        route.moderator_note = note
+                    elif publication_status == "published":
+                        route.rejection_reason = None
+                        route.moderator_note = None
                     route.publication_status = publication_status
                     route.updated_at = now
                     if publication_status == "published":
@@ -1737,6 +1775,9 @@ class RouteAdmin(ModelView, model=Route):
                             route_id=route.id,
                             route_name=route.name,
                             approved=publication_status == "published",
+                            reason=route_rejection_text(
+                                route.rejection_reason, route.moderator_note
+                            ),
                         )
                         await notifications_service.maybe_push_notification(
                             session,
@@ -1749,6 +1790,13 @@ class RouteAdmin(ModelView, model=Route):
                             target_id=route.id,
                         )
                 await session.commit()
+                if without_note:
+                    Flash.error(
+                        request,
+                        "Не возвращены авторам, потому что заметка модератора пуста: "
+                        + ", ".join(without_note)
+                        + ". Заполните заметку в карточке маршрута и повторите.",
+                    )
                 if publication_status == "published":
                     for owner_id in {
                         route.owner_user_id for route in routes if route.owner_user_id is not None
@@ -1769,15 +1817,89 @@ class RouteAdmin(ModelView, model=Route):
     async def approve_routes(self, request: Request) -> Response:
         return await self._set_publication_status(request, publication_status="published")
 
+    async def _reject_with(self, request: Request, code: str) -> Response:
+        return await self._set_publication_status(
+            request,
+            publication_status="rejected",
+            rejection=route_rejection_reason(code),
+        )
+
+    # One action per reason: sqladmin actions take no input, and a rejection
+    # must never go out without telling the author what to fix (spec 15, D6).
+    # The moderator's own words go into «Заметка модератора» on the route
+    # card beforehand and are sent along with any of these.
     @action(
-        name="reject_routes",
-        label="Вернуть на доработку",
-        confirmation_message="Вернуть выбранные маршруты авторам?",
+        name="reject_routes_photos",
+        label="Вернуть: фотографии",
+        confirmation_message="Вернуть авторам с причиной «фотографии»?",
         add_in_detail=True,
         add_in_list=True,
     )
-    async def reject_routes(self, request: Request) -> Response:
-        return await self._set_publication_status(request, publication_status="rejected")
+    async def reject_routes_photos(self, request: Request) -> Response:
+        return await self._reject_with(request, "photos")
+
+    @action(
+        name="reject_routes_stops",
+        label="Вернуть: точки и порядок",
+        confirmation_message="Вернуть авторам с причиной «точки и порядок»?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_routes_stops(self, request: Request) -> Response:
+        return await self._reject_with(request, "stops")
+
+    @action(
+        name="reject_routes_description",
+        label="Вернуть: описание",
+        confirmation_message="Вернуть авторам с причиной «описание»?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_routes_description(self, request: Request) -> Response:
+        return await self._reject_with(request, "description")
+
+    @action(
+        name="reject_routes_duplicate",
+        label="Вернуть: такой маршрут уже есть",
+        confirmation_message="Вернуть авторам с причиной «такой маршрут уже есть»?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_routes_duplicate(self, request: Request) -> Response:
+        return await self._reject_with(request, "duplicate")
+
+    @action(
+        name="reject_routes_publish_as_new",
+        label="Вернуть: опубликуйте как новый",
+        confirmation_message="Вернуть авторам с причиной «опубликуйте как новый маршрут»?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_routes_publish_as_new(self, request: Request) -> Response:
+        return await self._reject_with(request, "publish_as_new")
+
+    @action(
+        name="reject_routes_rules",
+        label="Вернуть: нарушает правила",
+        confirmation_message="Вернуть авторам с причиной «нарушает правила»?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_routes_rules(self, request: Request) -> Response:
+        return await self._reject_with(request, "rules")
+
+    @action(
+        name="reject_routes_other",
+        label="Вернуть: по заметке модератора",
+        confirmation_message=(
+            "Вернуть авторам с текстом из заметки модератора? "
+            "Маршруты с пустой заметкой возвращены не будут."
+        ),
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def reject_routes_other(self, request: Request) -> Response:
+        return await self._reject_with(request, "other")
 
     @action(
         name="delete_routes",
