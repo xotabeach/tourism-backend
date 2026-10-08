@@ -17,6 +17,9 @@ from tourism_backend.modules.route_execution.application.execution_common import
 from tourism_backend.modules.route_execution.application.rewards import (
     RouteEffort,
     SegmentEffort,
+    StopState,
+    paid_leg_positions,
+    paid_way_share,
     travel_points_for_effort,
 )
 from tourism_backend.modules.route_execution.infrastructure.models import (
@@ -36,13 +39,14 @@ async def _award_completion_points(
     user: User,
     settings: AntiFraudSettings,
     now: datetime,
-    finished_positions: set[int] | None = None,
-    finished_days: int | None = None,
+    ended_early: bool = False,
 ) -> None:
-    """Grant travel points once, sized by what the route actually demanded.
+    """Grant travel points once, sized by what the walker really did.
 
-    ``finished_positions`` limits the reward to the stops and legs of the
-    days walked in full, for a run ended before its last day (spec 14, D21).
+    Only the legs that were walked are paid (spec 15, D1, D14, D15): the way
+    to a marked stop, and to one skipped as «closed». A stop skipped for
+    another reason, or not reached before an early end, takes its leg out.
+    The same rule holds for one-day and multi-day runs.
 
     Reads the immutable snapshot captured at start, so editing the route
     afterwards cannot change an already-earned reward. Cooldown, the daily cap
@@ -53,23 +57,46 @@ async def _award_completion_points(
     if execution.points_status != "none" or execution.awarded_points:
         return
 
-    required_done = (
-        select(func.count())
-        .select_from(RouteExecutionStop)
-        .where(
-            RouteExecutionStop.execution_id == execution.id,
-            RouteExecutionStop.is_optional.is_(False),
-            RouteExecutionStop.completed_at.is_not(None),
+    stops = list(
+        await session.scalars(
+            select(RouteExecutionStop)
+            .where(RouteExecutionStop.execution_id == execution.id)
+            .order_by(RouteExecutionStop.position)
         )
     )
-    if settings.enforcing:
-        # A mark that followed the previous one too closely earns no stop points.
-        required_done = required_done.where(RouteExecutionStop.mark_below_floor.is_(False))
-    if finished_positions is not None:
-        required_done = required_done.where(
-            RouteExecutionStop.position.in_(finished_positions or {-1})
+    if not any(stop.completed_at is not None for stop in stops):
+        # Nothing was reached: nothing to pay for.
+        await antifraud_service.settle_completion_points(
+            session, execution=execution, user=user, points=0, settings=settings, now=now
         )
-    completed_required = int(await session.scalar(required_done) or 0)
+        return
+
+    completed_required = sum(
+        1
+        for stop in stops
+        if not stop.is_optional
+        and stop.completed_at is not None
+        # A mark that followed the previous one too closely earns no stop points.
+        and not (settings.enforcing and stop.mark_below_floor)
+    )
+    paid = paid_leg_positions(
+        [
+            StopState(
+                position=stop.position,
+                is_optional=stop.is_optional,
+                marked=stop.completed_at is not None,
+                skip_reason=stop.skip_reason,
+            )
+            for stop in stops
+        ],
+        run_completed=not ended_early,
+    )
+    # Leg i leads to the stop at position i + 2; the first stop has no leg.
+    leg_lengths = [
+        (stop.leg_distance_meters, stop.position in paid) for stop in stops if stop.position >= 2
+    ]
+    partial = any(not is_paid for _meters, is_paid in leg_lengths)
+
     snapshot = (
         await session.get(RouteRoutingSnapshot, execution.routing_snapshot_id)
         if execution.routing_snapshot_id is not None
@@ -83,22 +110,28 @@ async def _award_completion_points(
         )
     segments: tuple[SegmentEffort, ...] = ()
     day_count = 1
+    paid_share = 1.0
     if snapshot is not None:
-        segments = tuple(
-            SegmentEffort(
-                mode=row.mode,
-                role=row.role,
-                distance_meters=row.distance_meters,
-                elevation_gain_meters=row.elevation_gain_meters,
-            )
-            for row in await session.scalars(
+        rows = list(
+            await session.scalars(
                 select(RoutingSnapshotSegment)
                 .where(RoutingSnapshotSegment.snapshot_id == snapshot.id)
                 .order_by(RoutingSnapshotSegment.leg_index, RoutingSnapshotSegment.seq)
             )
-            # Leg i leads to the stop at position i + 2.
-            if finished_positions is None or row.leg_index + 2 in finished_positions
         )
+        judged = [
+            (
+                SegmentEffort(
+                    mode=row.mode,
+                    role=row.role,
+                    distance_meters=row.distance_meters,
+                    elevation_gain_meters=row.elevation_gain_meters,
+                ),
+                not partial or row.leg_index + 2 in paid,
+            )
+            for row in rows
+        ]
+        segments = tuple(segment for segment, is_paid in judged if is_paid)
         day_count = int(
             await session.scalar(
                 select(func.count())
@@ -110,28 +143,34 @@ async def _award_completion_points(
         # Days set by hand never raise the cap above what the norms give (D20).
         if snapshot.auto_day_count:
             day_count = min(day_count, snapshot.auto_day_count)
-    if finished_days is not None:
-        day_count = min(day_count, max(1, finished_days))
-    if finished_positions is not None and not finished_positions:
-        # Not one day walked in full: nothing to pay for.
-        await antifraud_service.settle_completion_points(
-            session, execution=execution, user=user, points=0, settings=settings, now=now
-        )
-        return
+        if partial:
+            paid_share = paid_way_share(judged, leg_lengths)
+            # The cap grows with the days actually walked on, not planned.
+            days = await _snapshot_days(session, execution)
+            walked_days = sum(
+                any(first <= position <= last for position in paid) for first, last in days
+            )
+            day_count = min(day_count, max(1, walked_days))
+    elif partial:
+        paid_share = paid_way_share([], leg_lengths)
 
     points = travel_points_for_effort(
         RouteEffort(
             completed_required_stops=completed_required,
-            distance_meters=(
-                snapshot.distance_meters if snapshot and finished_positions is None else None
+            # Totals of the route stand whole for a route walked whole and
+            # in the walked share otherwise. They only matter for a snapshot
+            # whose segments carry no numbers of their own.
+            distance_meters=_share_of(snapshot.distance_meters if snapshot else None, paid_share),
+            elevation_gain_meters=_share_of(
+                snapshot.elevation_gain_meters if snapshot else None, paid_share
             ),
-            elevation_gain_meters=snapshot.elevation_gain_meters if snapshot else None,
             max_road_angle_degrees=snapshot.max_road_angle_degrees if snapshot else None,
             transport_mode=snapshot.transport_mode if snapshot else None,
             difficulty=difficulty,
             difficulty_level=snapshot.difficulty_reward if snapshot else None,
             segments=segments,
             day_count=day_count,
+            paid_share=paid_share,
         )
     )
     await antifraud_service.settle_completion_points(
@@ -144,24 +183,10 @@ async def _award_completion_points(
     )
 
 
-async def _finished_days(session: AsyncSession, execution: RouteExecution) -> tuple[set[int], int]:
-    """Stop positions of the days whose required stops are all marked."""
-    days = await _snapshot_days(session, execution)
-    stops = list(
-        await session.scalars(
-            select(RouteExecutionStop).where(RouteExecutionStop.execution_id == execution.id)
-        )
-    )
-    if not days and stops:
-        days = [(1, max(stop.position for stop in stops))]
-    positions: set[int] = set()
-    count = 0
-    for first, last in days:
-        in_day = [stop for stop in stops if first <= stop.position <= last]
-        if in_day and all(stop.completed_at is not None or stop.is_optional for stop in in_day):
-            positions.update(stop.position for stop in in_day)
-            count += 1
-    return positions, count
+def _share_of(total: int | None, share: float) -> int | None:
+    if total is None or share >= 1.0:
+        return total
+    return round(total * max(0.0, share))
 
 
 async def _end_early(
@@ -172,7 +197,11 @@ async def _end_early(
     moment: datetime,
     now: datetime,
 ) -> None:
-    """Cancel a run before its last day and pay for the days walked in full."""
+    """Cancel a run before its end and pay for what was walked.
+
+    An ended run never counts as «прошёл маршрут», however much of it was
+    walked: counting is for a run the walker completed.
+    """
     if execution.status == "paused" and execution.paused_at is not None:
         execution.paused_duration_seconds += max(
             0, int((moment - execution.paused_at).total_seconds())
@@ -182,14 +211,13 @@ async def _end_early(
     execution.paused_at = None
     execution.night_paused = False
     execution.ended_early = True
+    execution.counted = False
     execution.updated_at = now
-    positions, count = await _finished_days(session, execution)
     await _award_completion_points(
         session,
         execution=execution,
         user=user,
         settings=await load_settings(session),
         now=now,
-        finished_positions=positions,
-        finished_days=count,
+        ended_early=True,
     )

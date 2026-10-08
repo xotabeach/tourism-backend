@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -78,6 +78,8 @@ async def complete_execution(
                     RouteExecutionStop.execution_id == execution.id,
                     RouteExecutionStop.is_optional.is_(False),
                     RouteExecutionStop.completed_at.is_(None),
+                    # A skipped stop is settled: it no longer blocks the end.
+                    RouteExecutionStop.skipped_at.is_(None),
                 )
                 .order_by(RouteExecutionStop.position)
             )
@@ -94,6 +96,27 @@ async def complete_execution(
             },
         )
     last_stop_at = await _latest_stop_completion(session, execution_id=execution.id)
+    if last_stop_at is None:
+        # Every stop skipped and none reached is not a walked route: the run
+        # can only be cancelled.
+        raise AppError(
+            code="no_stops_marked",
+            message="Mark at least one stop before completing the route",
+            status_code=409,
+            details={"retryable": False},
+        )
+    skipped_required = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(RouteExecutionStop)
+            .where(
+                RouteExecutionStop.execution_id == execution.id,
+                RouteExecutionStop.is_optional.is_(False),
+                RouteExecutionStop.skipped_at.is_not(None),
+            )
+        )
+        or 0
+    )
     resolved = resolve_event_time(
         event.occurred_at if event is not None else None,
         now=now,
@@ -101,6 +124,9 @@ async def complete_execution(
     )
     execution.status = "completed"
     execution.completed_at = resolved.effective
+    # Fixed here and never recomputed: the walker is paid for what they
+    # walked, but only a route walked whole counts as «прошёл маршрут».
+    execution.counted = skipped_required == 0
     execution.updated_at = now
     await _award_completion_points(
         session,
@@ -168,6 +194,7 @@ async def cancel_execution(
         execution.paused_at = None
     execution.status = "cancelled"
     execution.cancelled_at = resolved.effective
+    execution.counted = False
     execution.updated_at = now
     return await _commit_event(
         session,

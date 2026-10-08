@@ -127,6 +127,7 @@ async def _walkers(session: AsyncSession, route_id: UUID, author_ids: list[UUID]
                     RouteExecution.route_id == route_id,
                     RouteExecution.user_id.in_(author_ids),
                     RouteExecution.status == "completed",
+                    RouteExecution.counted.is_(True),
                 )
                 .distinct()
             )

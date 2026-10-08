@@ -25,6 +25,8 @@ EventAction = Literal[
     "resume",
     "end_day",
     "finish_early",
+    "skip_stop",
+    "unskip_stop",
 ]
 
 #: How far a device clock may run ahead of the server before we reject it.

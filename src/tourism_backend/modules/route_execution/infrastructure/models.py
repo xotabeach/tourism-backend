@@ -239,6 +239,12 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     ended_early: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # Whether the run counts as «прошёл маршрут» for achievements, the
+    # profile counter, the walker's review and popularity. Fixed when the
+    # run ends: a run completed with a skipped required stop does not count.
+    counted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
     # Spec 17: the walker's one-tap answer on the finish screen.
     difficulty_feedback: Mapped[str | None] = mapped_column(String(12), nullable=True)
     difficulty_feedback_at: Mapped[datetime | None] = mapped_column(
@@ -294,6 +300,16 @@ class RouteExecutionStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="uq_route_execution_stops_execution_position",
         ),
         CheckConstraint("position >= 1", name="position_positive"),
+        CheckConstraint(
+            "skip_reason IS NULL OR skip_reason IN ('closed', 'no_time', 'hard', 'other')",
+            name="skip_reason",
+        ),
+        # A stop is marked or skipped, never both; a skip always has its reason.
+        CheckConstraint(
+            "(skipped_at IS NULL AND skip_reason IS NULL) "
+            "OR (skipped_at IS NOT NULL AND skip_reason IS NOT NULL AND completed_at IS NULL)",
+            name="skip_state",
+        ),
         Index("ix_route_execution_stops_execution_position", "execution_id", "position"),
     )
 
@@ -316,6 +332,11 @@ class RouteExecutionStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_optional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The walker passed this stop by (spec 15, D1, D4): when, and why. The
+    # reason stays with the place for the editors: «closed» and «hard» are
+    # signals that the place or the route needs a look.
+    skipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    skip_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Rounded up so 500.1 metres cannot pass the 500-metre achievement rule.
     device_distance_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Expected leg from the previous stop, computed once when the run starts
@@ -352,7 +373,7 @@ class RouteExecutionEvent(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (
         CheckConstraint(
             "action IN ('complete_stop', 'uncomplete_stop', 'complete', 'cancel', 'pause', "
-            "'resume', 'end_day', 'finish_early')",
+            "'resume', 'end_day', 'finish_early', 'skip_stop', 'unskip_stop')",
             name="action",
         ),
         UniqueConstraint(
