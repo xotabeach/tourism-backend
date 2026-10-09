@@ -1251,6 +1251,10 @@ async def test_difficulty_feedback_report_renders(admin_client: AsyncClient) -> 
     page = await admin_client.get("/admin/difficulty-feedback", headers=headers)
     assert page.status_code == 200, page.text
     assert "Сложность: отзывы после прохождения" in page.text
+    # BACKEND-36: places skipped as closed or dangerous, for the editors.
+    signals = await admin_client.get("/admin/skip-signals", headers=headers)
+    assert signals.status_code == 200, signals.text
+    assert "Точки, которые пропускают как закрытые или опасные" in signals.text
 
 
 @pytest.mark.asyncio

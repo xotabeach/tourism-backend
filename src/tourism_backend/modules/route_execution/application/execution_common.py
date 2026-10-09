@@ -165,6 +165,8 @@ async def _execution_out(
         completed_required_stops=completed_required,
         skipped_required_stops=skipped_required,
         counted=execution.counted,
+        completed_share_percent=execution.completed_share_percent,
+        counted_threshold_percent=antifraud_settings.counted_stops_percent,
         stops=[
             RouteExecutionStopOut(
                 id=stop.id,

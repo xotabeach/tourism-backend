@@ -134,9 +134,14 @@ async def test_a_skipped_stop_lets_the_run_end_pays_less_and_does_not_count(
         True,
         0,
     )
+    assert (whole["completed_share_percent"], whole["counted_threshold_percent"]) == (100, 70)
     for run in (missed, closed):
         assert run["status"] == "completed"
-        assert run["counted"] is False
+        # One skipped stop counts or not by the share of marked required
+        # stops against the 70% threshold (BACKEND-36).
+        share = (run["required_stops"] - 1) * 100 // run["required_stops"]
+        assert run["completed_share_percent"] == share
+        assert run["counted"] is (share >= 70)
         assert run["skipped_required_stops"] == 1
         assert run["completed_required_stops"] == run["required_stops"] - 1
         assert 0 < run["awarded_points"] < whole["awarded_points"]
@@ -254,6 +259,7 @@ async def test_a_run_with_every_stop_skipped_cannot_be_completed(
     finally:
         cancelled = await live_client.post(f"{API}/{run['id']}/cancel", headers=headers)
         assert cancelled.json()["counted"] is False
+        assert cancelled.json()["completed_share_percent"] is None
 
 
 async def test_an_early_end_pays_for_what_was_walked_and_does_not_count(
@@ -271,6 +277,8 @@ async def test_an_early_end_pays_for_what_was_walked_and_does_not_count(
     assert ended.status_code == 200, ended.text
     body = ended.json()
     assert (body["status"], body["ended_early"], body["counted"]) == ("cancelled", True, False)
+    # Two of the required stops marked: the share is kept for the review mark.
+    assert body["completed_share_percent"] == 2 * 100 // body["required_stops"]
     assert 0 < body["awarded_points"] < whole["awarded_points"]
 
 
@@ -287,3 +295,128 @@ async def test_skipping_is_owner_scoped_and_needs_a_login(live_client: AsyncClie
         assert (await live_client.delete(url, headers=stranger)).status_code == 404
     finally:
         await live_client.post(f"{API}/{run['id']}/cancel", headers=owner)
+
+
+async def _walk_skipping(
+    client: AsyncClient, route_id: str, skip: set[int]
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """A run by a new person that skips the stops at these indexes."""
+    headers = await _headers(client)
+    run = await _start(client, headers, route_id)
+    for index, stop in enumerate(run["stops"]):
+        if index in skip:
+            skipped = await client.put(
+                f"{API}/{run['id']}/stops/{stop['id']}/skip",
+                json={"reason": "no_time"},
+                headers=headers,
+            )
+            assert skipped.status_code == 200, skipped.text
+        else:
+            await _mark(client, headers, run["id"], stop["id"])
+    finished = await client.post(f"{API}/{run['id']}/complete", headers=headers)
+    assert finished.status_code == 200, finished.text
+    body: dict[str, Any] = finished.json()
+    return body, headers
+
+
+async def _set_threshold(value: int | None) -> None:
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM runtime_settings WHERE key = 'af_counted_stops_percent'")
+            )
+            if value is not None:
+                await conn.execute(
+                    text(
+                        "INSERT INTO runtime_settings (key, value, updated_at) "
+                        "VALUES ('af_counted_stops_percent', :value, now())"
+                    ),
+                    {"value": str(value)},
+                )
+    finally:
+        await engine.dispose()
+
+
+async def test_the_threshold_decides_and_is_fixed_when_the_run_ends(
+    live_client: AsyncClient,
+) -> None:
+    route_id = await _route_with_stops(live_client, minimum=4)
+    try:
+        half, half_headers = await _walk_skipping(live_client, route_id, {1, 2})
+        share = half["completed_share_percent"]
+        assert share < 70
+        assert half["counted"] is False
+        assert half["awarded_points"] > 0
+
+        # The editors lower the threshold: it applies to new runs only.
+        await _set_threshold(50)
+        later, _ = await _walk_skipping(live_client, route_id, {1, 2})
+        assert later["completed_share_percent"] == share
+        assert (later["counted"], later["counted_threshold_percent"]) == (share >= 50, 50)
+        earlier = await live_client.get(f"{API}/{half['id']}", headers=half_headers)
+        assert earlier.json()["counted"] is False
+    finally:
+        await _set_threshold(None)
+
+
+async def test_only_the_walked_way_counts_towards_kilometres(live_client: AsyncClient) -> None:
+    route_id = await _route_with_stops(live_client, minimum=4)
+    whole, _ = await _walk_skipping(live_client, route_id, set())
+    partial, _ = await _walk_skipping(live_client, route_id, {1, 2})
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.connect() as conn:
+            rows = dict(
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id::text, paid_distance_meters FROM route_executions "
+                            "WHERE id = :whole OR id = :partial"
+                        ),
+                        {"whole": whole["id"], "partial": partial["id"]},
+                    )
+                ).all()
+            )
+    finally:
+        await engine.dispose()
+    assert rows[whole["id"]] == whole["routing"]["distance_meters"]
+    assert 0 <= rows[partial["id"]] < rows[whole["id"]]
+
+
+async def test_a_partial_walker_may_rate_but_stays_out_of_the_average(
+    live_client: AsyncClient,
+) -> None:
+    route_id = await _route_with_stops(live_client, minimum=4)
+    reviews_url = f"/api/v1/routes/{route_id}/reviews"
+    before = (await live_client.get(reviews_url, params={"limit": 50})).json()
+
+    _whole, walker = await _walk_skipping(live_client, route_id, set())
+    _half, partial = await _walk_skipping(live_client, route_id, {1, 2})
+    stranger = await _headers(live_client)
+
+    full_review = await live_client.post(reviews_url, json={"rating": 5}, headers=walker)
+    partial_review = await live_client.post(reviews_url, json={"rating": 1}, headers=partial)
+    refused = await live_client.post(reviews_url, json={"rating": 3}, headers=stranger)
+
+    assert full_review.status_code == 200, full_review.text
+    assert (full_review.json()["author_walk"], full_review.json()["author_completed_route"]) == (
+        "full",
+        True,
+    )
+    assert partial_review.status_code == 200, partial_review.text
+    assert partial_review.json()["author_walk"] == "partial"
+    assert partial_review.json()["author_completed_route"] is False
+    # Stars without a word are for those who walked at least a part.
+    assert refused.status_code == 422
+
+    after = (await live_client.get(reviews_url, params={"limit": 50})).json()
+    marks = {item["id"]: item["author_walk"] for item in after["items"]}
+    assert marks[full_review.json()["id"]] == "full"
+    assert marks[partial_review.json()["id"]] == "partial"
+    # Both reviews are listed; only the walker's five stars moved the rating.
+    assert after["rating_count"] == before["rating_count"] + 1
+    total_before = (before["average_rating"] or 0) * before["rating_count"]
+    assert after["average_rating"] == pytest.approx(
+        (total_before + 5) / after["rating_count"], abs=0.06
+    )

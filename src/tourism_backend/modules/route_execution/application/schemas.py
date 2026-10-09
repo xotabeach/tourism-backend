@@ -170,6 +170,10 @@ class RouteExecutionOut(BaseModel):
     # Whether the finished run counts as «прошёл маршрут»; a run with a
     # skipped required stop pays for what was walked but does not count.
     counted: bool = True
+    # Share of required stops marked, fixed when the run ended; None while
+    # it is going. ``counted_threshold_percent`` is what a run needs to count.
+    completed_share_percent: int | None = Field(default=None, ge=0, le=100)
+    counted_threshold_percent: int = Field(default=70, ge=0, le=100)
     stops: list[RouteExecutionStopOut]
     # Travel points granted for finishing this route (0 while it is active).
     awarded_points: int = Field(default=0, ge=0)

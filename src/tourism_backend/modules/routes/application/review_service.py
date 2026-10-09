@@ -1,7 +1,8 @@
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, not_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -10,10 +11,14 @@ from tourism_backend.modules.identity.infrastructure.models import EXPERT_RANK_I
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.notifications.application import service as notifications_service
-from tourism_backend.modules.route_execution.infrastructure.models import RouteExecution
 from tourism_backend.modules.routes.application.review_media import (
     SavedReviewImage,
     delete_review_image,
+)
+from tourism_backend.modules.routes.application.review_rules import (
+    WalkState,
+    partial_only_review,
+    walk_states,
 )
 from tourism_backend.modules.routes.application.review_schemas import (
     MyRouteReviewListOut,
@@ -95,7 +100,7 @@ async def _review_out(
     avatars: dict[UUID, str],
     media: dict[UUID, list[RouteReviewMediaOut]],
     replies: dict[UUID, RouteReviewReplyOut],
-    walkers: set[UUID] | None = None,
+    walkers: Mapping[UUID, WalkState] | None = None,
 ) -> RouteReviewOut:
     author = users.get(review.author_user_id)
     return RouteReviewOut(
@@ -111,27 +116,8 @@ async def _review_out(
         created_at=review.created_at,
         media=media.get(review.id, []),
         reply_to=replies.get(review.id),
-        author_completed_route=review.author_user_id in (walkers or set()),
-    )
-
-
-async def _walkers(session: AsyncSession, route_id: UUID, author_ids: list[UUID]) -> set[UUID]:
-    """Authors who finished this route at least once, in one query."""
-    if not author_ids:
-        return set()
-    return set(
-        (
-            await session.scalars(
-                select(RouteExecution.user_id)
-                .where(
-                    RouteExecution.route_id == route_id,
-                    RouteExecution.user_id.in_(author_ids),
-                    RouteExecution.status == "completed",
-                    RouteExecution.counted.is_(True),
-                )
-                .distinct()
-            )
-        ).all()
+        author_completed_route=(walkers or {}).get(review.author_user_id) == "full",
+        author_walk=(walkers or {}).get(review.author_user_id),
     )
 
 
@@ -279,7 +265,13 @@ async def list_published_reviews(
     total = int(
         await session.scalar(select(func.count()).select_from(RouteReview).where(*published)) or 0
     )
-    root_ratings = (*published, RouteReview.reply_to_review_id.is_(None))
+    # Stars of someone who walked the route only in part are shown but do
+    # not enter the average (spec 15, D3).
+    root_ratings = (
+        *published,
+        RouteReview.reply_to_review_id.is_(None),
+        not_(partial_only_review()),
+    )
     rating_count = int(
         await session.scalar(select(func.count()).select_from(RouteReview).where(*root_ratings))
         or 0
@@ -314,7 +306,7 @@ async def list_published_reviews(
     )
     review_media = await _review_media(session, [row.id for row in rows])
     replies = await _reply_context(session, rows)
-    walkers = await _walkers(session, route_id, author_ids)
+    walkers = await walk_states(session, route_id, author_ids)
     items = [
         await _review_out(
             session,
@@ -350,14 +342,14 @@ async def upsert_review(
     created instead so authors can leave multiple comments over time.
     """
     await _ensure_reviewable_route(session, route_id)
-    walkers = await _walkers(session, route_id, [author_user_id])
+    walkers = await walk_states(session, route_id, [author_user_id])
     if not payload.body:
         return await _upsert_rating(
             session,
             route_id=route_id,
             author_user_id=author_user_id,
             payload=payload,
-            walked=author_user_id in walkers,
+            walk=walkers.get(author_user_id),
         )
     reply_target: RouteReview | None = None
     if payload.reply_to_review_id is not None:
@@ -456,15 +448,16 @@ async def _upsert_rating(
     route_id: UUID,
     author_user_id: UUID,
     payload: RouteReviewCreateIn,
-    walked: bool,
+    walk: WalkState | None,
 ) -> RouteReviewOut:
     """Stars without text, left right after finishing the route (FRONTEND-42).
 
     There is nothing to moderate, so it is published at once; it is only
-    accepted from someone who walked the route, and rating again replaces the
+    accepted from someone who walked the route, whole or in part, and rating
+    again replaces the
     earlier stars instead of adding a second vote.
     """
-    if payload.reply_to_review_id is not None or not walked:
+    if payload.reply_to_review_id is not None or walk is None:
         raise AppError(
             code="review_body_required",
             message="Напишите пару слов о маршруте",
@@ -514,7 +507,7 @@ async def _upsert_rating(
         ),
         media={},
         replies={},
-        walkers={author_user_id},
+        walkers={author_user_id: walk},
     )
 
 

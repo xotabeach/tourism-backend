@@ -144,7 +144,15 @@ async def _profile_activity_stats(session: AsyncSession, user_id: UUID) -> Profi
         await session.execute(
             select(
                 func.count(RouteExecution.id),
-                func.coalesce(func.sum(RouteRoutingSnapshot.distance_meters), 0),
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(
+                            RouteExecution.paid_distance_meters,
+                            RouteRoutingSnapshot.distance_meters,
+                        )
+                    ),
+                    0,
+                ),
             )
             .select_from(RouteExecution)
             .outerjoin(

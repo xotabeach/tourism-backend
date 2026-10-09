@@ -190,6 +190,10 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             "points_status IN ('none', 'awarded', 'held', 'rejected')",
             name="points_status",
         ),
+        CheckConstraint(
+            "completed_share_percent IS NULL OR completed_share_percent BETWEEN 0 AND 100",
+            name="completed_share_percent_range",
+        ),
         CheckConstraint("computed_points >= 0", name="computed_points_non_negative"),
         Index("ix_route_executions_user_started", "user_id", "started_at"),
         Index(
@@ -241,10 +245,17 @@ class RouteExecution(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     # Whether the run counts as «прошёл маршрут» for achievements, the
     # profile counter, the walker's review and popularity. Fixed when the
-    # run ends: a run completed with a skipped required stop does not count.
+    # run ends and never recomputed: a later change of the threshold in the
+    # admin panel applies to new runs only (spec 15, D2, D16).
     counted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=text("true")
     )
+    # Share of the required stops that were marked, 0..100, fixed at the
+    # same moment. NULL while the run is going and for a plain cancel.
+    completed_share_percent: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # Length of the legs that were paid. NULL for runs from before skipping
+    # existed: they were walked whole, read the start snapshot instead.
+    paid_distance_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Spec 17: the walker's one-tap answer on the finish screen.
     difficulty_feedback: Mapped[str | None] = mapped_column(String(12), nullable=True)
     difficulty_feedback_at: Mapped[datetime | None] = mapped_column(

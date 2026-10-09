@@ -56,8 +56,11 @@ class RouteReviewOut(BaseModel):
     created_at: datetime
     media: list[RouteReviewMediaOut] = Field(default_factory=list)
     reply_to: RouteReviewReplyOut | None = None
-    # The author has a completed run of this route.
+    # The author has a completed run of this route that counts.
     author_completed_route: bool = False
+    # «full»: walked the route; «partial»: walked a part of it, shown as
+    # «прошёл частично» and kept out of the average; None: did not walk it.
+    author_walk: Literal["full", "partial"] | None = None
 
 
 class RouteReviewListOut(BaseModel):

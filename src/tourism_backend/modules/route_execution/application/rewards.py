@@ -153,6 +153,24 @@ def paid_way_share(
     return sum(1 for _meters, paid in legs if paid) / len(legs)
 
 
+def completed_share_percent(marked_required: int, total_required: int) -> int:
+    """Share of the required stops that were marked, 0..100, rounded down.
+
+    A route without required stops has nothing to miss: 100.
+    """
+
+    if total_required <= 0:
+        return 100
+    marked = max(0, min(marked_required, total_required))
+    return marked * 100 // total_required
+
+
+def run_counts(share_percent: int, threshold_percent: int) -> bool:
+    """Whether a completed run is «прошёл маршрут» (spec 15, D2)."""
+
+    return share_percent >= threshold_percent
+
+
 def difficulty_multiplier(difficulty: str | None) -> float:
     if not difficulty:
         return 1.0

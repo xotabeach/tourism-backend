@@ -97,6 +97,7 @@ from tourism_backend.modules.admin.presentation.permissions import (
     PermissionedModelView as ModelView,
 )
 from tourism_backend.modules.admin.presentation.route_structure_admin import RouteStructureAdmin
+from tourism_backend.modules.admin.presentation.skip_signals_admin import SkipSignalsAdmin
 from tourism_backend.modules.admin.presentation.stats_admin import StatsAdmin
 from tourism_backend.modules.admin.presentation.transit_admin import TransitAdmin, TransitLineAdmin
 from tourism_backend.modules.content.application import article_comment_service, article_service
@@ -4322,6 +4323,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(AchievementsOperationsAdmin)
     admin.add_view(RouteStructureAdmin)
     admin.add_view(DifficultyFeedbackAdmin)
+    admin.add_view(SkipSignalsAdmin)
     admin.add_view(TransitAdmin)
     admin.add_view(TransitLineAdmin)
     admin.add_view(AchievementAdmin)
@@ -4365,6 +4367,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         AchievementsOperationsAdmin.session_maker = session_maker
         RouteStructureAdmin.session_maker = session_maker
         DifficultyFeedbackAdmin.session_maker = session_maker
+        SkipSignalsAdmin.session_maker = session_maker
         TransitAdmin.session_maker = session_maker
         TransitLineAdmin.session_maker = session_maker
         StatsAdmin.session_maker = session_maker
