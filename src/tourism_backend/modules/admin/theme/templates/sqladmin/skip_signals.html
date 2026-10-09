@@ -1,0 +1,18 @@
+{% extends "sqladmin/layout.html" %}
+{% block content %}
+<div class="col-12"><div class="card"><div class="card-body">
+<h2>Точки, которые пропускают как закрытые или опасные</h2>
+<p class="text-muted">За последние {{ window_days }} дней. В список попадает место, которое с одной и той же причиной пропустили не меньше {{ min_people }} разных людей. Один человек считается один раз. Причину путешественник выбирает одним нажатием в дороге, поэтому это повод проверить место или маршрут, а не готовый вывод.</p>
+{% if places %}
+<div class="table-responsive"><table class="table table-sm">
+<thead><tr><th>Место</th><th>Причина</th><th>Людей</th><th>Последний раз</th></tr></thead>
+<tbody>
+{% for row in places %}
+<tr><td>{{ row.name }}</td><td>{{ row.label }}</td><td>{{ row.people }}</td><td>{{ row.last.strftime("%d.%m.%Y") }}</td></tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% else %}<p>Пока таких мест нет.</p>{% endif %}
+{% if below %}<p class="text-muted">Ещё мест с единичными сигналами: {{ below }}.</p>{% endif %}
+</div></div></div>
+{% endblock %}

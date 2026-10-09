@@ -18,6 +18,7 @@ from tourism_backend.modules.route_execution.application.rewards import (
     RouteEffort,
     SegmentEffort,
     StopState,
+    completed_share_percent,
     paid_leg_positions,
     paid_way_share,
     travel_points_for_effort,
@@ -154,6 +155,9 @@ async def _award_completion_points(
     elif partial:
         paid_share = paid_way_share([], leg_lengths)
 
+    if snapshot is not None:
+        execution.paid_distance_meters = _share_of(snapshot.distance_meters, paid_share)
+
     points = travel_points_for_effort(
         RouteEffort(
             completed_required_stops=completed_required,
@@ -212,6 +216,17 @@ async def _end_early(
     execution.night_paused = False
     execution.ended_early = True
     execution.counted = False
+    required = list(
+        await session.scalars(
+            select(RouteExecutionStop).where(
+                RouteExecutionStop.execution_id == execution.id,
+                RouteExecutionStop.is_optional.is_(False),
+            )
+        )
+    )
+    execution.completed_share_percent = completed_share_percent(
+        sum(stop.completed_at is not None for stop in required), len(required)
+    )
     execution.updated_at = now
     await _award_completion_points(
         session,

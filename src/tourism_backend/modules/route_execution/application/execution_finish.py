@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
@@ -24,6 +24,10 @@ from tourism_backend.modules.route_execution.application.execution_reward import
 from tourism_backend.modules.route_execution.application.offline_sync import (
     resolve_event_time,
     terminal_conflict_details,
+)
+from tourism_backend.modules.route_execution.application.rewards import (
+    completed_share_percent,
+    run_counts,
 )
 from tourism_backend.modules.route_execution.application.schemas import (
     RouteExecutionEventIn,
@@ -105,17 +109,17 @@ async def complete_execution(
             status_code=409,
             details={"retryable": False},
         )
-    skipped_required = int(
-        await session.scalar(
-            select(func.count())
-            .select_from(RouteExecutionStop)
-            .where(
+    required = list(
+        await session.scalars(
+            select(RouteExecutionStop).where(
                 RouteExecutionStop.execution_id == execution.id,
                 RouteExecutionStop.is_optional.is_(False),
-                RouteExecutionStop.skipped_at.is_not(None),
             )
         )
-        or 0
+    )
+    settings = await load_settings(session)
+    share = completed_share_percent(
+        sum(stop.completed_at is not None for stop in required), len(required)
     )
     resolved = resolve_event_time(
         event.occurred_at if event is not None else None,
@@ -124,15 +128,17 @@ async def complete_execution(
     )
     execution.status = "completed"
     execution.completed_at = resolved.effective
-    # Fixed here and never recomputed: the walker is paid for what they
-    # walked, but only a route walked whole counts as «прошёл маршрут».
-    execution.counted = skipped_required == 0
+    # Fixed here and never recomputed (spec 15, D2, D16): the walker is paid
+    # for what they walked, and the run counts as «прошёл маршрут» when the
+    # share of marked required stops reaches the threshold of that moment.
+    execution.completed_share_percent = share
+    execution.counted = run_counts(share, settings.counted_stops_percent)
     execution.updated_at = now
     await _award_completion_points(
         session,
         execution=execution,
         user=user,
-        settings=await load_settings(session),
+        settings=settings,
         now=now,
     )
     return await _commit_event(

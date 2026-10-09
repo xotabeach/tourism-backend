@@ -11,7 +11,18 @@ from uuid import UUID, uuid4
 from geoalchemy2 import Geometry, WKTElement
 from geoalchemy2.functions import ST_X, ST_Y, ST_AsGeoJSON
 from redis.asyncio import Redis
-from sqlalchemy import ColumnElement, Select, cast, delete, exists, func, or_, select, update
+from sqlalchemy import (
+    ColumnElement,
+    Select,
+    cast,
+    delete,
+    exists,
+    func,
+    not_,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import Exists
@@ -46,6 +57,7 @@ from tourism_backend.modules.routes.application.difficulty import (
 )
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
 from tourism_backend.modules.routes.application.rejection import rejection_text
+from tourism_backend.modules.routes.application.review_rules import partial_only_review
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
     RouteDayOut,
@@ -381,6 +393,9 @@ async def route_ratings(
                 RouteReview.route_id.in_(ids),
                 RouteReview.status == "published",
                 RouteReview.reply_to_review_id.is_(None),
+                # Same rule as the review list: stars of someone who walked
+                # the route only in part stay out of the average.
+                not_(partial_only_review()),
             )
             .group_by(RouteReview.route_id)
         )

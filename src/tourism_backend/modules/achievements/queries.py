@@ -253,7 +253,11 @@ async def collect(session: AsyncSession, user_id: UUID, *, historical: bool = Fa
     rows = await session.execute(
         select(
             RouteExecution,
-            RouteRoutingSnapshot.distance_meters,
+            # Only the way that was walked counts towards the kilometres
+            # (spec 15, D16); runs from before skipping were walked whole.
+            func.coalesce(
+                RouteExecution.paid_distance_meters, RouteRoutingSnapshot.distance_meters
+            ),
             RouteRoutingSnapshot.difficulty_reward,
             RouteRoutingSnapshot.difficulty,
             Route,
