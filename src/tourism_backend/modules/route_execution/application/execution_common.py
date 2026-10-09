@@ -57,6 +57,8 @@ def _owned_route(user_id: UUID) -> ColumnElement[bool]:
         Route.owner_user_id == user_id,
         Route.source.in_(("generated", "user_created")),
         Route.publication_status != "deleted",
+        # An edit of a published route is not a route to walk.
+        Route.revision_of_route_id.is_(None),
     )
 
 

@@ -1,0 +1,36 @@
+{% extends "sqladmin/layout.html" %}
+{% block content %}
+<div class="col-12"><div class="card"><div class="card-body">
+{% if not revision or not diff %}
+<h2>Правка маршрута</h2>
+<p>Правка не найдена: возможно, её уже одобрили или автор её отменил.</p>
+{% else %}
+<h2>Правка маршрута «{{ revision.name }}»</h2>
+<p class="text-muted">В каталоге остаётся прежняя версия, пока правку не одобрят. Одобрить или вернуть правку можно в <a href="/admin/route/details/{{ revision.id }}">её карточке</a>. Опубликованная версия: <a href="/admin/route/details/{{ revision.revision_of_route_id }}">открыть</a>.</p>
+{% if suggest_new_route %}
+<div class="alert alert-warning">Убрано {{ diff.stops_changed_share }}% прежних точек. Отзывы и рейтинг были даны другому маршруту: подумайте о причине «опубликуйте как новый маршрут».</div>
+{% endif %}
+{% if diff.is_empty %}
+<p>Отличий от опубликованной версии нет.</p>
+{% else %}
+<div class="table-responsive"><table class="table table-sm">
+<thead><tr><th style="width:20%">Что</th><th style="width:40%">Было</th><th>Стало</th></tr></thead>
+<tbody>
+{% if diff.name %}<tr><td>Название</td><td>{{ diff.name[0] }}</td><td>{{ diff.name[1] }}</td></tr>{% endif %}
+{% if diff.description %}<tr><td>Описание</td><td style="white-space:pre-wrap">{{ diff.description[0] }}</td><td style="white-space:pre-wrap">{{ diff.description[1] }}</td></tr>{% endif %}
+{% for label, old, new in diff.other %}<tr><td>{{ label }}</td><td>{{ old }}</td><td>{{ new }}</td></tr>{% endfor %}
+{% if diff.stops_added or diff.stops_removed or diff.stops_reordered %}
+<tr><td>Точки</td>
+<td><ol class="mb-0">{% for name in diff.stops_before %}<li>{% if name in diff.stops_removed %}<del class="text-danger">{{ name }}</del>{% else %}{{ name }}{% endif %}</li>{% endfor %}</ol></td>
+<td><ol class="mb-0">{% for name in diff.stops_after %}<li>{% if name in diff.stops_added %}<strong class="text-success">{{ name }}</strong>{% else %}{{ name }}{% endif %}</li>{% endfor %}</ol>
+{% if diff.stops_reordered %}<div class="text-muted">Порядок оставшихся точек изменён.</div>{% endif %}</td></tr>
+{% endif %}
+{% if diff.media_added or diff.media_removed or diff.media_reordered %}
+<tr><td>Фото и видео</td><td>Убрано файлов: {{ diff.media_removed }}</td><td>Добавлено файлов: {{ diff.media_added }}{% if diff.media_reordered %}, порядок изменён{% endif %}. Новые файлы видны в карточке правки.</td></tr>
+{% endif %}
+</tbody>
+</table></div>
+{% endif %}
+{% endif %}
+</div></div></div>
+{% endblock %}

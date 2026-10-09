@@ -111,14 +111,31 @@ async def create_route_moderation_notification(
     route_name: str,
     approved: bool,
     reason: str | None = None,
+    revision: bool = False,
 ) -> Notification:
     """Notify route author after ops approve/reject publication.
+
+    ``revision``: the decision is about an edit of a published route; the
+    published version stays in the catalogue either way (spec 15, D5).
 
     ``reason`` is what the moderator asks to fix; a rejection without one
     (stored before reasons existed) falls back to the general wording.
     """
     short_route = _clip(route_name, 48)
-    if approved:
+    if revision and approved:
+        kind = "route_published"
+        title = "Правка маршрута опубликована"
+        body = f"Обновлённый маршрут «{short_route}» прошёл модерацию и заменил прежнюю версию"
+    elif revision:
+        kind = "route_rejected"
+        title = "Правка маршрута на доработке"
+        fix = reason or "Исправьте замечания и отправьте снова"
+        body = _clip(
+            f"Правку маршрута «{short_route}» вернули на доработку. {fix}. "
+            "В каталоге осталась прежняя версия",
+            500,
+        )
+    elif approved:
         kind = "route_published"
         title = "Маршрут опубликован"
         body = f"Ваш маршрут «{short_route}» прошёл модерацию и доступен путешественникам"

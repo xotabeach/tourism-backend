@@ -15,6 +15,7 @@ from tourism_backend.api.errors import AppError
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.routes.application.media import SavedRouteMedia
 from tourism_backend.modules.routes.application.route_drafts import (
+    _edit_target,
     _owned_editable_route,
 )
 from tourism_backend.modules.routes.application.schemas import (
@@ -28,11 +29,12 @@ async def clear_user_route_media(
     route_id: UUID,
     owner_user_id: UUID,
 ) -> None:
-    await _owned_editable_route(
+    _public, target = await _edit_target(
         session,
         route_id=route_id,
         owner_user_id=owner_user_id,
     )
+    route_id = target.id
     await session.execute(
         update(MediaAttachment)
         .where(
@@ -60,11 +62,12 @@ async def sync_user_route_media(
     2026-09-08). With this the client keeps what is already stored, uploads
     only what is new, and ``keep``'s order is the gallery's order.
     """
-    await _owned_editable_route(
+    _public, target = await _edit_target(
         session,
         route_id=route_id,
         owner_user_id=owner_user_id,
     )
+    route_id = target.id
     now = datetime.now(UTC)
     attachments = list(
         (
@@ -80,6 +83,10 @@ async def sync_user_route_media(
     positions = {media_id: index for index, media_id in enumerate(keep)}
     for attachment in attachments:
         position = positions.get(attachment.id)
+        if position is None and attachment.copied_from_id is not None:
+            # The editor may still hold the id the file had on the published
+            # route, from before this edit was started.
+            position = positions.get(attachment.copied_from_id)
         if position is None:
             attachment.status = "archived"
         else:
@@ -154,11 +161,12 @@ async def add_user_route_media(
     position: int,
     saved: SavedRouteMedia,
 ) -> UserRouteMediaOut:
-    await _owned_editable_route(
+    _public, target = await _edit_target(
         session,
         route_id=route_id,
         owner_user_id=owner_user_id,
     )
+    route_id = target.id
     active_count = int(
         await session.scalar(
             select(func.count()).where(

@@ -38,9 +38,16 @@ from tourism_backend.modules.routes.application.route_preview import (
     CAR_TAG,
     _route_geometry_for_places,
 )
+from tourism_backend.modules.routes.application.route_revisions import (
+    apply_revision,
+    ensure_revision,
+    retire_revision,
+    revision_of,
+)
 from tourism_backend.modules.routes.application.schemas import (
     RouteDayOut,
     RoutePublicationStatus,
+    RouteRevisionStatus,
     UserRouteDraftIn,
     UserRouteDraftOut,
     UserRouteEditableOut,
@@ -67,7 +74,7 @@ async def set_user_route_days(
     The boundaries are kept by place, so they survive the author's next save
     of the stops; from now on the days are not recomputed (D8).
     """
-    route = await _owned_editable_route(session, route_id=route_id, owner_user_id=owner_user_id)
+    public, route = await _edit_target(session, route_id=route_id, owner_user_id=owner_user_id)
     stops = (
         await session.execute(
             select(RouteStop.id, RouteStop.place_id)
@@ -76,6 +83,20 @@ async def set_user_route_days(
         )
     ).all()
     order = {stop_id: index for index, (stop_id, _place) in enumerate(stops)}
+    if public is not route:
+        # The author may still be looking at the published version: its stop
+        # ids name the same places in the same order while the stops are
+        # unchanged in the edit.
+        published = (
+            await session.execute(
+                select(RouteStop.id, RouteStop.place_id)
+                .where(RouteStop.route_id == public.id)
+                .order_by(RouteStop.position)
+            )
+        ).all()
+        for index, (stop_id, place_id) in enumerate(published):
+            if index < len(stops) and stops[index][1] == place_id:
+                order[stop_id] = index
     chosen = [order.get(stop_id) for stop_id in ends_after_stop_ids]
     if (
         any(index is None for index in chosen)
@@ -102,7 +123,7 @@ async def reset_user_route_days(
     owner_user_id: UUID,
 ) -> list[RouteDayOut]:
     """«Разделить заново»: back to the days the route's norms give (D8)."""
-    route = await _owned_editable_route(session, route_id=route_id, owner_user_id=owner_user_id)
+    _public, route = await _edit_target(session, route_id=route_id, owner_user_id=owner_user_id)
     route.day_breaks = None
     route.days_manual = False
     route.updated_at = datetime.now(UTC)
@@ -111,10 +132,11 @@ async def reset_user_route_days(
     return await _days_for_route(session, route.id)
 
 
-# A published route is editable, but saving sends it back through review —
-# same rule as articles: otherwise moderation is bypassed by publishing
-# something plain and swapping the stops afterwards. `pending_review` is
-# editable in place; nothing has been approved yet.
+# A published route is editable, but never in place: the edit is kept as a
+# version beside it and replaces it only after review (spec 15, D5), so
+# moderation cannot be bypassed by publishing something plain and swapping
+# the stops afterwards. `pending_review` is editable in place; nothing has
+# been approved yet.
 _EDITABLE_ROUTE_STATUSES = frozenset({"draft", "rejected", "pending_review", "published"})
 
 
@@ -147,6 +169,8 @@ async def _owned_editable_route(
         route is None
         or route.owner_user_id != owner_user_id
         or route.source not in {"user_created", "generated"}
+        # An edit is reached through the route it belongs to, never by id.
+        or route.revision_of_route_id is not None
     ):
         raise AppError(code="route_not_found", message="Route not found", status_code=404)
     if route.publication_status not in allowed:
@@ -156,6 +180,34 @@ async def _owned_editable_route(
             status_code=409,
         )
     return route
+
+
+async def _edit_target(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    owner_user_id: UUID,
+) -> tuple[Route, Route]:
+    """The author's route and the row an edit of it writes to.
+
+    For a published route that row is its edit (started as a copy when there
+    is none yet); for anything else it is the route itself.
+    """
+    route = await _owned_editable_route(session, route_id=route_id, owner_user_id=owner_user_id)
+    if route.publication_status != "published":
+        return route, route
+    return route, await ensure_revision(session, route, now=datetime.now(UTC))
+
+
+def _draft_out(public: Route, edited: Route) -> UserRouteDraftOut:
+    return UserRouteDraftOut(
+        id=public.id,
+        publication_status=type_cast(RoutePublicationStatus, public.publication_status),
+        updated_at=edited.updated_at,
+        revision_status=(
+            None if edited is public else type_cast(RouteRevisionStatus, edited.publication_status)
+        ),
+    )
 
 
 async def get_user_route_for_edit(
@@ -170,11 +222,17 @@ async def get_user_route_for_edit(
     not part of the public payload, so the editor could previously only be
     resumed from the device that still held the local draft.
     """
-    route = await _owned_editable_route(
+    public = await _owned_editable_route(
         session,
         route_id=route_id,
         owner_user_id=owner_user_id,
     )
+    # A published route with an edit in progress opens on the edit; reading
+    # alone never starts one.
+    revision = (
+        await revision_of(session, public.id) if public.publication_status == "published" else None
+    )
+    route = revision or public
     # Places come back with their card data, so the editor can redraw the
     # stop list without a request per place.
     geom = cast(Place.location, Geometry)
@@ -208,8 +266,13 @@ async def get_user_route_for_edit(
         ).all()
     )
     return UserRouteEditableOut(
-        id=route.id,
-        publication_status=route.publication_status,  # type: ignore[arg-type]
+        id=public.id,
+        publication_status=public.publication_status,  # type: ignore[arg-type]
+        revision_status=(
+            None
+            if revision is None
+            else type_cast(RouteRevisionStatus, revision.publication_status)
+        ),
         name=route.name,
         description=route.description or "",
         places=[
@@ -356,14 +419,18 @@ async def save_user_route_draft(
                 status_code=409,
             ) from exc
         previous_status = "draft"
+        public = route
     else:
-        route = await _owned_editable_route(
+        public, route = await _edit_target(
             session,
             route_id=route_key,
             owner_user_id=owner_user_id,
         )
         _reject_stale_draft_save(route, payload.expected_updated_at)
-        previous_status = route.publication_status
+        # «Сохранить» on an edit is a draft of the version: it goes to the
+        # moderator only when the author sends it, and saving again takes a
+        # waiting edit back out of the queue (D17).
+        previous_status = "draft" if route is not public else route.publication_status
         await session.execute(delete(RouteStop).where(RouteStop.route_id == route.id))
 
     route.region_id = next(iter(region_ids))
@@ -372,12 +439,9 @@ async def save_user_route_draft(
     route.description = payload.description or None
     route.visibility = "private"
     route.lifecycle_status = "draft"
-    # A route that had already been through review goes back into the queue
-    # rather than silently to "draft": the author edited something live, and
-    # it must not reappear in the catalogue until it is checked again.
-    route.publication_status = (
-        "pending_review" if previous_status in {"pending_review", "published"} else "draft"
-    )
+    # A route waiting for review stays in the queue when its author fixes
+    # something in it. A published one never gets here: its edit does.
+    route.publication_status = "pending_review" if previous_status == "pending_review" else "draft"
     shown_before = route.difficulty_level
     _take_manual_difficulty(route, payload, shown_before=shown_before)
     # The author's «На машине» tag drives the route, with walks to what a car
@@ -478,11 +542,9 @@ async def save_user_route_draft(
         )
     await session.commit()
     await session.refresh(route)
-    return UserRouteDraftOut(
-        id=route.id,
-        publication_status=type_cast(RoutePublicationStatus, route.publication_status),
-        updated_at=route.updated_at,
-    )
+    if public is not route:
+        await session.refresh(public)
+    return _draft_out(public, route)
 
 
 async def submit_user_route(
@@ -491,14 +553,24 @@ async def submit_user_route(
     route_id: UUID,
     owner_user_id: UUID,
 ) -> UserRouteDraftOut:
-    # Narrower than editing: a route already queued or already live has
-    # nothing to submit — editing a published one re-queues it by itself.
-    route = await _owned_editable_route(
+    # Narrower than editing: a route already queued has nothing to submit.
+    # For a published route it is the edit that is sent (spec 15, D17).
+    public = await _owned_editable_route(
         session,
         route_id=route_id,
         owner_user_id=owner_user_id,
-        allowed=frozenset({"draft", "rejected"}),
+        allowed=frozenset({"draft", "rejected", "published"}),
     )
+    route = public
+    if public.publication_status == "published":
+        revision = await revision_of(session, public.id)
+        if revision is None or revision.publication_status not in {"draft", "rejected"}:
+            raise AppError(
+                code="route_not_editable",
+                message="There is no edit of this route to send",
+                status_code=409,
+            )
+        route = revision
     media_count = int(
         await session.scalar(
             select(func.count()).where(
@@ -533,11 +605,28 @@ async def submit_user_route(
     route.updated_at = datetime.now(UTC)
     await session.commit()
     await session.refresh(route)
-    return UserRouteDraftOut(
-        id=route.id,
-        publication_status=type_cast(RoutePublicationStatus, route.publication_status),
-        updated_at=route.updated_at,
+    if public is not route:
+        await session.refresh(public)
+    return _draft_out(public, route)
+
+
+async def discard_user_route_revision(
+    session: AsyncSession,
+    *,
+    route_id: UUID,
+    owner_user_id: UUID,
+) -> None:
+    """«Отменить правку»: the published route stays as it is."""
+    route = await _owned_editable_route(
+        session,
+        route_id=route_id,
+        owner_user_id=owner_user_id,
+        allowed=frozenset({"published"}),
     )
+    revision = await revision_of(session, route.id)
+    if revision is not None:
+        await retire_revision(session, revision, now=datetime.now(UTC))
+    await session.commit()
 
 
 async def discard_user_route_draft(
@@ -552,6 +641,9 @@ async def discard_user_route_draft(
         owner_user_id=owner_user_id,
     )
     now = datetime.now(UTC)
+    revision = await revision_of(session, route.id)
+    if revision is not None:
+        await retire_revision(session, revision, now=now)
     route.publication_status = "deleted"
     route.lifecycle_status = "archived"
     route.visibility = "private"
@@ -579,6 +671,7 @@ async def withdraw_user_route(
         route is None
         or route.owner_user_id != owner_user_id
         or route.source not in {"user_created", "generated"}
+        or route.revision_of_route_id is not None
     ):
         raise AppError(code="route_not_found", message="Route not found", status_code=404)
     if route.publication_status not in {"pending_review", "published"}:
@@ -587,14 +680,17 @@ async def withdraw_user_route(
             message="Route cannot be withdrawn in its current status",
             status_code=409,
         )
+    now = datetime.now(UTC)
+    revision = await revision_of(session, route.id)
+    if revision is not None:
+        # The route leaves the catalogue and becomes a plain draft, so the
+        # author's latest edit simply becomes that draft: it will be reviewed
+        # as a whole before the route is published again.
+        await apply_revision(session, revision, now=now)
     route.publication_status = "draft"
     route.visibility = "private"
     route.lifecycle_status = "draft"
-    route.updated_at = datetime.now(UTC)
+    route.updated_at = now
     await session.commit()
     await session.refresh(route)
-    return UserRouteDraftOut(
-        id=route.id,
-        publication_status=type_cast(RoutePublicationStatus, route.publication_status),
-        updated_at=route.updated_at,
-    )
+    return _draft_out(route, route)

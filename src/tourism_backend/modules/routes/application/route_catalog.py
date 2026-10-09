@@ -29,6 +29,7 @@ from tourism_backend.modules.routes.application.difficulty import (
 )
 from tourism_backend.modules.routes.application.rejection import rejection_text
 from tourism_backend.modules.routes.application.review_rules import partial_only_review
+from tourism_backend.modules.routes.application.route_revisions import revisions_of
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
     RouteListItemOut,
@@ -520,8 +521,27 @@ async def list_routes_for_owner(
         Route.source.in_(("user_created", "generated")),
         Route.owner_user_id == owner_user_id,
         Route.publication_status != "deleted",
+        # An edit is shown on the route it belongs to, not as a route.
+        Route.revision_of_route_id.is_(None),
     )
-    return await _list_from_stmt(session, stmt, limit=limit, offset=offset)
+    listed = await _list_from_stmt(session, stmt, limit=limit, offset=offset)
+    revisions = await revisions_of(session, [item.id for item in listed.items])
+    if revisions:
+        listed.items = [with_revision_state(item, revisions.get(item.id)) for item in listed.items]
+    return listed
+
+
+def with_revision_state[ItemT: RouteListItemOut](item: ItemT, revision: Route | None) -> ItemT:
+    """The author's published route, marked with the state of its edit."""
+    if revision is None:
+        return item
+    return item.model_copy(
+        update={
+            "revision_status": revision.publication_status,
+            # Why the edit was returned; the published version is fine.
+            "rejection_reason": author_rejection_text(revision),
+        }
+    )
 
 
 def _difficulty_word_filter(word: str) -> ColumnElement[bool]:

@@ -556,6 +556,19 @@ def choice_formatter(field: str, labels: dict[str, str]) -> Callable[[object, ob
     return render
 
 
+def format_route_revision_link(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    """«Сравнить версии» on an edit of a published route (spec 15, D6)."""
+    if getattr(model, "revision_of_route_id", None) is None:
+        return Markup("")
+    return Markup('<a href="/admin/route-revision?route_id={}">Сравнить версии</a>').format(
+        getattr(model, "id", "")
+    )
+
+
 def format_route_name_with_structure(
     model: object,
     attribute: object,

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import io
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -1285,3 +1288,151 @@ async def test_difficulty_feedback_only_for_own_finished_runs(admin_client: Asyn
         headers=headers,
     )
     assert wrong.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_moderator_compares_and_approves_an_edit_of_a_published_route(
+    admin_client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec 15 D5, D6: approving an edit replaces the published route's
+    content under the same id; the edit row itself is never published."""
+    from tourism_backend.modules.routes.application import media as route_media
+
+    monkeypatch.setattr(route_media, "_MEDIA_ROOT", tmp_path)
+    headers = {"Origin": "http://test"}
+    phone = f"+7913{uuid4().int % 10_000_000:07d}"
+    await admin_client.post(
+        "/api/v1/auth/otp/request", json={"display_name": "Автор", "phone": phone}
+    )
+    verified = await admin_client.post(
+        "/api/v1/auth/otp/verify",
+        json={
+            "phone": phone,
+            "code": "1234",
+            "privacy_accepted": True,
+            "personal_data_accepted": True,
+        },
+    )
+    user_headers = {"Authorization": f"Bearer {verified.json()['access_token']}"}
+    places = await admin_client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 3})
+    place_ids = [item["id"] for item in places.json()["items"][:3]]
+    saved = await admin_client.post(
+        "/api/v1/routes/drafts",
+        headers=user_headers,
+        json={"name": "Версия первая", "place_ids": place_ids[:2], "filters": []},
+    )
+    route_id = saved.json()["id"]
+    buffer = io.BytesIO()
+    Image.new("RGB", (48, 32), color=(35, 90, 55)).save(buffer, format="PNG")
+    upload = await admin_client.post(
+        f"/api/v1/routes/drafts/{route_id}/media",
+        headers=user_headers,
+        data={"position": "0"},
+        files={"file": ("route.png", buffer.getvalue(), "image/png")},
+    )
+    assert upload.status_code == 200, upload.text
+
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE routes SET publication_status = 'published', visibility = 'public', "
+                    "lifecycle_status = 'active' WHERE id = :id"
+                ),
+                {"id": route_id},
+            )
+        edited = await admin_client.post(
+            "/api/v1/routes/drafts",
+            headers=user_headers,
+            json={
+                "route_id": route_id,
+                "name": "Версия вторая",
+                "place_ids": place_ids,
+                "filters": [],
+            },
+        )
+        assert edited.json()["revision_status"] == "draft"
+        submitted = await admin_client.post(
+            f"/api/v1/routes/{route_id}/submit", headers=user_headers
+        )
+        assert submitted.json()["revision_status"] == "pending_review"
+        async with engine.connect() as conn:
+            revision_id = await conn.scalar(
+                text(
+                    "SELECT id FROM routes WHERE revision_of_route_id = :id "
+                    "AND publication_status = 'pending_review'"
+                ),
+                {"id": route_id},
+            )
+        assert revision_id is not None
+
+        login = await admin_client.post(
+            "/admin/login",
+            data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert login.status_code in {302, 303}, login.text
+        page = await admin_client.get(
+            f"/admin/route-revision?route_id={revision_id}", headers=headers
+        )
+        assert page.status_code == 200, page.text
+        assert "Версия первая" in page.text
+        assert "Версия вторая" in page.text
+        # A route that is not an edit has nothing to compare.
+        plain = await admin_client.get(
+            f"/admin/route-revision?route_id={route_id}", headers=headers
+        )
+        assert plain.status_code == 200
+        assert "Правка не найдена" in plain.text
+        listing = await admin_client.get("/admin/route/list", headers=headers)
+        assert listing.status_code == 200, listing.text
+        assert "Сравнить версии" in listing.text
+
+        approved = await admin_client.get(
+            f"/admin/route/action/approve-routes?pks={revision_id}",
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert approved.status_code in {302, 303}, approved.text
+
+        public = await admin_client.get(f"/api/v1/routes/{route_id}")
+        assert public.status_code == 200, public.text
+        assert public.json()["name"] == "Версия вторая"
+        assert len(public.json()["stops"]) == 3
+        assert len(public.json()["media"]) == 1
+        assert (await admin_client.get(f"/api/v1/routes/{revision_id}")).status_code == 404
+        async with engine.connect() as conn:
+            revision_status = await conn.scalar(
+                text("SELECT publication_status FROM routes WHERE id = :id"),
+                {"id": revision_id},
+            )
+            audit = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM admin_audit_events "
+                    "WHERE action = 'admin.route_revision_published' AND entity_id = :id"
+                ),
+                {"id": route_id},
+            )
+            notified = await conn.scalar(
+                text(
+                    "SELECT title FROM notifications WHERE target_id = :id "
+                    "AND kind = 'route_published' ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"id": route_id},
+            )
+        assert revision_status == "deleted"
+        assert audit == 1
+        assert notified == "Правка маршрута опубликована"
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "DELETE FROM media_attachments WHERE entity_type = 'route' AND entity_id IN "
+                    "(SELECT id FROM routes WHERE id = :id OR revision_of_route_id = :id)"
+                ),
+                {"id": route_id},
+            )
+            await conn.execute(text("DELETE FROM routes WHERE id = :id"), {"id": route_id})
+        await engine.dispose()

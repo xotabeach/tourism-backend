@@ -26,7 +26,9 @@ from tourism_backend.modules.routes.application.route_catalog import (
     _has_unpublished_stop,
     _to_list_item,
     route_ratings,
+    with_revision_state,
 )
+from tourism_backend.modules.routes.application.route_revisions import revision_of
 from tourism_backend.modules.routes.application.schemas import (
     RouteDayOut,
     RouteDetailOut,
@@ -369,8 +371,10 @@ async def get_owned_route(
             Route.owner_user_id == owner_user_id,
             Route.source.in_(("user_created", "generated")),
             Route.publication_status != "deleted",
+            Route.revision_of_route_id.is_(None),
         )
     )
     if route is None:
         raise AppError(code="route_not_found", message="Route not found", status_code=404)
-    return await _route_detail_from_model(session, route, public_stops_only=False)
+    detail = await _route_detail_from_model(session, route, public_stops_only=False)
+    return with_revision_state(detail, await revision_of(session, route.id))
