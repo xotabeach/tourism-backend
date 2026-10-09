@@ -2031,24 +2031,44 @@ async def draft_preview_shape(
     return (line, stops, mode) if len(line) >= 2 else None
 
 
+def retraces_approach(role: str, leg_index: int, approach_legs: set[int]) -> bool:
+    """Whether a segment only walks back along the approach to its stop.
+
+    The walk back to the car leaves the stop the previous leg walked up to,
+    along the same path. The first stop has no previous leg, and a stop the
+    car reached has no approach: there the walk back is the only line that
+    touches the stop (BACKEND-63).
+    """
+    return role == "return" and (leg_index - 1) in approach_legs
+
+
 async def route_segment_lines(
     session: AsyncSession, route_id: UUID
 ) -> list[tuple[str, list[tuple[float, float]]]]:
     """(mode, line) of each segment, in order, when every segment has a line.
 
     Only then can the map draw the drive and the walks apart (spec 14, D23);
-    otherwise it draws the route line in the route's own mode. The walk back
-    to the car retraces the approach: drawing both would fill the dashes in.
+    otherwise it draws the route line in the route's own mode. A walk back
+    to the car that retraces the approach is left out: drawing both would
+    fill the dashes in.
     """
     rows = (
         await session.execute(
-            select(RouteSegment.mode, ST_AsGeoJSON(RouteSegment.geometry))
-            .where(RouteSegment.route_id == route_id, RouteSegment.role != "return")
+            select(
+                RouteSegment.mode,
+                RouteSegment.role,
+                RouteSegment.leg_index,
+                ST_AsGeoJSON(RouteSegment.geometry),
+            )
+            .where(RouteSegment.route_id == route_id)
             .order_by(RouteSegment.leg_index, RouteSegment.seq)
         )
     ).all()
+    approach_legs = {leg_index for _mode, role, leg_index, _raw in rows if role == "approach"}
     pieces: list[tuple[str, list[tuple[float, float]]]] = []
-    for mode, raw in rows:
+    for mode, role, leg_index, raw in rows:
+        if retraces_approach(role, leg_index, approach_legs):
+            continue
         if not raw:
             return []
         coordinates = json.loads(raw).get("coordinates") or []

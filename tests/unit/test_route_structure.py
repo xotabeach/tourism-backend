@@ -222,3 +222,19 @@ def test_snapshots_without_segments_keep_the_old_rules() -> None:
     )
     # 10 + 3 + 10 × 0.2 + 100 / 20: the car climb is still paid here.
     assert travel_points_for_effort(effort) == 20
+
+
+def test_walk_back_is_drawn_when_nothing_walks_up_to_the_stop() -> None:
+    """The first stop is only touched by the walk back to the car: left out,
+    the line ends short of the pin (BACKEND-63, «Забытые города в скалах»)."""
+    from tourism_backend.modules.routes.application.service import retraces_approach
+
+    approach_legs = {0, 2}
+    # Leg 0 leaves the first stop: no leg walked up to it.
+    assert retraces_approach("return", 0, approach_legs) is False
+    # Leg 1 leaves the stop leg 0 walked up to: the same path twice.
+    assert retraces_approach("return", 1, approach_legs) is True
+    # Leg 2 leaves a stop the car reached.
+    assert retraces_approach("return", 2, approach_legs) is False
+    assert retraces_approach("approach", 1, approach_legs) is False
+    assert retraces_approach("main", 1, approach_legs) is False
