@@ -68,6 +68,8 @@ _INT_SPECS: dict[str, _IntSpec] = {
     "af_hold_overdue_days": _IntSpec(7, 1, 60),
     # Share of required stops a completed run needs to count (spec 15, D2).
     "af_counted_stops_percent": _IntSpec(70, 50, 100),
+    # Days without activity after which an abandoned run is closed (D13).
+    "af_idle_close_days": _IntSpec(7, 1, 60),
 }
 _FLOAT_SPECS: dict[str, _FloatSpec] = {
     "af_pace_violation_ratio": _FloatSpec(0.5, 0.1, 0.9),
@@ -100,6 +102,7 @@ class AntiFraudSettings:
     daily_points_cap: int = 600
     hold_overdue_days: int = 7
     counted_stops_percent: int = 70
+    idle_close_days: int = 7
     pace_source: str = "straight_line"
 
     @property
@@ -239,6 +242,7 @@ def parse_settings(raw: Mapping[str, str]) -> AntiFraudSettings:
         daily_points_cap=_int_value(raw, "af_daily_points_cap"),
         hold_overdue_days=_int_value(raw, "af_hold_overdue_days"),
         counted_stops_percent=_int_value(raw, "af_counted_stops_percent"),
+        idle_close_days=_int_value(raw, "af_idle_close_days"),
         pace_source=pace_source,
     )
 

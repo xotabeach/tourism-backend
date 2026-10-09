@@ -78,3 +78,10 @@ def test_a_place_is_listed_when_enough_different_people_gave_the_reason() -> Non
     }
     assert result["below"] == 1
     assert summarize([])["places"] == []
+
+
+def test_idle_close_setting_has_bounds_and_a_default() -> None:
+    assert parse_settings({}).idle_close_days == 7
+    assert parse_settings({"af_idle_close_days": "14"}).idle_close_days == 14
+    with pytest.raises(ValueError, match="Допустимо"):
+        validate_setting("af_idle_close_days", "0")
