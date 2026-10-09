@@ -138,6 +138,8 @@ class RouteMatchCandidate:
     place_names: tuple[str, ...]
     locality_names: tuple[str, ...]
     stops_count: int
+    # Locality of every stop in order, None where a place has none.
+    stop_localities: tuple[str | None, ...] = ()
     stop_coordinates: tuple[tuple[float, float], ...] = ()
     # Distinct category slugs across the route's stops (ADR-009: primary
     # interest/trip-type signal, since it is the one field with full coverage).
@@ -438,6 +440,11 @@ class _Part:
 _START_FIELDS = frozenset({"city", "start_query", "start_locality_id", "start_place_id"})
 
 
+# A route counts as «по Евпатории» when at least this share of its stops is
+# there: a three-day tour of Crimea with one stop in town does not.
+MIN_NAMED_TOWN_SHARE = 0.25
+
+
 def _explicit(
     field: str,
     confirmed_fields: Sequence[str] | None,
@@ -569,15 +576,39 @@ def score_candidate(
             )
         )
     if params.preferred_localities:
-        has_preferred = any(
-            name.casefold() in scope_text
-            or any(name.casefold() in place.casefold() for place in candidate.place_names)
-            for name in params.preferred_localities
-        )
+        wanted = [name.casefold() for name in params.preferred_localities]
+        # «Маршруты по Евпатории»: with no wider area named, the towns are
+        # the area, and a route elsewhere is not an answer (BACKEND-64).
+        # «Посёлки вроде Фороса» inside a named area stay a soft wish.
+        whole_region = (params.search_area or "").casefold() in {"крым", "crimea", "весь крым"}
+        towns_are_the_area = whole_region or not _location_requested(params, confirmed_fields)
+        if candidate.stop_localities:
+            inside = sum(
+                1
+                for locality, place in zip(
+                    candidate.stop_localities, candidate.place_names, strict=False
+                )
+                if any(
+                    name in (locality or "").casefold() or name in place.casefold()
+                    for name in wanted
+                )
+            )
+            share = inside / len(candidate.stop_localities)
+        else:
+            share = float(
+                any(
+                    name in scope_text
+                    or any(name in place.casefold() for place in candidate.place_names)
+                    for name in wanted
+                )
+            )
+        if towns_are_the_area and share < MIN_NAMED_TOWN_SHARE:
+            return _excluded(candidate, "вне названного города", "вне названного города", signals)
+        has_preferred = share > 0
         parts.append(
             _Part(
-                0.22,
-                1.0 if has_preferred else 0.05,
+                0.32 if towns_are_the_area else 0.22,
+                (0.4 + 0.6 * share if towns_are_the_area else 1.0) if has_preferred else 0.05,
                 "есть места из ваших пожеланий" if has_preferred else None,
                 mismatch=None if has_preferred else "нет мест из ваших пожеланий",
                 rank=6,

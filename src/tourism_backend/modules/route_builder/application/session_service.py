@@ -545,14 +545,20 @@ async def post_message(
             region_slug=str(constraints_dict.get("region_slug") or "crimea"),
         )
         if mentions:
-            names = list(
-                dict.fromkeys(
-                    [
-                        *(constraints_dict.get("preferred_localities") or []),
-                        *(locality.name for locality in mentions),
-                    ]
-                )
-            )[:8]
+            # A town named now replaces the towns of earlier messages, and
+            # one named to turn it down («зачем ты Севастополь скинул»)
+            # leaves the wishes: adding them all up answered «Евпатория»
+            # with Севастополь (BACKEND-64).
+            refused = {
+                locality.name
+                for locality in geography_service.rejected_localities(payload.text, mentions)
+            }
+            mentions = [locality for locality in mentions if locality.name not in refused]
+            names = [locality.name for locality in mentions][:8] or [
+                name
+                for name in (constraints_dict.get("preferred_localities") or [])
+                if name not in refused
+            ]
             mention_patch: dict[str, Any] = {"preferred_localities": names}
             if (
                 goal == "custom"
@@ -723,7 +729,14 @@ async def post_message(
                 matched, locality_label=_discovery_params(constraints_dict, confirmed).search_area
             )
             if catalog_block is not None:
-                assistant_text = "Вот подобранные маршруты по выбранным параметрам:"
+                # With nothing asked for, the cards are not "chosen by your
+                # parameters": say what they are and how to narrow them.
+                assistant_text = (
+                    "Вот подобранные маршруты по выбранным параметрам:"
+                    if getattr(matched, "requested_signals", 0)
+                    else "Пока не знаю твоих пожеланий, поэтому показываю разные маршруты "
+                    "по Крыму. Назови город или что хочется увидеть, и подберу точнее."
+                )
                 provider_name = "catalog_match"
                 blocks = [
                     catalog_block,
