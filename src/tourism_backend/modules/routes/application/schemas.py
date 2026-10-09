@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+RouteRevisionStatus = Literal["draft", "pending_review", "rejected"]
 RoutePublicationStatus = Literal[
     "draft",
     "pending_review",
@@ -114,6 +115,9 @@ class UserRouteDraftOut(BaseModel):
     id: UUID
     publication_status: RoutePublicationStatus
     updated_at: datetime
+    #: A published route being edited (spec 15, D5): the state of the edit
+    #: waiting beside it. The route itself stays ``published`` meanwhile.
+    revision_status: RouteRevisionStatus | None = None
 
 
 class UserRouteEditablePlaceOut(BaseModel):
@@ -153,6 +157,8 @@ class UserRouteEditableOut(BaseModel):
     rejection_reason: str | None = None
     media: list["UserRouteMediaOut"]
     updated_at: datetime
+    #: Set when this is the edit of a published route, not the route itself.
+    revision_status: RouteRevisionStatus | None = None
     #: Places after which the author ended a day; empty when split by norms.
     day_breaks: list[UUID] = Field(default_factory=list)
 
@@ -302,6 +308,10 @@ class RouteListItemOut(BaseModel):
     #: What the moderator asked to fix when the route was returned to its
     #: author. Only ever set on the author's own unpublished route.
     rejection_reason: str | None = None
+    #: The author's own published route with an edit waiting beside it
+    #: (spec 15, D5): the edit's state. The catalogue shows the published
+    #: version until the edit is approved.
+    revision_status: RouteRevisionStatus | None = None
     #: Spec 19: «Популярное» once enough people use the route, «Выбор
     #: редакции» for an editorial route without it, else ``None``.
     badge: Literal["popular", "editors_choice"] | None = None

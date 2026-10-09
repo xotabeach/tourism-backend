@@ -256,6 +256,21 @@ async def submit_route(
     )
 
 
+@router.delete("/routes/{route_id}/revision", status_code=204)
+async def discard_route_revision(
+    route_id: UUID,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> Response:
+    """«Отменить правку» of a published route: the route stays as it is."""
+    await routes_service.discard_user_route_revision(
+        session,
+        route_id=route_id,
+        owner_user_id=user_id,
+    )
+    return Response(status_code=204)
+
+
 @router.post("/routes/{route_id}/withdraw", response_model=UserRouteDraftOut)
 async def withdraw_route(
     route_id: UUID,

@@ -61,6 +61,9 @@ class RouteReviewOut(BaseModel):
     # «full»: walked the route; «partial»: walked a part of it, shown as
     # «прошёл частично» and kept out of the average; None: did not walk it.
     author_walk: Literal["full", "partial"] | None = None
+    # Written before an approved edit replaced the route's content (spec 15,
+    # D6): shown as «до обновления маршрута». The rating still counts.
+    before_route_update: bool = False
 
 
 class RouteReviewListOut(BaseModel):

@@ -71,3 +71,6 @@ class MediaAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     alt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The attachment this one was copied from, when a published route's
+    # files were copied into its edit (BACKEND-38).
+    copied_from_id: Mapped[UUID | None] = mapped_column(nullable=True)

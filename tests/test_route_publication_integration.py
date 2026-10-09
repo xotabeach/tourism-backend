@@ -398,7 +398,7 @@ async def test_sea_tag_follows_the_stops(
 
 
 @pytest.mark.asyncio
-async def test_route_is_editable_from_another_device_and_requeues_when_live(
+async def test_route_is_editable_from_another_device_and_a_live_one_gets_an_edit(
     publication_context: tuple[AsyncClient, Any],
 ) -> None:
     """Resuming an edit must not depend on the phone that started it.
@@ -466,8 +466,9 @@ async def test_route_is_editable_from_another_device_and_requeues_when_live(
         route.visibility = "public"
         await session.commit()
 
-    # A live route is still editable — but saving puts it back in the queue
-    # and out of the catalogue, so the text cannot be swapped after approval.
+    # A live route is still editable, but never in place: the edit waits
+    # beside it as a draft version and the catalogue keeps the published one
+    # (spec 15, D5). The whole flow is covered in test_route_revisions.py.
     resaved = await client.post(
         "/api/v1/routes/drafts",
         headers=headers,
@@ -482,11 +483,12 @@ async def test_route_is_editable_from_another_device_and_requeues_when_live(
         },
     )
     assert resaved.status_code == 200, resaved.text
-    assert resaved.json()["publication_status"] == "pending_review"
-
-    # ...and it cannot be pushed through submit a second time.
-    resubmit = await client.post(f"/api/v1/routes/{route_id}/submit", headers=headers)
-    assert resubmit.status_code == 409, resubmit.text
+    assert resaved.json()["id"] == route_id
+    assert resaved.json()["publication_status"] == "published"
+    assert resaved.json()["revision_status"] == "draft"
+    async with app.state.session_factory() as session:
+        await session.execute(delete(Route).where(Route.revision_of_route_id == UUID(route_id)))
+        await session.commit()
 
 
 @pytest.mark.asyncio

@@ -64,6 +64,14 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
             ),
         ),
         Index(
+            "uq_routes_one_revision",
+            "revision_of_route_id",
+            unique=True,
+            postgresql_where=text(
+                "revision_of_route_id IS NOT NULL AND publication_status <> 'deleted'"
+            ),
+        ),
+        Index(
             "ix_routes_moderation_queue",
             "publication_status",
             "source",
@@ -175,6 +183,15 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     # Empty means the first stop that has a cover photo, as before.
     cover_place_image_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("place_images.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # An edit of a published route (spec 15, D5): a row of its own that
+    # replaces the route's content once approved. Never listed anywhere.
+    revision_of_route_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("routes.id", ondelete="CASCADE"), nullable=True
+    )
+    # When an approved edit last replaced this route's content (D6).
+    content_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 

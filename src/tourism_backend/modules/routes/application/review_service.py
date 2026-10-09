@@ -101,6 +101,7 @@ async def _review_out(
     media: dict[UUID, list[RouteReviewMediaOut]],
     replies: dict[UUID, RouteReviewReplyOut],
     walkers: Mapping[UUID, WalkState] | None = None,
+    content_updated_at: datetime | None = None,
 ) -> RouteReviewOut:
     author = users.get(review.author_user_id)
     return RouteReviewOut(
@@ -118,6 +119,9 @@ async def _review_out(
         reply_to=replies.get(review.id),
         author_completed_route=(walkers or {}).get(review.author_user_id) == "full",
         author_walk=(walkers or {}).get(review.author_user_id),
+        before_route_update=(
+            content_updated_at is not None and review.created_at < content_updated_at
+        ),
     )
 
 
@@ -307,6 +311,9 @@ async def list_published_reviews(
     review_media = await _review_media(session, [row.id for row in rows])
     replies = await _reply_context(session, rows)
     walkers = await walk_states(session, route_id, author_ids)
+    content_updated_at = await session.scalar(
+        select(Route.content_updated_at).where(Route.id == route_id)
+    )
     items = [
         await _review_out(
             session,
@@ -317,6 +324,7 @@ async def list_published_reviews(
             media=review_media,
             replies=replies,
             walkers=walkers,
+            content_updated_at=content_updated_at,
         )
         for row in rows
     ]

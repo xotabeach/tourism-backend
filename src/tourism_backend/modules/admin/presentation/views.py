@@ -84,6 +84,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_route_fk,
     format_route_name_with_structure,
     format_route_publication_status,
+    format_route_revision_link,
     format_sms_delivery_status,
     format_ticket_awaiting,
     format_ticket_kind,
@@ -96,6 +97,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
 from tourism_backend.modules.admin.presentation.permissions import (
     PermissionedModelView as ModelView,
 )
+from tourism_backend.modules.admin.presentation.route_revision_admin import RouteRevisionAdmin
 from tourism_backend.modules.admin.presentation.route_structure_admin import RouteStructureAdmin
 from tourism_backend.modules.admin.presentation.skip_signals_admin import SkipSignalsAdmin
 from tourism_backend.modules.admin.presentation.stats_admin import StatsAdmin
@@ -174,6 +176,9 @@ from tourism_backend.modules.routes.application.rejection import (
 )
 from tourism_backend.modules.routes.application.rejection import (
     rejection_text as route_rejection_text,
+)
+from tourism_backend.modules.routes.application.route_revisions import (
+    apply_revision as apply_route_revision,
 )
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteReview
 from tourism_backend.modules.runtime_config.application.service import (
@@ -1555,6 +1560,7 @@ class RouteAdmin(ModelView, model=Route):
     column_list = [
         Route.publication_status,
         Route.name,
+        Route.revision_of_route_id,
         Route.owner_user_id,
         Route.source,
         Route.visibility,
@@ -1567,6 +1573,7 @@ class RouteAdmin(ModelView, model=Route):
         Route.id: "ID",
         Route.publication_status: "Статус",
         Route.name: "Название",
+        Route.revision_of_route_id: "Правка",
         Route.owner_user_id: "Автор",
         Route.source: "Источник",
         Route.visibility: "Видимость",
@@ -1585,6 +1592,7 @@ class RouteAdmin(ModelView, model=Route):
     }
     column_formatters = {
         Route.publication_status: format_route_publication_status,
+        Route.revision_of_route_id: format_route_revision_link,
         Route.owner_user_id: format_user_fk,
         Route.source: choice_formatter(
             "source",
@@ -1634,6 +1642,7 @@ class RouteAdmin(ModelView, model=Route):
         AllUniqueStringValuesFilter(Route.source),
         AllUniqueStringValuesFilter(Route.visibility),
         BooleanFilter(Route.is_seaside, title="Море"),
+        OperationColumnFilter(Route.revision_of_route_id, title="Правка маршрута (ID)"),
         OperationColumnFilter(Route.owner_user_id, title="ID автора"),
     ]
     form_choices = {
@@ -1746,23 +1755,36 @@ class RouteAdmin(ModelView, model=Route):
                     elif publication_status == "published":
                         route.rejection_reason = None
                         route.moderator_note = None
-                    route.publication_status = publication_status
-                    route.updated_at = now
-                    if publication_status == "published":
-                        route.visibility = "public"
-                        route.lifecycle_status = "active"
-                    elif publication_status == "deleted":
-                        route.visibility = "private"
-                        route.lifecycle_status = "archived"
+                    # An edit of a published route (spec 15, D5): approving
+                    # it replaces that route's content; the edit row itself
+                    # is never published.
+                    revised: Route | None = None
+                    if route.revision_of_route_id is not None and publication_status == "published":
+                        revised = await apply_route_revision(session, route, now=now)
                     else:
-                        route.visibility = "private"
-                        route.lifecycle_status = "draft"
+                        route.publication_status = publication_status
+                        route.updated_at = now
+                    subject = revised or route
+                    if revised is None:
+                        if publication_status == "published":
+                            route.visibility = "public"
+                            route.lifecycle_status = "active"
+                        elif publication_status == "deleted":
+                            route.visibility = "private"
+                            route.lifecycle_status = "archived"
+                        else:
+                            route.visibility = "private"
+                            route.lifecycle_status = "draft"
                     await record_audit(
                         session,
                         actor_id=actor_id,
-                        action=f"admin.route_{publication_status}",
+                        action=(
+                            "admin.route_revision_published"
+                            if revised is not None
+                            else f"admin.route_{publication_status}"
+                        ),
                         entity_type="route",
-                        entity_id=str(route.id),
+                        entity_id=str(subject.id),
                         ip=request.client.host if request.client else None,
                     )
                     if (
@@ -1773,9 +1795,12 @@ class RouteAdmin(ModelView, model=Route):
                         notif = await notifications_service.create_route_moderation_notification(
                             session,
                             owner_user_id=route.owner_user_id,
-                            route_id=route.id,
-                            route_name=route.name,
+                            # The author's route is the published one,
+                            # whichever row the decision was made on.
+                            route_id=route.revision_of_route_id or route.id,
+                            route_name=subject.name,
                             approved=publication_status == "published",
+                            revision=route.revision_of_route_id is not None,
                             reason=route_rejection_text(
                                 route.rejection_reason, route.moderator_note
                             ),
@@ -1788,7 +1813,7 @@ class RouteAdmin(ModelView, model=Route):
                             title=notif.title,
                             body=notif.body,
                             target_type="route",
-                            target_id=route.id,
+                            target_id=route.revision_of_route_id or route.id,
                         )
                 await session.commit()
                 if without_note:
@@ -4324,6 +4349,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(RouteStructureAdmin)
     admin.add_view(DifficultyFeedbackAdmin)
     admin.add_view(SkipSignalsAdmin)
+    admin.add_view(RouteRevisionAdmin)
     admin.add_view(TransitAdmin)
     admin.add_view(TransitLineAdmin)
     admin.add_view(AchievementAdmin)
@@ -4368,6 +4394,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         RouteStructureAdmin.session_maker = session_maker
         DifficultyFeedbackAdmin.session_maker = session_maker
         SkipSignalsAdmin.session_maker = session_maker
+        RouteRevisionAdmin.session_maker = session_maker
         TransitAdmin.session_maker = session_maker
         TransitLineAdmin.session_maker = session_maker
         StatsAdmin.session_maker = session_maker
