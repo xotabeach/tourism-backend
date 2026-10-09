@@ -21,6 +21,7 @@ from tourism_backend.modules.route_execution.application.rewards import (
     completed_share_percent,
     paid_leg_positions,
     paid_way_share,
+    run_counts,
     travel_points_for_effort,
 )
 from tourism_backend.modules.route_execution.infrastructure.models import (
@@ -193,6 +194,63 @@ def _share_of(total: int | None, share: float) -> int | None:
     return round(total * max(0.0, share))
 
 
+async def _required_share(session: AsyncSession, execution: RouteExecution) -> int:
+    required = list(
+        await session.scalars(
+            select(RouteExecutionStop).where(
+                RouteExecutionStop.execution_id == execution.id,
+                RouteExecutionStop.is_optional.is_(False),
+            )
+        )
+    )
+    return completed_share_percent(
+        sum(stop.completed_at is not None for stop in required), len(required)
+    )
+
+
+async def _close_abandoned(
+    session: AsyncSession,
+    *,
+    execution: RouteExecution,
+    user: User,
+    moment: datetime,
+    now: datetime,
+) -> bool:
+    """Close a run nobody came back to; True when it was closed as walked.
+
+    Someone who walked the route and forgot «Завершить» must not lose it
+    (spec 15, D16): when the share of marked stops reaches the counting
+    threshold the run is closed as completed and counts. Otherwise it is
+    cancelled as ended early. Either way the walked legs are paid, and the
+    stops never reached are not.
+    """
+    settings = await load_settings(session)
+    share = await _required_share(session, execution)
+    if not run_counts(share, settings.counted_stops_percent):
+        await _end_early(session, execution=execution, user=user, moment=moment, now=now)
+        return False
+    if execution.status == "paused" and execution.paused_at is not None:
+        execution.paused_duration_seconds += max(
+            0, int((moment - execution.paused_at).total_seconds())
+        )
+    execution.status = "completed"
+    execution.completed_at = moment
+    execution.paused_at = None
+    execution.night_paused = False
+    execution.counted = True
+    execution.completed_share_percent = share
+    execution.updated_at = now
+    await _award_completion_points(
+        session,
+        execution=execution,
+        user=user,
+        settings=settings,
+        now=now,
+        ended_early=True,
+    )
+    return True
+
+
 async def _end_early(
     session: AsyncSession,
     *,
@@ -203,8 +261,8 @@ async def _end_early(
 ) -> None:
     """Cancel a run before its end and pay for what was walked.
 
-    An ended run never counts as «прошёл маршрут», however much of it was
-    walked: counting is for a run the walker completed.
+    A run its walker ended early does not count as «прошёл маршрут»,
+    however much of it was walked: counting is for a completed run.
     """
     if execution.status == "paused" and execution.paused_at is not None:
         execution.paused_duration_seconds += max(
@@ -216,17 +274,7 @@ async def _end_early(
     execution.night_paused = False
     execution.ended_early = True
     execution.counted = False
-    required = list(
-        await session.scalars(
-            select(RouteExecutionStop).where(
-                RouteExecutionStop.execution_id == execution.id,
-                RouteExecutionStop.is_optional.is_(False),
-            )
-        )
-    )
-    execution.completed_share_percent = completed_share_percent(
-        sum(stop.completed_at is not None for stop in required), len(required)
-    )
+    execution.completed_share_percent = await _required_share(session, execution)
     execution.updated_at = now
     await _award_completion_points(
         session,

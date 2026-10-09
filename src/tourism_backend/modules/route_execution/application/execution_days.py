@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.route_execution.application import antifraud_service
+from tourism_backend.modules.route_execution.application.antifraud_settings import load_settings
 from tourism_backend.modules.route_execution.application.execution_common import (
     _commit_event,
     _execution_out,
@@ -16,6 +17,7 @@ from tourism_backend.modules.route_execution.application.execution_common import
     _snapshot_days,
 )
 from tourism_backend.modules.route_execution.application.execution_reward import (
+    _close_abandoned,
     _end_early,
 )
 from tourism_backend.modules.route_execution.application.offline_sync import (
@@ -155,11 +157,9 @@ async def resume_execution(
 
 # ---------------------------------------------------------- multi-day runs
 
-#: A multi-day run with no event for this long is closed (spec 14, D21):
-#: max(planned days + 3, 7) days.
-_IDLE_MIN_DAYS = 7
-
-
+#: A multi-day run gets at least its planned days plus this many before it
+#: is closed as abandoned (spec 14, D21); the base number of days is the
+#: ``af_idle_close_days`` setting.
 _IDLE_EXTRA_DAYS = 3
 
 
@@ -219,24 +219,27 @@ async def finish_early_execution(
 async def _close_if_idle(
     session: AsyncSession, execution: RouteExecution, *, now: datetime
 ) -> bool:
-    """Close a multi-day run nobody came back to; True when it was closed.
+    """Close a run nobody came back to; True when it was closed.
 
-    Done lazily when its owner next asks for the active run or starts a
-    route, so an abandoned run never blocks them and no job is needed.
+    Any run, one-day or multi-day (spec 15, D13): an abandoned run must not
+    block its owner's next start forever. A multi-day run gets at least its
+    planned days plus a few. Done lazily when the owner next asks for the
+    active run or starts a route, so no job is needed.
     """
+    settings = await load_settings(session)
     planned = len(await _snapshot_days(session, execution))
-    if planned <= 1 and execution.night_pauses == 0:
-        return False
-    idle_days = max(planned + _IDLE_EXTRA_DAYS, _IDLE_MIN_DAYS)
+    idle_days = settings.idle_close_days
+    if planned > 1 or execution.night_pauses > 0:
+        idle_days = max(planned + _IDLE_EXTRA_DAYS, idle_days)
     if now - execution.updated_at < timedelta(days=idle_days):
         return False
     user = await antifraud_service.lock_user(session, execution.user_id)
     moment = execution.paused_at or execution.updated_at
-    await _end_early(session, execution=execution, user=user, moment=moment, now=now)
+    walked = await _close_abandoned(session, execution=execution, user=user, moment=moment, now=now)
     await _commit_event(
         session,
         execution=execution,
-        action="finish_early",
+        action="complete" if walked else "finish_early",
         resolved=resolve_event_time(None, now=now, not_before=moment),
         now=now,
         applied=True,

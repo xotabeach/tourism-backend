@@ -420,3 +420,88 @@ async def test_a_partial_walker_may_rate_but_stays_out_of_the_average(
     assert after["average_rating"] == pytest.approx(
         (total_before + 5) / after["rating_count"], abs=0.06
     )
+
+
+async def _age_run(run_id: str, days: int) -> None:
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE route_executions "
+                    "SET updated_at = now() - make_interval(days => :days) WHERE id = :id"
+                ),
+                {"days": days, "id": run_id},
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _abandon(
+    client: AsyncClient, route_id: str, *, marked: int, days: int
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Start a one-day run, mark the first stops and leave it for some days."""
+    headers = await _headers(client)
+    run = await _start(client, headers, route_id)
+    for stop in run["stops"][:marked]:
+        await _mark(client, headers, run["id"], stop["id"])
+    await _age_run(run["id"], days)
+    return run, headers
+
+
+async def test_an_abandoned_one_day_run_closes_itself_and_frees_the_start(
+    live_client: AsyncClient,
+) -> None:
+    route_id = await _route_with_stops(live_client, minimum=4)
+    run, headers = await _abandon(live_client, route_id, marked=1, days=8)
+
+    active = await live_client.get(f"{API}/active", headers=headers)
+    assert active.status_code in (200, 204), active.text
+    assert not active.content or active.json() is None
+
+    closed = (await live_client.get(f"{API}/{run['id']}", headers=headers)).json()
+    # One stop of four: paid for the walk, but neither completed nor counted.
+    assert (closed["status"], closed["ended_early"], closed["counted"]) == (
+        "cancelled",
+        True,
+        False,
+    )
+    assert closed["completed_share_percent"] == 100 // closed["required_stops"]
+    assert closed["awarded_points"] > 0
+    again = await _start(live_client, headers, route_id)
+    assert again["id"] != run["id"]
+    await live_client.post(f"{API}/{again['id']}/cancel", headers=headers)
+
+
+async def test_a_run_walked_and_forgotten_is_closed_as_completed(
+    live_client: AsyncClient,
+) -> None:
+    route_id = await _route_with_stops(live_client, minimum=4)
+    whole = await _walk(live_client, route_id)
+    run, headers = await _abandon(live_client, route_id, marked=len(whole["stops"]) - 1, days=8)
+
+    assert (await live_client.get(f"{API}/active", headers=headers)).content in (b"", b"null")
+    closed = (await live_client.get(f"{API}/{run['id']}", headers=headers)).json()
+
+    share = (closed["required_stops"] - 1) * 100 // closed["required_stops"]
+    assert share >= 70
+    assert (closed["status"], closed["counted"], closed["ended_early"]) == (
+        "completed",
+        True,
+        False,
+    )
+    assert closed["completed_share_percent"] == share
+    assert closed["completed_at"] is not None
+    # The stop never reached is not paid for.
+    assert 0 < closed["awarded_points"] < whole["awarded_points"]
+
+
+async def test_a_run_is_left_alone_before_the_idle_days_pass(live_client: AsyncClient) -> None:
+    route_id = await _route_with_stops(live_client, minimum=4)
+    run, headers = await _abandon(live_client, route_id, marked=1, days=6)
+    try:
+        active = await live_client.get(f"{API}/active", headers=headers)
+        assert active.json()["id"] == run["id"]
+        assert active.json()["status"] == "active"
+    finally:
+        await live_client.post(f"{API}/{run['id']}/cancel", headers=headers)
