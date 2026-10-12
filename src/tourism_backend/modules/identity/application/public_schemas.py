@@ -19,6 +19,9 @@ class PublicUserOut(BaseModel):
     liked_by_me: bool = False
     #: Only on a single-profile fetch: the viewer blocked this person.
     blocked_by_me: bool = False
+    #: The hat on this person's companion character; None is the hat the
+    #: account was given (BACKEND-65).
+    bean_hat: str | None = None
     is_expert: bool = False
     #: The КРЫМТРИП editorial profile: badge «Редакция», no rating (spec 16).
     is_editorial: bool = False
