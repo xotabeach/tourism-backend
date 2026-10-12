@@ -24,6 +24,7 @@ from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
 from tourism_backend.modules.places.infrastructure.models import Place, PlaceImage
+from tourism_backend.modules.routes.application import coauthors
 from tourism_backend.modules.routes.application.difficulty import (
     level_from_legacy,
 )
@@ -39,6 +40,7 @@ from tourism_backend.modules.routes.application.schemas import (
 )
 from tourism_backend.modules.routes.infrastructure.models import (
     Route,
+    RouteCoauthor,
     RouteReview,
     RouteStop,
 )
@@ -433,6 +435,7 @@ async def _list_from_stmt(
     covers = await _cover_urls_for_routes(session, route_ids)
     authors = await _author_fields_for_routes(session, routes)
     ratings = await route_ratings(session, route_ids)
+    coauthor_map = await coauthors.coauthors_out(session, route_ids)
     items = []
     for route in routes:
         owner_id, label, avatar, is_expert, rank_title = authors[route.id]
@@ -449,6 +452,7 @@ async def _list_from_stmt(
                 rating=ratings.get(route.id, (None, 0)),
             )
         )
+        items[-1].coauthors = coauthor_map.get(route.id, [])
     return RouteListOut(items=items, total=total, limit=limit, offset=offset)
 
 
@@ -502,9 +506,17 @@ async def list_public_routes_for_owner(
     limit: int,
     offset: int,
 ) -> RouteListOut:
+    # A profile shows the routes the person co-authored too (spec 11c, D7).
     stmt: Select[tuple[Route]] = select(Route).where(
         *_PUBLIC_USER_OWNED,
-        Route.owner_user_id == owner_user_id,
+        or_(
+            Route.owner_user_id == owner_user_id,
+            Route.id.in_(
+                select(RouteCoauthor.route_id).where(
+                    RouteCoauthor.user_id == owner_user_id, RouteCoauthor.state == "joined"
+                )
+            ),
+        ),
         ~_has_unpublished_stop(),
     )
     return await _list_from_stmt(session, stmt, limit=limit, offset=offset)
@@ -519,7 +531,16 @@ async def list_routes_for_owner(
 ) -> RouteListOut:
     stmt: Select[tuple[Route]] = select(Route).where(
         Route.source.in_(("user_created", "generated")),
-        Route.owner_user_id == owner_user_id,
+        # «Мои маршруты» lists the routes one co-authors or is asked to.
+        or_(
+            Route.owner_user_id == owner_user_id,
+            Route.id.in_(
+                select(RouteCoauthor.route_id).where(
+                    RouteCoauthor.user_id == owner_user_id,
+                    RouteCoauthor.state.in_(coauthors.ACTIVE),
+                )
+            ),
+        ),
         Route.publication_status != "deleted",
         # An edit is shown on the route it belongs to, not as a route.
         Route.revision_of_route_id.is_(None),

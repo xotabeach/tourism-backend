@@ -25,6 +25,7 @@ from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.route_builder.application.routing import (
     TransportMode,
 )
+from tourism_backend.modules.routes.application import coauthors
 from tourism_backend.modules.routes.application.difficulty import (
     lowest_manual_level,
 )
@@ -163,14 +164,21 @@ async def _owned_editable_route(
     route_id: UUID,
     owner_user_id: UUID,
     allowed: frozenset[str] = _EDITABLE_ROUTE_STATUSES,
+    allow_coauthors: bool = False,
 ) -> Route:
+    """The route ``owner_user_id`` may edit. With ``allow_coauthors`` a
+    co-author may too (spec 11c, D7); deleting and withdrawing stay the
+    owner's."""
     route = await session.get(Route, route_id)
     if (
         route is None
-        or route.owner_user_id != owner_user_id
         or route.source not in {"user_created", "generated"}
         # An edit is reached through the route it belongs to, never by id.
         or route.revision_of_route_id is not None
+    ):
+        raise AppError(code="route_not_found", message="Route not found", status_code=404)
+    if route.owner_user_id != owner_user_id and not (
+        allow_coauthors and await coauthors.role_on(session, route, owner_user_id) == "coauthor"
     ):
         raise AppError(code="route_not_found", message="Route not found", status_code=404)
     if route.publication_status not in allowed:
@@ -193,7 +201,9 @@ async def _edit_target(
     For a published route that row is its edit (started as a copy when there
     is none yet); for anything else it is the route itself.
     """
-    route = await _owned_editable_route(session, route_id=route_id, owner_user_id=owner_user_id)
+    route = await _owned_editable_route(
+        session, route_id=route_id, owner_user_id=owner_user_id, allow_coauthors=True
+    )
     if route.publication_status != "published":
         return route, route
     return route, await ensure_revision(session, route, now=datetime.now(UTC))
@@ -226,6 +236,7 @@ async def get_user_route_for_edit(
         session,
         route_id=route_id,
         owner_user_id=owner_user_id,
+        allow_coauthors=True,
     )
     # A published route with an edit in progress opens on the edit; reading
     # alone never starts one.
@@ -309,6 +320,12 @@ async def get_user_route_for_edit(
         ],
         updated_at=route.updated_at,
         day_breaks=[UUID(value) for value in route.day_breaks or [] if _is_uuid(value)],
+        my_role="owner" if public.owner_user_id == owner_user_id else "coauthor",
+        owner_user_id=public.owner_user_id,
+        owner_consented=public.owner_consented_at is not None,
+        coauthors=(
+            await coauthors.coauthors_out(session, [public.id], states=coauthors.ACTIVE)
+        ).get(public.id, []),
     )
 
 
@@ -427,6 +444,8 @@ async def save_user_route_draft(
             owner_user_id=owner_user_id,
         )
         _reject_stale_draft_save(route, payload.expected_updated_at)
+        # Every author agrees to the version that is sent (spec 11c, D7).
+        await coauthors.reset_consents(session, public)
         # «Сохранить» on an edit is a draft of the version: it goes to the
         # moderator only when the author sends it, and saving again takes a
         # waiting edit back out of the queue (D17).
@@ -560,6 +579,7 @@ async def submit_user_route(
         route_id=route_id,
         owner_user_id=owner_user_id,
         allowed=frozenset({"draft", "rejected", "published"}),
+        allow_coauthors=True,
     )
     route = public
     if public.publication_status == "published":
@@ -596,6 +616,15 @@ async def submit_user_route(
             message="Start and finish are required",
             status_code=400,
         )
+    # «Опубликовать» is each author's consent; with co-authors the route
+    # waits until all of them gave it to this version (spec 11c, D7).
+    await coauthors.record_consent(session, public, owner_user_id)
+    if not await coauthors.everyone_consented(session, public):
+        await session.commit()
+        await session.refresh(public)
+        out = _draft_out(public, route)
+        out.awaiting_coauthors = True
+        return out
     route.publication_status = "pending_review"
     # The author answered the moderator's note by sending the route again.
     route.rejection_reason = None

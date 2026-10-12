@@ -165,6 +165,7 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecutionStop,
 )
 from tourism_backend.modules.routes.application import review_service
+from tourism_backend.modules.routes.application.coauthors import rows as coauthor_rows
 from tourism_backend.modules.routes.application.difficulty import level_from_legacy
 from tourism_backend.modules.routes.application.rejection import (
     RejectionReason,
@@ -1820,6 +1821,23 @@ class RouteAdmin(ModelView, model=Route):
                             target_type="route",
                             target_id=route.revision_of_route_id or route.id,
                         )
+                        # The decision and its reason reach every co-author
+                        # (spec 11c, D4).
+                        authored = route.revision_of_route_id or route.id
+                        for coauthor in await coauthor_rows(session, authored):
+                            if coauthor.state != "joined":
+                                continue
+                            await notifications_service.create_route_moderation_notification(
+                                session,
+                                owner_user_id=coauthor.user_id,
+                                route_id=authored,
+                                route_name=subject.name,
+                                approved=publication_status == "published",
+                                revision=route.revision_of_route_id is not None,
+                                reason=route_rejection_text(
+                                    route.rejection_reason, route.moderator_note
+                                ),
+                            )
                 await session.commit()
                 if without_note:
                     Flash.error(

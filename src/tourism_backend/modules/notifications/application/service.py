@@ -409,6 +409,30 @@ async def create_companion_notification(
     return notification
 
 
+async def create_route_coauthor_notification(
+    session: AsyncSession,
+    *,
+    recipient_user_id: UUID,
+    actor_user_id: UUID | None,
+    kind: str,
+    title: str,
+    body: str,
+    route_id: UUID,
+) -> Notification:
+    """An offer to co-author a route, or a co-author's refusal (spec 11c)."""
+    notification = _build_notification(
+        user_id=recipient_user_id,
+        actor_user_id=actor_user_id,
+        kind=kind,
+        title=title,
+        body=body,
+        target_type="route",
+        target_id=route_id,
+    )
+    session.add(notification)
+    return notification
+
+
 async def maybe_push_notification(
     session: AsyncSession,
     settings: Settings,

@@ -193,6 +193,41 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     content_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The owner pressed «Опубликовать» on the route as it is now; any edit
+    # clears it (spec 11c D7).
+    owner_consented_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class RouteCoauthor(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A co-author of a user route (spec 11c, D7).
+
+    Chosen by the owner on the publish page, up to three. The route goes to
+    the moderator once the owner and every co-author pressed «Опубликовать»
+    on the same version.
+    """
+
+    __tablename__ = "route_coauthors"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('invited', 'joined', 'declined', 'removed', 'left')", name="state"
+        ),
+        UniqueConstraint("route_id", "user_id", name="uq_route_coauthors_route_user"),
+        Index("ix_route_coauthors_user_state", "user_id", "state"),
+    )
+
+    route_id: Mapped[UUID] = mapped_column(
+        ForeignKey("routes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    invited_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    consented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RouteStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):

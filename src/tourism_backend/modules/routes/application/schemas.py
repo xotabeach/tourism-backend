@@ -111,6 +111,26 @@ class UserRouteDraftIn(BaseModel):
         return cleaned
 
 
+CoauthorState = Literal["invited", "joined", "declined", "removed", "left"]
+
+
+class RouteCoauthorOut(BaseModel):
+    """A co-author of a user route (spec 11c, D7)."""
+
+    user_id: UUID
+    display_name: str
+    avatar_url: str | None = None
+    state: CoauthorState = "joined"
+    #: Pressed «Опубликовать» on the route as it is now.
+    consented: bool = False
+
+
+class RouteCoauthorsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_ids: list[UUID] = Field(default_factory=list, max_length=10)
+
+
 class UserRouteDraftOut(BaseModel):
     id: UUID
     publication_status: RoutePublicationStatus
@@ -118,6 +138,9 @@ class UserRouteDraftOut(BaseModel):
     #: A published route being edited (spec 15, D5): the state of the edit
     #: waiting beside it. The route itself stays ``published`` meanwhile.
     revision_status: RouteRevisionStatus | None = None
+    #: «Опубликовать» was pressed, and the route waits for the other authors
+    #: to press it too before it goes to the moderator (spec 11c, D7).
+    awaiting_coauthors: bool = False
 
 
 class UserRouteEditablePlaceOut(BaseModel):
@@ -161,6 +184,12 @@ class UserRouteEditableOut(BaseModel):
     revision_status: RouteRevisionStatus | None = None
     #: Places after which the author ended a day; empty when split by norms.
     day_breaks: list[UUID] = Field(default_factory=list)
+    #: Who opens this editor: the route's owner or one of its co-authors.
+    my_role: Literal["owner", "coauthor"] = "owner"
+    owner_user_id: UUID | None = None
+    owner_consented: bool = False
+    #: Invited and joined co-authors with their consent (spec 11c, D7).
+    coauthors: list[RouteCoauthorOut] = Field(default_factory=list)
 
 
 class UserRouteMediaSyncIn(BaseModel):
@@ -301,6 +330,8 @@ class RouteListItemOut(BaseModel):
     #: Travel rank of the owning user, resolved from ``travel_points``.
     #: ``None`` for editorial routes, which have no owning user.
     author_rank_title: str | None = None
+    #: Joined co-authors: the card says «Никита и Андрей» (spec 11c, D7).
+    coauthors: list[RouteCoauthorOut] = Field(default_factory=list)
     #: Mean of published, non-reply review ratings. ``None`` until the route
     #: has at least one — a card must not imply a score nobody has given.
     rating_average: float | None = None

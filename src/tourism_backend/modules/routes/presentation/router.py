@@ -6,8 +6,8 @@ from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile,
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
 from tourism_backend.api.errors import AppError
 from tourism_backend.modules.maps.presentation.router import route_map_response
+from tourism_backend.modules.routes.application import coauthors, review_media, review_service
 from tourism_backend.modules.routes.application import media as route_media
-from tourism_backend.modules.routes.application import review_media, review_service
 from tourism_backend.modules.routes.application import service as routes_service
 from tourism_backend.modules.routes.application.review_schemas import (
     MyRouteReviewListOut,
@@ -18,6 +18,8 @@ from tourism_backend.modules.routes.application.review_schemas import (
 )
 from tourism_backend.modules.routes.application.schemas import (
     RouteCatalogSort,
+    RouteCoauthorOut,
+    RouteCoauthorsIn,
     RouteDayOut,
     RouteDaysIn,
     RouteDetailOut,
@@ -269,6 +271,32 @@ async def discard_route_revision(
         owner_user_id=user_id,
     )
     return Response(status_code=204)
+
+
+@router.put("/routes/{route_id}/coauthors", response_model=list[RouteCoauthorOut])
+async def set_route_coauthors(
+    route_id: UUID,
+    payload: RouteCoauthorsIn,
+    session: DbSession,
+    settings: SettingsDep,
+    user_id: CurrentUserId,
+) -> list[RouteCoauthorOut]:
+    """The owner's choice of co-authors on the publish page (spec 11c, D7)."""
+    return await coauthors.set_coauthors(
+        session,
+        settings=settings,
+        route_id=route_id,
+        owner_id=user_id,
+        user_ids=payload.user_ids,
+    )
+
+
+@router.delete("/routes/{route_id}/coauthorship", status_code=204)
+async def leave_route_coauthorship(
+    route_id: UUID, session: DbSession, settings: SettingsDep, user_id: CurrentUserId
+) -> None:
+    """A co-author declines the offer or steps out of the route."""
+    await coauthors.leave(session, settings=settings, route_id=route_id, user_id=user_id)
 
 
 @router.post("/routes/{route_id}/withdraw", response_model=UserRouteDraftOut)

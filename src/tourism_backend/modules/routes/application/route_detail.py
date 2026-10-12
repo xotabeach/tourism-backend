@@ -10,6 +10,7 @@ from geoalchemy2 import Geometry
 from geoalchemy2.functions import ST_X, ST_Y, ST_AsGeoJSON
 from sqlalchemy import (
     cast,
+    or_,
     select,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from tourism_backend.config import get_settings
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.application import place_covers
 from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.routes.application import coauthors
 from tourism_backend.modules.routes.application.route_catalog import (
     _PUBLIC_CATALOG,
     _author_fields_for_routes,
@@ -41,6 +43,7 @@ from tourism_backend.modules.routes.application.schemas import (
 )
 from tourism_backend.modules.routes.infrastructure.models import (
     Route,
+    RouteCoauthor,
     RouteDay,
     RouteSegment,
     RouteStop,
@@ -128,6 +131,7 @@ async def _route_detail_from_model(
         author_rank_title=rank_title,
         rating=ratings.get(route.id, (None, 0)),
     )
+    base.coauthors = (await coauthors.coauthors_out(session, [route.id])).get(route.id, [])
     return RouteDetailOut(
         **base.model_dump(),
         description=route.description,
@@ -368,7 +372,15 @@ async def get_owned_route(
     route = await session.scalar(
         select(Route).where(
             Route.id == route_id,
-            Route.owner_user_id == owner_user_id,
+            or_(
+                Route.owner_user_id == owner_user_id,
+                Route.id.in_(
+                    select(RouteCoauthor.route_id).where(
+                        RouteCoauthor.user_id == owner_user_id,
+                        RouteCoauthor.state.in_(coauthors.ACTIVE),
+                    )
+                ),
+            ),
             Route.source.in_(("user_created", "generated")),
             Route.publication_status != "deleted",
             Route.revision_of_route_id.is_(None),
