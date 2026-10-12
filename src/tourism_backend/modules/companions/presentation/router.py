@@ -3,13 +3,14 @@
 from fastapi import APIRouter, Response, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
-from tourism_backend.modules.companions.application import groups
+from tourism_backend.modules.companions.application import groups, start
 from tourism_backend.modules.companions.application.schemas import (
     CompanionGroupCreateIn,
     CompanionGroupListOut,
     CompanionGroupOut,
     CompanionInviteIn,
     CompanionJoinIn,
+    CompanionReadyIn,
     CompanionReportIn,
 )
 
@@ -136,3 +137,19 @@ async def report_invitation(
     group_id: str, payload: CompanionReportIn, session: DbSession, user_id: CurrentUserId
 ) -> None:
     await groups.report_invitation(session, group_id=group_id, user_id=user_id, payload=payload)
+
+
+@router.post("/companion-groups/{group_id}/ready", response_model=CompanionGroupOut)
+async def set_ready(
+    group_id: str, payload: CompanionReadyIn, session: DbSession, user_id: CurrentUserId
+) -> CompanionGroupOut:
+    """«Готов» on the gathering screen; refused while another run is open."""
+    return await start.set_ready(session, group_id=group_id, user_id=user_id, ready=payload.ready)
+
+
+@router.post("/companion-groups/{group_id}/start", response_model=CompanionGroupOut)
+async def start_group(
+    group_id: str, session: DbSession, settings: SettingsDep, user_id: CurrentUserId
+) -> CompanionGroupOut:
+    """The organizer's start; each phone then starts its own run."""
+    return await start.start_group(session, settings=settings, group_id=group_id, actor_id=user_id)

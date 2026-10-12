@@ -33,6 +33,12 @@ class RouteExecutionStartIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route_id: UUID
+    #: When the phone started the run. A phone that started offline reports
+    #: it when the network is back; accepted in the same window as an
+    #: offline stop mark (spec 11b D11). Absent means «now».
+    occurred_at: datetime | None = None
+    #: Starts the run as the walker's part of this group (spec 11b D12).
+    companion_group_id: UUID | None = None
 
 
 class RouteExecutionEventIn(BaseModel):
