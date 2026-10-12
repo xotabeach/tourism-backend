@@ -57,6 +57,9 @@ async def collect(session: AsyncSession, user_id: UUID, *, historical: bool = Fa
     )
     if extreme_exists is None:
         facts.soon.add("legend-path")
+    from tourism_backend.modules.companions.application.progress import company_count
+
+    facts.counters["group"] = float(await company_count(session, user_id))
     facts.counters["favorite"] = float(
         await session.scalar(
             select(func.count()).select_from(FavoriteRoute).where(FavoriteRoute.user_id == user_id)

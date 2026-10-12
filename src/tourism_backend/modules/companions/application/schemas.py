@@ -95,3 +95,74 @@ class CompanionGroupListOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[CompanionGroupOut]
+
+
+ProgressStatus = Literal["not_started", "walking", "paused", "finished", "quit", "not_finished"]
+
+
+class CompanionStopMarkOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    position: int
+    marked_at: datetime | None = None
+    skipped: bool = False
+    #: The mark reached the server long after it was made (D11): shown
+    #: «без сети», and it takes no first place.
+    offline: bool = False
+
+
+class CompanionMemberProgressOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    display_name: str
+    avatar_url: str | None = None
+    is_organizer: bool = False
+    joined_late: bool = False
+    status: ProgressStatus
+    #: The last stop marked or skipped, 0 before the first.
+    last_position: int = 0
+    marks: list[CompanionStopMarkOut] = Field(default_factory=list)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    #: The run went «в зачёт» (spec 15 D2): this member reached the end.
+    reached: bool = False
+
+
+class CompanionStopOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    position: int
+    place_name: str
+    is_optional: bool = False
+    #: Who got here first, among marks made online; None on a mountain route
+    #: where the table is hidden, or when nobody has been here yet.
+    first_user_id: str | None = None
+
+
+class CompanionSummaryOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    settled: bool
+    started_count: int
+    reached_count: int
+    everyone_reached: bool
+    #: Paid kilometres of the farthest walker who reached the end (D14).
+    distance_meters: int | None = None
+    #: From the group's start to the last arrival.
+    total_seconds: int | None = None
+    #: First at the finish: reached it without skipping a required stop.
+    first_finisher_user_id: str | None = None
+
+
+class CompanionProgressOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_id: str
+    status: GroupStatus
+    started_at: datetime | None = None
+    #: The «кто первым» table is hidden on mountain routes (D7).
+    leaderboard_hidden: bool = False
+    stops: list[CompanionStopOut]
+    members: list[CompanionMemberProgressOut]
+    summary: CompanionSummaryOut
