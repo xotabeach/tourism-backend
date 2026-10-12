@@ -27,7 +27,7 @@ def upgrade() -> None:
             primary_key=True,
         ),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint("blocker_id <> blocked_user_id", name="ck_user_blocks_not_self"),
+        sa.CheckConstraint("blocker_id <> blocked_user_id", name="not_self"),
     )
     op.create_index("ix_user_blocks_blocked_user_id", "user_blocks", ["blocked_user_id"])
     op.add_column(
