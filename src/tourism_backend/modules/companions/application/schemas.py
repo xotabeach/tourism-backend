@@ -57,6 +57,8 @@ class CompanionMemberOut(BaseModel):
     is_organizer: bool = False
     ready: bool = False
     joined_late: bool = False
+    #: The hat on the member's character (BACKEND-65).
+    bean_hat: str | None = None
     #: The member's own run is attached to the group (BACKEND-60); after
     #: the start a member without one is «не стартовал».
     started: bool = False
@@ -116,6 +118,7 @@ class CompanionMemberProgressOut(BaseModel):
 
     user_id: str
     display_name: str
+    bean_hat: str | None = None
     avatar_url: str | None = None
     is_organizer: bool = False
     joined_late: bool = False

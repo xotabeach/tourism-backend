@@ -29,6 +29,7 @@ from tourism_backend.modules.companions.infrastructure.models import (
     CompanionMember,
 )
 from tourism_backend.modules.identity.application import invitations
+from tourism_backend.modules.identity.application.bean_hats import effective_hats
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.moderation.infrastructure.models import ContentReport
@@ -296,6 +297,7 @@ async def _out(session: AsyncSession, group: CompanionGroup, viewer_id: UUID) ->
     avatars = await media_service.resolve_urls(
         session, entity_type="user", entity_ids=user_ids, role="avatar"
     )
+    hats = await effective_hats(session, list(users.values()))
     route = await session.get(Route, group.route_id)
     covers = await cover_urls_for_routes(session, [group.route_id])
     organizer = users.get(group.organizer_user_id) or await session.get(
@@ -318,6 +320,7 @@ async def _out(session: AsyncSession, group: CompanionGroup, viewer_id: UUID) ->
                 user_id=str(m.user_id),
                 display_name=users[m.user_id].display_name if m.user_id in users else "",
                 avatar_url=avatars.get(m.user_id),
+                bean_hat=hats.get(m.user_id),
                 state=m.state,  # type: ignore[arg-type]
                 is_organizer=m.user_id == group.organizer_user_id,
                 ready=m.ready,

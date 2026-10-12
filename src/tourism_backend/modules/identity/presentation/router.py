@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Request, Response, UploadFile, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
-from tourism_backend.modules.identity.application import achievements
+from tourism_backend.modules.identity.application import achievements, bean_hats
 from tourism_backend.modules.identity.application import media as identity_media
 from tourism_backend.modules.identity.application import service as identity_service
 from tourism_backend.modules.identity.application.achievement_schemas import (
@@ -227,3 +227,16 @@ async def celebrate_achievements(
 ) -> Response:
     await achievements.mark_celebrated(session, user_id, payload.achievement_ids)
     return Response(status_code=204)
+
+
+@router.get("/me/bean-hats", response_model=bean_hats.BeanHatsOut)
+async def my_bean_hats(session: DbSession, user_id: CurrentUserId) -> bean_hats.BeanHatsOut:
+    """The hats of one's companion character: which are open and why."""
+    return await bean_hats.list_hats(session, user_id=user_id)
+
+
+@router.put("/me/bean-hat", response_model=bean_hats.BeanHatsOut)
+async def select_bean_hat(
+    payload: bean_hats.BeanHatSelectIn, session: DbSession, user_id: CurrentUserId
+) -> bean_hats.BeanHatsOut:
+    return await bean_hats.select_hat(session, user_id=user_id, payload=payload)
