@@ -26,6 +26,9 @@ class QuotaPolicy:
     exclusive_routes_enabled: bool
     travel_points_multiplier: float
     offline_favorites_extended: bool
+    #: People in a group of companions the user organizes (spec 11b D9):
+    #: 4 free and 8 with Travel+ after the beta; 8 for everyone during it.
+    max_group_members: int
 
 
 FREE_POLICY = QuotaPolicy(
@@ -41,6 +44,7 @@ FREE_POLICY = QuotaPolicy(
     exclusive_routes_enabled=False,
     travel_points_multiplier=1.0,
     offline_favorites_extended=False,
+    max_group_members=8,
 )
 
 TRAVEL_PLUS_POLICY = QuotaPolicy(
@@ -56,6 +60,7 @@ TRAVEL_PLUS_POLICY = QuotaPolicy(
     exclusive_routes_enabled=True,
     travel_points_multiplier=1.5,
     offline_favorites_extended=True,
+    max_group_members=8,
 )
 
 

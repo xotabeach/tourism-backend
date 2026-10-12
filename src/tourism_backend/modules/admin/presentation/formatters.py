@@ -92,6 +92,7 @@ _REPORT_TARGET_LABELS = {
     "article": ("Статья", "ct-badge-chat"),
     "route": ("Маршрут", "ct-badge-chat"),
     "place": ("Место", "ct-badge-chat"),
+    "companion_group": ("Приглашение", "ct-badge-chat"),
 }
 
 _SMS_DELIVERY_STATUS_LABELS = {

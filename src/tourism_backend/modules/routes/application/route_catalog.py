@@ -553,3 +553,8 @@ def _difficulty_word_filter(word: str) -> ColumnElement[bool]:
     if level == 3:
         return Route.difficulty_level == 3
     return Route.difficulty_level >= 4
+
+
+async def cover_urls_for_routes(session: AsyncSession, route_ids: list[UUID]) -> dict[UUID, str]:
+    """Route covers for other modules, chosen as on the catalogue cards."""
+    return await _cover_urls_for_routes(session, route_ids)

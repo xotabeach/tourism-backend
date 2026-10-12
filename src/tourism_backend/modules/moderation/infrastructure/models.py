@@ -12,7 +12,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from tourism_backend.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
-REPORT_TARGET_TYPES = ("article_comment", "article", "route", "place")
+#: ``companion_group``: a complaint about an invitation to a group (spec 11b
+#: D10), made from the invitation and kept in its own admin queue.
+REPORT_TARGET_TYPES = ("article_comment", "article", "route", "place", "companion_group")
 
 # Причины — это то, что человек выбирает в приложении. Формулировки короткие:
 # длинный список читается дольше, чем пишется сама жалоба.
@@ -33,7 +35,7 @@ class ContentReport(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "content_reports"
     __table_args__ = (
         CheckConstraint(
-            "target_type IN ('article_comment', 'article', 'route', 'place')",
+            "target_type IN ('article_comment', 'article', 'route', 'place', 'companion_group')",
             name="ck_content_reports_target",
         ),
         CheckConstraint(

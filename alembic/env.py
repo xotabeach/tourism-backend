@@ -7,6 +7,7 @@ from tourism_backend.config import get_settings
 from tourism_backend.db.base import Base
 from tourism_backend.modules.admin.infrastructure import models as admin_models
 from tourism_backend.modules.app_stats.infrastructure import models as app_stats_models
+from tourism_backend.modules.companions.infrastructure import models as companions_models
 from tourism_backend.modules.content.infrastructure import models as content_models
 from tourism_backend.modules.favorites.infrastructure import models as favorites_models
 from tourism_backend.modules.geography.infrastructure import models as geography_models
@@ -56,6 +57,7 @@ _ = (
     recommendations_models,
     routes_models,
     route_execution_models,
+    companions_models,
     identity_models,
     favorites_models,
     support_models,

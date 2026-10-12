@@ -31,13 +31,19 @@ class Notification(Base, UUIDPrimaryKeyMixin):
             "'article_about_your_route', "
             "'antifraud_flagged', "
             "'antifraud_blocked', "
-            "'antifraud_points_decision'"
+            "'antifraud_points_decision', "
+            "'companion_invite', "
+            "'companion_join_request', "
+            "'companion_group_cancelled', "
+            "'companion_group_started', "
+            "'companion_member_finished', "
+            "'companion_member_left'"
             ")",
             name="kind",
         ),
         CheckConstraint(
             "target_type IS NULL OR target_type IN "
-            "('route', 'user', 'achievement', 'support_ticket', 'article')",
+            "('route', 'user', 'achievement', 'support_ticket', 'article', 'companion_group')",
             name="target_type",
         ),
         Index("ix_notifications_inbox", "user_id", "is_read", "created_at"),

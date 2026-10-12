@@ -26,6 +26,13 @@ NotificationKind = Literal[
     "antifraud_flagged",
     "antifraud_blocked",
     "antifraud_points_decision",
+    # Companions (spec 11b).
+    "companion_invite",
+    "companion_join_request",
+    "companion_group_cancelled",
+    "companion_group_started",
+    "companion_member_finished",
+    "companion_member_left",
 ]
 NotificationTargetType = Literal[
     "route",
@@ -33,6 +40,7 @@ NotificationTargetType = Literal[
     "achievement",
     "support_ticket",
     "article",
+    "companion_group",
 ]
 
 
