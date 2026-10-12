@@ -601,6 +601,70 @@ async def test_admin_login_otp_list_and_operator_reply(admin_client: AsyncClient
         assert after.display_name == "User Edited"
         assert after.travel_points == points_before
 
+    # A real browser posts multipart with every file field, an empty one
+    # as `filename=""`; httpx would drop that, so the body is built by hand.
+    import io
+
+    from PIL import Image
+
+    from tourism_backend.modules.media.application.service import resolve_urls
+
+    def browser_form(avatar: bytes | None) -> tuple[bytes, str]:
+        boundary = "----ctAdminUpload"
+        parts = [
+            ("display_name", None, b"User Edited"),
+            ("phone_e164", None, phone.encode()),
+            ("notify_push_enabled", None, b"y"),
+            ("avatar_file", "avatar.png" if avatar else "", avatar or b""),
+            ("cover_file", "", b""),
+        ]
+        body = b""
+        for name, filename, payload in parts:
+            body += f"--{boundary}\r\n".encode()
+            if filename is None:
+                body += f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+            else:
+                body += (
+                    f'Content-Disposition: form-data; name="{name}"; '
+                    f'filename="{filename}"\r\n'
+                    "Content-Type: application/octet-stream\r\n\r\n"
+                ).encode()
+            body += payload + b"\r\n"
+        body += f"--{boundary}--\r\n".encode()
+        return body, f"multipart/form-data; boundary={boundary}"
+
+    async def current_avatar() -> str | None:
+        async with app.state.session_factory() as session:
+            urls = await resolve_urls(
+                session, entity_type="user", entity_ids=[UUID(user_id)], role="avatar"
+            )
+        return urls.get(UUID(user_id))
+
+    avatar_before = await current_avatar()
+    png = io.BytesIO()
+    Image.new("RGB", (64, 64), (200, 80, 40)).save(png, format="PNG")
+    body, content_type = browser_form(png.getvalue())
+    with_photo = await admin_client.post(
+        f"/admin/user/edit/{user_id}",
+        content=body,
+        headers={**headers, "Content-Type": content_type},
+        follow_redirects=False,
+    )
+    assert with_photo.status_code in {302, 303}, with_photo.text
+    avatar_after = await current_avatar()
+    assert avatar_after
+    assert avatar_after != avatar_before
+
+    body, content_type = browser_form(None)
+    no_photo = await admin_client.post(
+        f"/admin/user/edit/{user_id}",
+        content=body,
+        headers={**headers, "Content-Type": content_type},
+        follow_redirects=False,
+    )
+    assert no_photo.status_code in {302, 303}, no_photo.text
+    assert await current_avatar() == avatar_after
+
     user_edit_page = await admin_client.get(f"/admin/user/edit/{user_id}", headers=headers)
     assert user_edit_page.status_code == 200, user_edit_page.text
     assert "avatar_file" in user_edit_page.text

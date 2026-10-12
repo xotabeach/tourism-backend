@@ -339,6 +339,8 @@ def _read_upload_bytes(value: Any) -> bytes | None:
         return None
     if isinstance(value, (bytes, bytearray)):
         return bytes(value)
+    # Starlette's UploadFile.read() is async; its underlying file reads sync.
+    value = getattr(value, "file", None) or value
     read = getattr(value, "read", None)
     if not callable(read):
         return None
@@ -658,6 +660,15 @@ class UserAdmin(ModelView, model=User):
             )
 
         return _Form
+
+    async def get_object_for_edit(self, request: Request) -> Any:
+        model = await super().get_object_for_edit(request)
+        if model is not None:
+            # sqladmin keeps an empty upload by reading the model attribute of
+            # the same name; these are form-only fields, so say «no file».
+            model.avatar_file = None
+            model.cover_file = None
+        return model
 
     async def list(self, request: Request) -> Any:
         pagination = await super().list(request)
