@@ -17,6 +17,8 @@ class PublicUserOut(BaseModel):
     # Experts are intentionally outside the public leaderboard.
     leaderboard_place: int | None = None
     liked_by_me: bool = False
+    #: Only on a single-profile fetch: the viewer blocked this person.
+    blocked_by_me: bool = False
     is_expert: bool = False
     #: The КРЫМТРИП editorial profile: badge «Редакция», no rating (spec 16).
     is_editorial: bool = False

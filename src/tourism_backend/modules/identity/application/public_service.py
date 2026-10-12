@@ -18,6 +18,7 @@ from tourism_backend.modules.identity.infrastructure.models import (
     ProfileLike,
     TravelRank,
     User,
+    UserBlock,
 )
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.places.infrastructure.models import PlaceReview
@@ -231,6 +232,20 @@ async def _follow_counts(
     followers = {user_id: int(count) for user_id, count in followers_rows}
     following = {user_id: int(count) for user_id, count in following_rows}
     return {user_id: (followers.get(user_id, 0), following.get(user_id, 0)) for user_id in user_ids}
+
+
+async def public_user_row(
+    session: AsyncSession,
+    user: User,
+    *,
+    avatar_url: str | None,
+    cover_url: str | None,
+    liked_by_me: bool,
+) -> PublicUserOut:
+    """A list row of a profile, for lists built outside this module."""
+    return await _public_user(
+        session, user, avatar_url=avatar_url, cover_url=cover_url, liked_by_me=liked_by_me
+    )
 
 
 async def search_public_users(
@@ -480,8 +495,10 @@ async def get_public_user(
         role="cover",
     )
     liked_by_me = False
+    blocked_by_me = False
     if viewer_id is not None and viewer_id != user_id:
         liked_by_me = (await session.get(ProfileLike, (viewer_id, user_id))) is not None
+        blocked_by_me = (await session.get(UserBlock, (viewer_id, user_id))) is not None
     counts = await _follow_counts(session, [user.id])
     followers, following = counts.get(user.id, (0, 0))
     stats = await _profile_activity_stats(session, user.id)
@@ -500,6 +517,7 @@ async def get_public_user(
         published_articles_count=stats.published_articles,
         article_likes_count=stats.article_likes,
     )
+    result.blocked_by_me = blocked_by_me
     await session.commit()
     return result
 

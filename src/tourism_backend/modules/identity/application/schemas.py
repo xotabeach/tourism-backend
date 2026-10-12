@@ -13,6 +13,7 @@ from tourism_backend.modules.identity.infrastructure.models import PREFERENCE_CA
 PreferenceDifficulty = Literal["easy", "moderate", "hard"]
 PreferenceDuration = Literal["d1_2", "d3_5", "d6_7", "d7plus"]
 PreferenceTransport = Literal["car"]
+InvitePolicy = Literal["mutual", "nobody"]
 
 _PHONE_RE = re.compile(r"^\+7\d{10}$")
 
@@ -156,6 +157,8 @@ class MeOut(BaseModel):
     travels_with_kids: bool = False
     travels_with_pets: bool = False
     preferences_updated_at: str | None = None
+    #: Who may invite me to companions or co-authoring (spec 11b D15).
+    invite_policy: InvitePolicy = "mutual"
 
 
 class MePatchIn(BaseModel):
@@ -169,6 +172,7 @@ class MePatchIn(BaseModel):
     notify_push_enabled: bool | None = None
     notify_sms_enabled: bool | None = None
     notify_haptics_enabled: bool | None = None
+    invite_policy: InvitePolicy | None = None
 
     @field_validator("display_name")
     @classmethod
@@ -184,6 +188,7 @@ class MePatchIn(BaseModel):
             and self.notify_push_enabled is None
             and self.notify_sms_enabled is None
             and self.notify_haptics_enabled is None
+            and self.invite_policy is None
         ):
             raise ValueError("at least one field is required")
         return self

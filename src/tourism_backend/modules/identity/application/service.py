@@ -487,6 +487,8 @@ async def patch_me(session: AsyncSession, user_id: UUID, payload: MePatchIn) -> 
         user.notify_sms_enabled = payload.notify_sms_enabled
     if payload.notify_haptics_enabled is not None:
         user.notify_haptics_enabled = payload.notify_haptics_enabled
+    if payload.invite_policy is not None:
+        user.invite_policy = payload.invite_policy
     await session.commit()
     return await _me_out(session, user)
 
@@ -537,6 +539,7 @@ async def _me_out(session: AsyncSession, user: User) -> MeOut:
         notify_push_enabled=user.notify_push_enabled,
         notify_sms_enabled=user.notify_sms_enabled,
         notify_haptics_enabled=user.notify_haptics_enabled,
+        invite_policy=user.invite_policy,  # type: ignore[arg-type]
         travel_plus_active=user.travel_plus_active,
         travel_plus_plan=user.travel_plus_plan,
         travel_plus_expires_at=expires.isoformat() if expires is not None else None,
