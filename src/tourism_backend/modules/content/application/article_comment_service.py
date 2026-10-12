@@ -259,6 +259,7 @@ async def set_comment_status(
             actor_user_id=comment.author_user_id,
             article_id=article.id,
             article_title=article.title,
+            anchor_id=comment.id,
         )
         if notif is not None:
             await notifications_service.maybe_push_notification(
@@ -270,6 +271,7 @@ async def set_comment_status(
                 body=notif.body,
                 target_type="article",
                 target_id=article.id,
+                anchor_id=comment.id,
             )
     await session.commit()
     return changed

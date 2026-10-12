@@ -940,6 +940,9 @@ async def test_review_reply_keeps_quote_and_notifies_target_after_moderation(
         item["kind"] == "review_reply" and item["target_id"] == route_id
         for item in inbox.json()["items"]
     )
+    # BACKEND-67: the app opens the route right at the reply.
+    reply_item = next(item for item in inbox.json()["items"] if item["kind"] == "review_reply")
+    assert reply_item["anchor_id"] == reply.json()["id"]
 
 
 @pytest.mark.asyncio

@@ -757,6 +757,7 @@ async def set_review_status(
                         actor_user_id=review.author_user_id,
                         route_id=route.id,
                         route_name=route.name,
+                        anchor_id=review.id,
                     )
                     if reply_notif is not None:
                         await notifications_service.maybe_push_notification(
@@ -768,6 +769,7 @@ async def set_review_status(
                             body=reply_notif.body,
                             target_type="route",
                             target_id=route.id,
+                            anchor_id=review.id,
                         )
             if route.owner_user_id is not None:
                 owner_notif = await notifications_service.create_route_review_notification(
@@ -776,6 +778,7 @@ async def set_review_status(
                     actor_user_id=review.author_user_id,
                     route_id=route.id,
                     route_name=route.name,
+                    anchor_id=review.id,
                 )
                 if owner_notif is not None:
                     await notifications_service.maybe_push_notification(
@@ -787,6 +790,7 @@ async def set_review_status(
                         body=owner_notif.body,
                         target_type="route",
                         target_id=route.id,
+                        anchor_id=review.id,
                     )
             author_notif = await notifications_service.create_review_moderation_notification(
                 session,
@@ -794,6 +798,7 @@ async def set_review_status(
                 route_id=route.id,
                 route_name=route.name,
                 approved=True,
+                anchor_id=review.id,
             )
             await notifications_service.maybe_push_notification(
                 session,
@@ -804,6 +809,7 @@ async def set_review_status(
                 body=author_notif.body,
                 target_type="route",
                 target_id=route.id,
+                anchor_id=review.id,
             )
         elif status == "rejected":
             author_notif = await notifications_service.create_review_moderation_notification(

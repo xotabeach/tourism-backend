@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import delete
@@ -110,3 +110,44 @@ async def test_a_comment_carries_its_authors_rank(
         viewer_user_id=commenter.id,
     )
     assert [item.author_rank_title for item in listed.items] == ["Новичок"]
+
+
+@pytest.mark.asyncio
+async def test_the_comment_notification_points_at_the_comment(
+    session: AsyncSession, author: User, commenter: User
+) -> None:
+    """BACKEND-67: the app opens the article right at the new comment."""
+    from sqlalchemy import select
+
+    created = await article_service.create_article_draft(
+        session,
+        author_user_id=author.id,
+        payload=ArticleWriteIn(
+            title="Тропа над морем",
+            blocks=[ArticleBlockIn(block_type="text", text_content="Абзац.")],
+        ),
+    )
+    article = await session.get(Article, created.id)
+    assert article is not None
+    article.status = "published"
+    article.published_at = datetime.now(UTC)
+    await session.commit()
+
+    posted = await article_comment_service.create_article_comment(
+        session,
+        article_id=article.id,
+        author_user_id=commenter.id,
+        payload=ArticleCommentCreateIn(body="Спасибо, пригодилось!"),
+    )
+    await article_comment_service.set_comment_status(
+        session, comment_ids=[UUID(str(posted.id))], status="published"
+    )
+
+    notification = await session.scalar(
+        select(Notification).where(
+            Notification.user_id == author.id, Notification.kind == "article_comment"
+        )
+    )
+    assert notification is not None
+    assert notification.target_id == article.id
+    assert str(notification.anchor_id) == str(posted.id)
