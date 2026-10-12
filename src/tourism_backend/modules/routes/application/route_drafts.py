@@ -657,7 +657,15 @@ async def discard_user_route_draft(
         )
         .values(status="archived", updated_at=now)
     )
+    await _cancel_companion_groups(session, route.id)
     await session.commit()
+
+
+async def _cancel_companion_groups(session: AsyncSession, route_id: UUID) -> None:
+    """Groups gathering for a route that leaves the catalogue are off (11b D13)."""
+    from tourism_backend.modules.companions.application.groups import cancel_groups_for_route
+
+    await cancel_groups_for_route(session, route_id)
 
 
 async def withdraw_user_route(
@@ -691,6 +699,7 @@ async def withdraw_user_route(
     route.visibility = "private"
     route.lifecycle_status = "draft"
     route.updated_at = now
+    await _cancel_companion_groups(session, route.id)
     await session.commit()
     await session.refresh(route)
     return _draft_out(route, route)

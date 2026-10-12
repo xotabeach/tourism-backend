@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from tourism_backend.modules.app_update.presentation.router import router as app_update_router
+from tourism_backend.modules.companions.presentation.router import router as companions_router
 from tourism_backend.modules.content.presentation.router import router as content_router
 from tourism_backend.modules.favorites.presentation.router import router as favorites_router
 from tourism_backend.modules.geography.presentation.router import router as geography_router
@@ -36,6 +37,7 @@ router.include_router(places_router)
 router.include_router(recommendations_router)
 router.include_router(routes_router)
 router.include_router(route_execution_router)
+router.include_router(companions_router)
 router.include_router(route_builder_router)
 router.include_router(identity_router)
 router.include_router(users_router)

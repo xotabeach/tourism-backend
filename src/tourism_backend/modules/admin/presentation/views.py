@@ -102,6 +102,7 @@ from tourism_backend.modules.admin.presentation.route_structure_admin import Rou
 from tourism_backend.modules.admin.presentation.skip_signals_admin import SkipSignalsAdmin
 from tourism_backend.modules.admin.presentation.stats_admin import StatsAdmin
 from tourism_backend.modules.admin.presentation.transit_admin import TransitAdmin, TransitLineAdmin
+from tourism_backend.modules.companions.application.groups import cancel_groups_for_route
 from tourism_backend.modules.content.application import article_comment_service, article_service
 from tourism_backend.modules.content.infrastructure.models import (
     Article,
@@ -1775,6 +1776,10 @@ class RouteAdmin(ModelView, model=Route):
                         else:
                             route.visibility = "private"
                             route.lifecycle_status = "draft"
+                        if publication_status != "published":
+                            # Groups of companions gathering for it are off
+                            # (spec 11b D13).
+                            await cancel_groups_for_route(session, route.id)
                     await record_audit(
                         session,
                         actor_id=actor_id,
@@ -3900,6 +3905,27 @@ class ContentReportAdmin(ModelView, model=ContentReport):
         return await self._set_status(request, status_value="rejected")
 
 
+class CompanionInviteReportAdmin(ContentReportAdmin):
+    """Жалобы на приглашения в группу попутчиков (спека 11b, D10).
+
+    Отдельная очередь: жалуются не на материал, а на человека, который зовёт
+    в совместный маршрут. «ID объекта» здесь это группа; организатор и
+    маршрут видны в разделе групп.
+    """
+
+    identity = "companion-invite-report"
+    name = "Жалоба на приглашение"
+    name_plural = "Жалобы на приглашения"
+    icon = "fa-solid fa-user-group"
+
+    @staticmethod
+    def _allowed_types(request: Request, *, write: bool = False) -> tuple[str, ...]:
+        suffix = "write" if write else "read"
+        if require_permission(request, f"moderation_content.{suffix}"):
+            return ("companion_group",)
+        return ()
+
+
 class SupportHelpRevisionAdmin(ModelView, model=SupportHelpRevision):
     """Help articles, their publication state and how long it is good for.
 
@@ -4340,6 +4366,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(ArticleBlockAdmin)
     admin.add_view(ArticleCommentAdmin)
     admin.add_view(ContentReportAdmin)
+    admin.add_view(CompanionInviteReportAdmin)
     admin.add_view(PlaceReviewAdmin)
     admin.add_view(AdminPrincipalAdmin)
     admin.add_view(AdminRoleBindingAdmin)

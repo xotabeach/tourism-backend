@@ -385,6 +385,30 @@ async def create_antifraud_notification(
     return notification
 
 
+async def create_companion_notification(
+    session: AsyncSession,
+    *,
+    recipient_user_id: UUID,
+    actor_user_id: UUID | None,
+    kind: str,
+    title: str,
+    body: str,
+    group_id: UUID,
+) -> Notification:
+    """Invitations and news of a group of companions (spec 11b)."""
+    notification = _build_notification(
+        user_id=recipient_user_id,
+        actor_user_id=actor_user_id,
+        kind=kind,
+        title=title,
+        body=body,
+        target_type="companion_group",
+        target_id=group_id,
+    )
+    session.add(notification)
+    return notification
+
+
 async def maybe_push_notification(
     session: AsyncSession,
     settings: Settings,
