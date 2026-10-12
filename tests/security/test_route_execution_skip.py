@@ -147,6 +147,12 @@ async def test_a_skipped_stop_lets_the_run_end_pays_less_and_does_not_count(
         assert 0 < run["awarded_points"] < whole["awarded_points"]
     # «Закрыто»: the way to the stop was walked and is paid, only the mark is not.
     assert closed["awarded_points"] >= missed["awarded_points"]
+    # The summary shows the paid way, not the planned length (FRONTEND-56).
+    length = whole["routing"]["distance_meters"]
+    assert length
+    assert whole["paid_distance_meters"] == length
+    assert 0 < missed["paid_distance_meters"] < length
+    assert missed["paid_distance_meters"] <= closed["paid_distance_meters"] <= length
     # One skipped stop of several costs its own leg, not the whole way: the
     # run keeps more than the bare «started and marked» amount.
     stops_only = 10 + 3 * (missed["required_stops"] - 1)
