@@ -4,7 +4,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query, status
 
-from tourism_backend.api.deps import CurrentUserId, DbSession
+from tourism_backend.api.deps import CurrentUserId, DbSession, SettingsDep
+from tourism_backend.modules.companions.application import progress as companion_progress
 from tourism_backend.modules.route_execution.application import service
 from tourism_backend.modules.route_execution.application.schemas import (
     DifficultyFeedbackIn,
@@ -142,30 +143,36 @@ async def unskip_route_execution_stop(
 async def complete_route_execution(
     execution_id: UUID,
     session: DbSession,
+    settings: SettingsDep,
     user_id: CurrentUserId,
     payload: RouteExecutionEventIn | None = None,
 ) -> RouteExecutionOut:
-    return await service.complete_execution(
+    result = await service.complete_execution(
         session,
         user_id=user_id,
         execution_id=execution_id,
         event=payload,
     )
+    await companion_progress.after_run_ended(session, settings=settings, execution_id=execution_id)
+    return result
 
 
 @router.post("/{execution_id}/cancel", response_model=RouteExecutionOut)
 async def cancel_route_execution(
     execution_id: UUID,
     session: DbSession,
+    settings: SettingsDep,
     user_id: CurrentUserId,
     payload: RouteExecutionEventIn | None = None,
 ) -> RouteExecutionOut:
-    return await service.cancel_execution(
+    result = await service.cancel_execution(
         session,
         user_id=user_id,
         execution_id=execution_id,
         event=payload,
     )
+    await companion_progress.after_run_ended(session, settings=settings, execution_id=execution_id)
+    return result
 
 
 @router.post("/{execution_id}/pause", response_model=RouteExecutionOut)
@@ -204,16 +211,19 @@ async def end_route_execution_day(
 async def finish_route_execution_early(
     execution_id: UUID,
     session: DbSession,
+    settings: SettingsDep,
     user_id: CurrentUserId,
     payload: RouteExecutionEventIn | None = None,
 ) -> RouteExecutionOut:
     """«Завершить многодневный маршрут»: the finished days are paid (spec 14a)."""
-    return await service.finish_early_execution(
+    result = await service.finish_early_execution(
         session,
         user_id=user_id,
         execution_id=execution_id,
         event=payload,
     )
+    await companion_progress.after_run_ended(session, settings=settings, execution_id=execution_id)
+    return result
 
 
 @router.post("/{execution_id}/resume", response_model=RouteExecutionOut)

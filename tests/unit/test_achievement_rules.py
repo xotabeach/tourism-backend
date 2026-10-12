@@ -16,9 +16,10 @@ RUN = RunFact(uuid4(), NOW, 1000, False, False, False)
 STOP = StopFact(uuid4(), "swallow-nest", "yalta", 44.495, 34.166, 500, NOW, 1)
 
 
-def test_catalog_has_exactly_32_rules_and_only_two_permanently_soon():
+def test_catalog_has_exactly_32_rules_and_only_one_permanently_soon():
     assert len(RULES) == 32
-    assert {r.slug for r in RULES.values() if r.soon} == {"group", "guide"}
+    # «Компания» is earned with companions since BACKEND-61.
+    assert {r.slug for r in RULES.values() if r.soon} == {"guide"}
     assert all(len(rule.how_to_earn) <= 240 for rule in RULES.values())
 
 

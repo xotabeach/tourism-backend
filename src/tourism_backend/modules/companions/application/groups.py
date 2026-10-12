@@ -679,7 +679,25 @@ async def remove_member(
         member.state = "left"
         member.ready = False
         member.updated_at = now
+        pushes: list[tuple[UUID, str, str, str]] = []
+        if group.status == "started":
+            leaver = await session.get(User, actor_id)
+            pushes = await _notify(
+                session,
+                settings,
+                user_ids=[
+                    m.user_id
+                    for m in await _members(session, group.id)
+                    if m.state == "joined" and m.user_id != actor_id
+                ],
+                kind="companion_member_left",
+                title="Попутчик вышел из группы",
+                body=f"{leaver.display_name if leaver else 'Попутчик'} вышел из группы",
+                group_id=group.id,
+                actor_id=actor_id,
+            )
         await session.commit()
+        await _push(session, settings, pushes, group.id)
         return None
     _require_organizer(group, actor_id)
     if target == group.organizer_user_id:
@@ -688,7 +706,6 @@ async def remove_member(
     member.ready = False
     member.updated_at = now
     await session.commit()
-    del settings
     return await _out(session, group, actor_id)
 
 

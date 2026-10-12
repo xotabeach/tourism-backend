@@ -773,7 +773,7 @@ async def test_manual_achievement_actions_are_audited_and_soon_rejected(live_cli
                 await session.scalars(select(Achievement).where(Achievement.slug == "pen"))
             ).one()
             soon = (
-                await session.scalars(select(Achievement).where(Achievement.slug == "group"))
+                await session.scalars(select(Achievement).where(Achievement.slug == "guide"))
             ).one()
             with pytest.raises(AppError, match="") as error:
                 await apply(

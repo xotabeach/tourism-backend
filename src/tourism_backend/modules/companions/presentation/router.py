@@ -3,13 +3,14 @@
 from fastapi import APIRouter, Response, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, RedisClient, SettingsDep
-from tourism_backend.modules.companions.application import groups, start
+from tourism_backend.modules.companions.application import groups, progress, start
 from tourism_backend.modules.companions.application.schemas import (
     CompanionGroupCreateIn,
     CompanionGroupListOut,
     CompanionGroupOut,
     CompanionInviteIn,
     CompanionJoinIn,
+    CompanionProgressOut,
     CompanionReadyIn,
     CompanionReportIn,
 )
@@ -153,3 +154,14 @@ async def start_group(
 ) -> CompanionGroupOut:
     """The organizer's start; each phone then starts its own run."""
     return await start.start_group(session, settings=settings, group_id=group_id, actor_id=user_id)
+
+
+@router.get("/companion-groups/{group_id}/progress", response_model=CompanionProgressOut)
+async def group_progress(
+    group_id: str, session: DbSession, settings: SettingsDep, user_id: CurrentUserId
+) -> CompanionProgressOut:
+    """Who is at which stop, the result and «кто первым дошёл»; the app polls it
+    about every half a minute while the group screen is open (D6)."""
+    return await progress.group_progress(
+        session, settings=settings, group_id=group_id, user_id=user_id
+    )
