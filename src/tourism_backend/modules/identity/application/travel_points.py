@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +75,10 @@ async def grant_due_travel_points(session: AsyncSession) -> int:
             # Self-favorite never awards.
             fav.author_points_awarded_at = now
             continue
+        if await is_route_author(session, route.id, fav.user_id):
+            # Nor a co-author's: it is their route as well (spec 11c).
+            fav.author_points_awarded_at = now
+            continue
         beneficiary = await session.get(User, owner_id)
         if beneficiary is None:
             continue
@@ -88,6 +93,12 @@ async def grant_due_travel_points(session: AsyncSession) -> int:
     if granted:
         await session.commit()
     return granted
+
+
+async def is_route_author(session: AsyncSession, route_id: UUID, user_id: UUID) -> bool:
+    from tourism_backend.modules.routes.application.coauthors import is_author
+
+    return await is_author(session, route_id, user_id)
 
 
 async def award_travel_points(session: AsyncSession, *, user: User, points: int) -> int:

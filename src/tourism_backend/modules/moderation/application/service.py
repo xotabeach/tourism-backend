@@ -67,7 +67,9 @@ async def _check_target(
         route = await session.get(Route, target_id)
         if route is None:
             raise _not_found()
-        if route.owner_user_id is not None and route.owner_user_id == reporter_user_id:
+        from tourism_backend.modules.routes.application.coauthors import is_author
+
+        if await is_author(session, route.id, reporter_user_id):
             raise AppError(
                 code="report_own_content",
                 message="Нельзя пожаловаться на свой маршрут",

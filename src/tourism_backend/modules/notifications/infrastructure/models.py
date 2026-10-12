@@ -37,7 +37,9 @@ class Notification(Base, UUIDPrimaryKeyMixin):
             "'companion_group_cancelled', "
             "'companion_group_started', "
             "'companion_member_finished', "
-            "'companion_member_left'"
+            "'companion_member_left', "
+            "'route_coauthor_invite', "
+            "'route_coauthor_declined'"
             ")",
             name="kind",
         ),

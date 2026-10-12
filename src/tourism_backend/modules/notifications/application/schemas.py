@@ -33,6 +33,9 @@ NotificationKind = Literal[
     "companion_group_started",
     "companion_member_finished",
     "companion_member_left",
+    # Co-authors of a route (spec 11c, D7).
+    "route_coauthor_invite",
+    "route_coauthor_declined",
 ]
 NotificationTargetType = Literal[
     "route",

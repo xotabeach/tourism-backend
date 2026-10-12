@@ -150,6 +150,7 @@ async def ensure_user_route_editable(
         session,
         route_id=route_id,
         owner_user_id=owner_user_id,
+        allow_coauthors=True,
     )
 
 
