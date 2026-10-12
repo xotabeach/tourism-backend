@@ -322,6 +322,7 @@ async def _out(session: AsyncSession, group: CompanionGroup, viewer_id: UUID) ->
                 is_organizer=m.user_id == group.organizer_user_id,
                 ready=m.ready,
                 joined_late=m.joined_late,
+                started=m.execution_id is not None,
                 invite_expires_at=m.expires_at if m.state == "invited" else None,
             )
             for m in shown

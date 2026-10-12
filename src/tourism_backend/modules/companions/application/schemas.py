@@ -34,6 +34,12 @@ class CompanionJoinIn(BaseModel):
     code: str = Field(min_length=4, max_length=12)
 
 
+class CompanionReadyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ready: bool
+
+
 class CompanionReportIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -51,6 +57,9 @@ class CompanionMemberOut(BaseModel):
     is_organizer: bool = False
     ready: bool = False
     joined_late: bool = False
+    #: The member's own run is attached to the group (BACKEND-60); after
+    #: the start a member without one is «не стартовал».
+    started: bool = False
     #: Pending invitations only: when the answer is no longer accepted.
     invite_expires_at: datetime | None = None
 

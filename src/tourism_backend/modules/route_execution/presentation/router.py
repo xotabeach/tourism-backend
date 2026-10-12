@@ -29,6 +29,8 @@ async def start_route_execution(
         session,
         user_id=user_id,
         route_id=payload.route_id,
+        occurred_at=payload.occurred_at,
+        companion_group_id=payload.companion_group_id,
     )
 
 

@@ -10,6 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.companions.application import start as companion_start
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.places.infrastructure.models import Place, RoadEvent
 from tourism_backend.modules.route_builder.application.route_quality import (
@@ -35,6 +36,10 @@ from tourism_backend.modules.route_execution.application.execution_common import
 from tourism_backend.modules.route_execution.application.execution_days import (
     _close_if_idle,
 )
+from tourism_backend.modules.route_execution.application.offline_sync import (
+    MAX_OFFLINE_LAG,
+    resolve_event_time,
+)
 from tourism_backend.modules.route_execution.application.routing_snapshot import (
     ensure_routing_snapshot,
 )
@@ -57,6 +62,8 @@ async def start_execution(
     *,
     user_id: UUID,
     route_id: UUID,
+    occurred_at: datetime | None = None,
+    companion_group_id: UUID | None = None,
 ) -> RouteExecutionOut:
     # The user-row lock serializes double taps even before the partial unique
     # index has a row to protect.
@@ -76,8 +83,22 @@ async def start_execution(
         # Closing committed and let go of the user row: take it again.
         await session.scalar(select(User.id).where(User.id == user_id).with_for_update())
         active = None
+    group = (
+        await companion_start.group_for_run(
+            session, group_id=companion_group_id, user_id=user_id, route_id=route_id
+        )
+        if companion_group_id is not None
+        else None
+    )
     if active is not None:
         if active.route_id == route_id:
+            # A retried start, e.g. a phone that started offline: the run it
+            # already has joins the group.
+            if group is not None:
+                await companion_start.attach_run(
+                    session, group=group, user_id=user_id, execution=active
+                )
+                await session.commit()
             return await _execution_out(session, active)
         raise AppError(
             code="active_route_execution_exists",
@@ -222,6 +243,15 @@ async def start_execution(
         else build_leg_estimates(stop_points, transport_mode=leg_mode)
     )
     now = datetime.now(UTC)
+    # The phone's own start time (D11): a run started offline keeps the
+    # moment it really began, and a group run cannot begin before the group.
+    started_at = resolve_event_time(
+        occurred_at,
+        now=now,
+        not_before=group.started_at
+        if group is not None and group.started_at is not None
+        else now - MAX_OFFLINE_LAG,
+    ).effective
     execution = RouteExecution(
         id=uuid4(),
         user_id=user_id,
@@ -230,12 +260,14 @@ async def start_execution(
         route_name=route.name,
         route_cover_url=cover_url,
         status="active",
-        started_at=now,
+        started_at=started_at,
         created_at=now,
         updated_at=now,
     )
     session.add(execution)
     await session.flush()
+    if group is not None:
+        await companion_start.attach_run(session, group=group, user_id=user_id, execution=execution)
     session.add_all(
         [
             RouteExecutionStop(
