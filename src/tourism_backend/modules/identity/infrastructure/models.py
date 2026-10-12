@@ -69,6 +69,10 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("phone_e164", name="uq_users_phone_e164"),
         CheckConstraint(
+            "invite_policy IN ('mutual', 'nobody')",
+            name="invite_policy",
+        ),
+        CheckConstraint(
             "travel_plus_plan IS NULL OR travel_plus_plan IN ('monthly', 'yearly')",
             name="travel_plus_plan",
         ),
@@ -184,6 +188,14 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         DateTime(timezone=True),
         nullable=True,
     )
+    #: Who may invite this person to a group or to co-author a route
+    #: (spec 11b D15): mutual followers, or nobody.
+    invite_policy: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="mutual",
+        server_default="mutual",
+    )
 
 
 #: The "Эксперт" rank — admin-granted only (see admin.user_grant_expert /
@@ -281,6 +293,28 @@ class ProfileLike(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     awarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserBlock(Base):
+    """One person blocked another (spec 11b D15).
+
+    Works both ways: neither can invite the other, and they never share a
+    group of companions or a route as co-authors.
+    """
+
+    __tablename__ = "user_blocks"
+    __table_args__ = (CheckConstraint("blocker_id <> blocked_user_id", name="not_self"),)
+
+    blocker_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    blocked_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class UserExpertStatusEvent(Base, UUIDPrimaryKeyMixin):

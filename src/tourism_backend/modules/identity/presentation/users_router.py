@@ -6,7 +6,12 @@ from uuid import UUID
 from fastapi import APIRouter, Query, status
 
 from tourism_backend.api.deps import CurrentUserId, DbSession, OptionalCurrentUserId
-from tourism_backend.modules.identity.application import achievements, profile_likes, public_service
+from tourism_backend.modules.identity.application import (
+    achievements,
+    invitations,
+    profile_likes,
+    public_service,
+)
 from tourism_backend.modules.identity.application.achievement_schemas import (
     PublicAchievementListOut,
 )
@@ -48,6 +53,18 @@ async def list_profile_subscriptions(
         user_id=user_id,
         limit=limit,
     )
+
+
+@router.get("/users/blocked", response_model=PublicUserListOut)
+async def list_blocked_users(session: DbSession, user_id: CurrentUserId) -> PublicUserListOut:
+    """People I blocked, newest first (spec 11b D15)."""
+    return await invitations.list_blocked(session, actor_id=user_id)
+
+
+@router.get("/users/invitable", response_model=PublicUserListOut)
+async def list_invitable_users(session: DbSession, user_id: CurrentUserId) -> PublicUserListOut:
+    """Whom I may invite: mutual followers who accept invites, no block."""
+    return await invitations.list_invitable(session, actor_id=user_id)
 
 
 @router.get("/users/{user_id}/followers", response_model=PublicUserListOut)
@@ -112,3 +129,13 @@ async def delete_profile_like(
     actor_id: CurrentUserId,
 ) -> None:
     await profile_likes.unlike_profile(session, actor_id=actor_id, target_user_id=user_id)
+
+
+@router.put("/users/{user_id}/block", status_code=status.HTTP_204_NO_CONTENT)
+async def put_user_block(session: DbSession, user_id: UUID, actor_id: CurrentUserId) -> None:
+    await invitations.block_user(session, actor_id=actor_id, target_user_id=user_id)
+
+
+@router.delete("/users/{user_id}/block", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_block(session: DbSession, user_id: UUID, actor_id: CurrentUserId) -> None:
+    await invitations.unblock_user(session, actor_id=actor_id, target_user_id=user_id)
