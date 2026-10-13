@@ -1,5 +1,6 @@
 """Unit tests for deterministic route catalog scoring."""
 
+from datetime import date
 from uuid import uuid4
 
 from tourism_backend.modules.route_builder.application.schemas import RouteMatchParamsIn
@@ -14,6 +15,7 @@ from tourism_backend.modules.route_builder.application.scoring import (
     match_percent,
     requested_signal_count,
     score_candidate,
+    season_for,
     select_hits,
 )
 
@@ -369,12 +371,14 @@ def test_form_defaults_the_person_did_not_choose_are_not_requested() -> None:
 
 
 def test_percent_is_rounded_down_and_full_only_for_a_complete_match() -> None:
-    params = RouteMatchParamsIn(city="Ялта", duration="d1_2")
+    # A summer trip: the season by date fits the candidate's «лето».
+    params = RouteMatchParamsIn(city="Ялта", duration="d1_2", trip_start_date=date(2026, 7, 10))
     complete = score_candidate(params, _candidate(estimated_duration_minutes=600))
     assert complete.full_match is True
     assert match_percent(complete) == 100
     shorter = score_candidate(
-        RouteMatchParamsIn(city="Ялта", duration="d3_5"), _candidate(estimated_duration_minutes=240)
+        RouteMatchParamsIn(city="Ялта", duration="d3_5", trip_start_date=date(2026, 7, 10)),
+        _candidate(estimated_duration_minutes=240),
     )
     assert shorter.full_match is False
     assert match_percent(shorter) <= 95
@@ -467,3 +471,62 @@ def test_sea_tag_answers_the_sea_interest_without_text_or_beach() -> None:
         assert tagged.score > untagged.score
         assert "нет совпадений по интересам" not in tagged.mismatches
         assert "нет совпадений по интересам" in untagged.mismatches
+
+
+# BACKEND-42: season and transport weigh more, the season comes from the
+# date when nobody chose it, and there are «пара часов» and «полдня».
+
+
+def test_season_by_trip_date_marks_an_off_season_route_down() -> None:
+    summer_route = _candidate(seasonality=("лето",))
+    in_summer = score_candidate(
+        RouteMatchParamsIn(city="Ялта", trip_start_date=date(2026, 7, 10)), summer_route
+    )
+    in_winter = score_candidate(
+        RouteMatchParamsIn(city="Ялта", trip_start_date=date(2026, 1, 10)), summer_route
+    )
+    assert in_winter.score < in_summer.score
+    assert "не для этого времени года" in in_winter.mismatches
+    # Still a match for what was asked: the season by date was not asked.
+    assert in_winter.full_match is in_summer.full_match
+
+
+def test_a_chosen_season_outweighs_the_date() -> None:
+    winter_route = _candidate(seasonality=("зима",))
+    chosen = score_candidate(
+        RouteMatchParamsIn(city="Ялта", season="зима", trip_start_date=date(2026, 7, 10)),
+        winter_route,
+    )
+    assert "не для этого времени года" not in chosen.mismatches
+    assert "сезон: зима" in chosen.reasons
+
+
+def test_season_for_dates() -> None:
+    assert season_for(date(2026, 12, 31)) == "зима"
+    assert season_for(date(2026, 3, 1)) == "весна"
+    assert season_for(date(2026, 8, 31)) == "лето"
+    assert season_for(date(2026, 11, 30)) == "осень"
+
+
+def test_walking_search_ranks_a_car_route_clearly_lower() -> None:
+    params = RouteMatchParamsIn(
+        city="Ялта", transport_mode="walk", trip_start_date=date(2026, 7, 10)
+    )
+    walk = score_candidate(params, _candidate(transport_mode="walking"))
+    car = score_candidate(params, _candidate(transport_mode="car"))
+    assert walk.score - car.score >= 0.1
+
+
+def test_short_durations_fit_short_routes() -> None:
+    two_hours = RouteMatchParamsIn(city="Ялта", duration="h2", trip_start_date=date(2026, 7, 10))
+    short = score_candidate(two_hours, _candidate(estimated_duration_minutes=90))
+    day_long = score_candidate(two_hours, _candidate(estimated_duration_minutes=600))
+    assert "длительность совпадает" in short.reasons
+    assert short.score > day_long.score
+    half_day = RouteMatchParamsIn(
+        city="Ялта", duration="half_day", trip_start_date=date(2026, 7, 10)
+    )
+    assert (
+        "длительность совпадает"
+        in score_candidate(half_day, _candidate(estimated_duration_minutes=240)).reasons
+    )

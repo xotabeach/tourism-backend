@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import date, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from tourism_backend.modules.route_builder.application.schemas import (
     DurationOption,
@@ -40,7 +42,42 @@ MIN_KNOWN_SHARE = 0.5
 # The chat shows a percent only once this many parameters are confirmed (D7).
 MIN_CHAT_SIGNALS = 3
 
+#: Weights of transport and season in a candidate's score (BACKEND-42).
+#: They were 0.05 and 0.03: a car route still came first for «Пешком», and a
+#: winter route was barely marked down in summer.
+TRANSPORT_WEIGHT = 0.15
+SEASON_WEIGHT = 0.10
+SEASON_WEIGHT_BY_DATE = 0.06
+
+_MONTH_SEASON = {
+    12: "зима",
+    1: "зима",
+    2: "зима",
+    3: "весна",
+    4: "весна",
+    5: "весна",
+    6: "лето",
+    7: "лето",
+    8: "лето",
+    9: "осень",
+    10: "осень",
+    11: "осень",
+}
+
+
+def season_for(day: date) -> str:
+    """The season a date falls in, as the catalogue names it."""
+    return _MONTH_SEASON[day.month]
+
+
+def today() -> date:
+    """Today in Crimea, where the trips happen."""
+    return datetime.now(ZoneInfo("Europe/Simferopol")).date()
+
+
 _DURATION_RANGES: dict[DurationOption, tuple[int, int]] = {
+    "h2": (30, 180),
+    "half_day": (120, 360),
     "d1_2": (180, 1_440),
     "d3_5": (1_200, 4_320),
     "d6_7": (3_600, 6_480),
@@ -686,7 +723,8 @@ def score_candidate(
         )
         parts.append(
             _Part(
-                0.05,
+                # 0.05 let a car route top a «Пешком» search (BACKEND-42).
+                TRANSPORT_WEIGHT,
                 tr_score,
                 tr_reason,
                 known=actual is not None,
@@ -694,20 +732,29 @@ def score_candidate(
                 rank=3,
             )
         )
-    if params.season:
-        s_score, s_reason = _season_score(params.season, candidate.seasonality)
-        parts.append(
-            _Part(
-                0.03,
-                s_score,
-                s_reason,
-                known=bool(candidate.seasonality),
-                mismatch="не для выбранного сезона"
+    # Without a chosen season the trip date, or today, says it (BACKEND-42):
+    # Ай-Петри in winter or a beach in November is not a fit. A season
+    # nobody chose weighs less than one they did.
+    season = params.season or season_for(params.trip_start_date or today())
+    chosen = bool(params.season)
+    s_score, s_reason = _season_score(season, candidate.seasonality)
+    parts.append(
+        _Part(
+            SEASON_WEIGHT if chosen else SEASON_WEIGHT_BY_DATE,
+            s_score,
+            s_reason,
+            known=bool(candidate.seasonality),
+            # Nobody chose the season by date: it moves the score but does not
+            # decide whether the route matches what was asked.
+            requested=chosen,
+            mismatch=(
+                ("не для выбранного сезона" if chosen else "не для этого времени года")
                 if candidate.seasonality and s_score < 0.5
-                else None,
-                rank=12,
-            )
+                else None
+            ),
+            rank=12,
         )
+    )
 
     # --- party flags: False is excluded above; None means we simply do not know
     safety_unknown = False
