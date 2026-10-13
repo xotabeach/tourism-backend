@@ -179,6 +179,8 @@ class UserRouteEditablePlaceOut(BaseModel):
     subtitle: str = ""
     lat: float | None = None
     lng: float | None = None
+    #: The author's note to this stop (BACKEND-44).
+    note: str | None = None
 
 
 class UserRouteEditableOut(BaseModel):

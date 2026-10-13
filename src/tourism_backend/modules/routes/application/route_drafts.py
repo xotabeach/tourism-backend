@@ -249,7 +249,7 @@ async def get_user_route_for_edit(
     geom = cast(Place.location, Geometry)
     stop_rows = (
         await session.execute(
-            select(Place, ST_X(geom), ST_Y(geom))
+            select(Place, ST_X(geom), ST_Y(geom), RouteStop.note)
             .join(RouteStop, RouteStop.place_id == Place.id)
             .where(RouteStop.route_id == route.id)
             .order_by(RouteStop.position)
@@ -293,8 +293,9 @@ async def get_user_route_for_edit(
                 subtitle=place.short_description or "",
                 lat=lat,
                 lng=lng,
+                note=note,
             )
-            for place, lng, lat in stop_rows
+            for place, lng, lat, note in stop_rows
         ],
         filters=filters,
         pace=pace if pace in {"calm", "moderate", "active"} else "calm",

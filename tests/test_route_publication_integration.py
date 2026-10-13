@@ -1181,6 +1181,12 @@ async def test_long_name_and_stop_notes_are_kept(
             return [stop["note"] for stop in mine.json()["stops"]]
 
         assert await notes() == [None, "Вход платный с 9 до 18"]
+        # The editor gets them back to resume editing.
+        editable = await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)
+        assert [place["note"] for place in editable.json()["places"]] == [
+            None,
+            "Вход платный с 9 до 18",
+        ]
 
         # An older app sends no notes: they stay.
         older = {key: value for key, value in draft.items() if key != "stop_notes"}
