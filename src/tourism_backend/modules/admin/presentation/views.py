@@ -81,6 +81,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_review_body_preview,
     format_review_media_gallery,
     format_review_status,
+    format_route_checks,
     format_route_fk,
     format_route_name_with_structure,
     format_route_publication_status,
@@ -1601,6 +1602,7 @@ class RouteAdmin(ModelView, model=Route):
         Route.suitable_for_children: "Подходит детям",
         Route.pets_allowed: "Можно с животными",
         Route.is_seaside: "Море",
+        Route.accessibility: "Расчёты и проверки",
         Route.updated_at: "Обновлён",
         Route.created_at: "Создан",
     }
@@ -1642,6 +1644,7 @@ class RouteAdmin(ModelView, model=Route):
     column_formatters_detail = {
         **column_formatters,
         Route.name: format_route_name_with_structure,
+        Route.accessibility: format_route_checks,
     }
     column_searchable_list = [Route.name, Route.description]
     column_sortable_list = [
