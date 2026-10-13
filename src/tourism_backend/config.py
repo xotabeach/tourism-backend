@@ -208,6 +208,11 @@ class Settings(BaseSettings):
     # Keep the canonical name explicit, while accepting the two names used by
     # older deployment manifests during a rolling migration.  The value is
     # never serialized or exposed through the API.
+    # Weather by route (BACKEND-40). The free Open-Meteo API is for
+    # non-commercial use only; with a key the same API is served from the
+    # customer domain under a paid plan.
+    open_meteo_api_key: SecretStr | None = None
+    weather_enabled: bool = True
     two_gis_http_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices(
