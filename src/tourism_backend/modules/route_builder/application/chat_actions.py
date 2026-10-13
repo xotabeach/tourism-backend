@@ -148,6 +148,16 @@ _ACTION_CATALOG: dict[str, dict[str, Any]] = {
         "patch": {"transport_mode": "mixed"},
         "field": "transport_mode",
     },
+    "duration_h2": {
+        "label": "Пара часов",
+        "patch": {"duration": "h2"},
+        "field": "duration",
+    },
+    "duration_half_day": {
+        "label": "Полдня",
+        "patch": {"duration": "half_day"},
+        "field": "duration",
+    },
     "duration_d1_2": {
         "label": "1–2 дня",
         "patch": {"duration": "d1_2"},
@@ -259,7 +269,14 @@ _ASK_FIELD_DEFAULTS: dict[str, tuple[str, ...]] = {
         "transport_walk",
         "transport_mixed",
     ),
-    "duration": ("duration_d1_2", "duration_d3_5", "duration_d6_7", "duration_d7plus"),
+    "duration": (
+        "duration_h2",
+        "duration_half_day",
+        "duration_d1_2",
+        "duration_d3_5",
+        "duration_d6_7",
+        "duration_d7plus",
+    ),
     "people": ("people_1", "people_2", "people_3_plus"),
     "with_children": ("with_children",),
     "budget": ("ask_budget",),

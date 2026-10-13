@@ -19,7 +19,8 @@ from tourism_backend.modules.routes.application.schemas import (
 # самого пути. Отдельный тип, а не интерес «Фото»: он меняет и подбор
 # точек, и порядок обхода (закат — в конце).
 TripType = Literal["romance", "rest", "adventure", "active", "photo"]
-DurationOption = Literal["d1_2", "d3_5", "d6_7", "d7plus"]
+# «Пара часов» and «полдня» first (BACKEND-42), then whole days.
+DurationOption = Literal["h2", "half_day", "d1_2", "d3_5", "d6_7", "d7plus"]
 PaceOption = Literal["calm", "moderate", "active"]
 TransportMode = Literal["walk", "car", "public", "mixed"]
 MatchStrategy = Literal["algorithmic", "ai_catalog_rank"]

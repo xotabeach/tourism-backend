@@ -34,6 +34,8 @@ from tourism_backend.modules.route_builder.application.scoring import (
 )
 
 _DURATION_STOPS: dict[DurationOption, int] = {
+    "h2": 2,
+    "half_day": 3,
     "d1_2": 3,
     "d3_5": 5,
     "d6_7": 7,
