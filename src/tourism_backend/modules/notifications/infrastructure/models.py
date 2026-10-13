@@ -67,6 +67,9 @@ class Notification(Base, UUIDPrimaryKeyMixin):
     body: Mapped[str] = mapped_column(String(500), nullable=False)
     target_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     target_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    #: Inside the target: the comment or review the notification is about,
+    #: so the app can open the article or route right at it (BACKEND-67).
+    anchor_id: Mapped[UUID | None] = mapped_column(nullable=True)
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

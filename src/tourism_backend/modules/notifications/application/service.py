@@ -38,6 +38,7 @@ def _build_notification(
     target_type: str | None,
     target_id: UUID | None,
     actor_user_id: UUID | None = None,
+    anchor_id: UUID | None = None,
 ) -> Notification:
     return Notification(
         id=uuid4(),
@@ -48,6 +49,7 @@ def _build_notification(
         body=_clip(body, _BODY_MAX),
         target_type=target_type,
         target_id=target_id,
+        anchor_id=anchor_id,
         is_read=False,
         created_at=datetime.now(UTC),
     )
@@ -60,6 +62,7 @@ async def create_route_review_notification(
     actor_user_id: UUID,
     route_id: UUID,
     route_name: str,
+    anchor_id: UUID | None = None,
 ) -> Notification | None:
     """Create inbox row for route owner when a review is published."""
     if owner_user_id == actor_user_id:
@@ -74,6 +77,7 @@ async def create_route_review_notification(
         body=f"Оставил свой комментарий под вашим маршрутом «{short_route}»",
         target_type="route",
         target_id=route_id,
+        anchor_id=anchor_id,
     )
     session.add(notification)
     return notification
@@ -86,6 +90,7 @@ async def create_review_reply_notification(
     actor_user_id: UUID,
     route_id: UUID,
     route_name: str,
+    anchor_id: UUID | None = None,
 ) -> Notification | None:
     """Notify the original comment author after a reply is published."""
     if recipient_user_id == actor_user_id:
@@ -98,6 +103,7 @@ async def create_review_reply_notification(
         body=f"Ответил вам в маршруте «{_clip(route_name, 48)}»",
         target_type="route",
         target_id=route_id,
+        anchor_id=anchor_id,
     )
     session.add(notification)
     return notification
@@ -168,6 +174,7 @@ async def create_review_moderation_notification(
     route_id: UUID,
     route_name: str,
     approved: bool,
+    anchor_id: UUID | None = None,
 ) -> Notification:
     """Notify review author after ops approve/reject their comment."""
     short_route = _clip(route_name, 48)
@@ -188,6 +195,7 @@ async def create_review_moderation_notification(
         body=body,
         target_type="route",
         target_id=route_id,
+        anchor_id=anchor_id,
     )
     session.add(notification)
     return notification
@@ -230,6 +238,7 @@ async def create_article_comment_notification(
     actor_user_id: UUID,
     article_id: UUID,
     article_title: str,
+    anchor_id: UUID | None = None,
 ) -> Notification | None:
     """Tell the article author a comment was published under their text."""
     if author_user_id == actor_user_id:
@@ -242,6 +251,7 @@ async def create_article_comment_notification(
         body=f"Оставил комментарий к вашей статье «{_clip(article_title, 48)}»",
         target_type="article",
         target_id=article_id,
+        anchor_id=anchor_id,
     )
     session.add(notification)
     return notification
@@ -443,6 +453,7 @@ async def maybe_push_notification(
     body: str,
     target_type: str,
     target_id: UUID | None,
+    anchor_id: UUID | None = None,
 ) -> None:
     """Best-effort FCM when user opted into push and tokens exist."""
     user = await session.get(User, user_id)
@@ -462,6 +473,7 @@ async def maybe_push_notification(
             "kind": kind,
             "target_type": target_type,
             **({"target_id": str(target_id)} if target_id is not None else {}),
+            **({"anchor_id": str(anchor_id)} if anchor_id is not None else {}),
         },
     )
 
@@ -530,6 +542,7 @@ async def list_notifications(
             actor_display_name=names.get(row.actor_user_id) if row.actor_user_id else None,
             target_type=row.target_type,  # type: ignore[arg-type]
             target_id=str(row.target_id) if row.target_id else None,
+            anchor_id=str(row.anchor_id) if row.anchor_id else None,
             is_read=row.is_read,
             created_at=row.created_at,
         )
@@ -572,6 +585,7 @@ async def mark_notification_read(
         actor_display_name=actor_name,
         target_type=row.target_type,  # type: ignore[arg-type]
         target_id=str(row.target_id) if row.target_id else None,
+        anchor_id=str(row.anchor_id) if row.anchor_id else None,
         is_read=row.is_read,
         created_at=row.created_at,
     )

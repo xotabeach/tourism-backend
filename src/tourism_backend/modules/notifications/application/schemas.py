@@ -58,6 +58,8 @@ class NotificationOut(BaseModel):
     actor_display_name: str | None
     target_type: NotificationTargetType | None
     target_id: str | None
+    #: The comment or review inside the target, when there is one.
+    anchor_id: str | None = None
     is_read: bool
     created_at: datetime
 
