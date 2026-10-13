@@ -73,6 +73,13 @@ def _has_unpublished_stop() -> Exists:
         RouteStop.route_id == Route.id,
         RouteStop.place_id == Place.id,
         Place.publication_status != "published",
+        # The author's own point lives in its route and is published with it
+        # (BACKEND-43): it does not hide the route.
+        or_(
+            Place.publication_status != "route_only",
+            Place.author_route_id.is_(None),
+            Place.author_route_id != RouteStop.route_id,
+        ),
     )
 
 

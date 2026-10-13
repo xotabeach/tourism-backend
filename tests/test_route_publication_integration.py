@@ -1333,6 +1333,19 @@ async def test_author_points_live_only_in_their_route(
         refused = await client.post(f"/api/v1/routes/{route_id}/submit", headers=headers)
         assert refused.status_code == 400, refused.text
         assert refused.json()["error"]["code"] == "route_line_required"
+
+        # Published, the route with an author point is in the catalogue: the
+        # point is not an unpublished catalogue place.
+        async with app.state.session_factory() as session:
+            route = await session.get(Route, UUID(route_id))
+            assert route is not None
+            route.publication_status = "published"
+            route.visibility = "public"
+            route.lifecycle_status = "active"
+            await session.commit()
+        public = await client.get(f"/api/v1/routes/{route_id}")
+        assert public.status_code == 200, public.text
+        assert public.json()["stops"][1]["author_point_kind"] == "spring"
     finally:
         async with app.state.session_factory() as session:
             route = await session.get(Route, UUID(route_id))
