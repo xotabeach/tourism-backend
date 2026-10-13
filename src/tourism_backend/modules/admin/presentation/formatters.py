@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import UUID
@@ -581,3 +583,96 @@ def format_route_name_with_structure(
     return Markup('{} · <a href="/admin/route-structure?route_id={}">Дни и парковки</a>').format(
         name, route_id
     )
+
+
+_CHECK_TRANSPORT = {"walk": "пешком", "car": "на машине"}
+
+
+def _check_rows(metrics: dict[str, object]) -> list[tuple[str, str]]:
+    def figure(key: str, unit: str) -> str:
+        value = metrics.get(key)
+        return "нет данных" if value is None else f"{value} {unit}"
+
+    kinds = metrics.get("road_types")
+    road_types = kinds if isinstance(kinds, list) else []
+    distance = figure("distance_km", "км")
+    if metrics.get("distance_estimated"):
+        distance += " (оценка по прямой)"
+    return [
+        ("Как", str(_CHECK_TRANSPORT.get(str(metrics.get("transport")), "нет данных"))),
+        ("Длина", distance),
+        ("Время в движении", figure("movement_hours", "ч")),
+        ("Набор высоты", figure("elevation_gain_meters", "м")),
+        ("Дней", figure("day_count", "")),
+        ("Сложность", figure("difficulty_level", "из 5")),
+        ("Линия", "по дорогам и тропам" if metrics.get("line_drawn") else "прямая"),
+        ("Самый длинный перегон по прямой", figure("longest_gap_km", "км")),
+        ("Разброс точек", figure("spread_km", "км")),
+        ("Типы дорог", ", ".join(str(kind) for kind in road_types) or "—"),
+    ]
+
+
+def format_route_checks(
+    model: object,
+    attribute: object,
+    request: Request | None = None,
+) -> Markup:
+    """Figures and warnings of the last submission check (BACKEND-41).
+
+    The moderator sees length, gain, time and what the router warned about
+    instead of a raw JSON blob; the blob stays below, folded.
+    """
+    access = getattr(model, "accessibility", None)
+    access = access if isinstance(access, dict) else {}
+    check = access.get("submit_check")
+    raw = Markup("<details><summary>Все данные</summary><pre>{}</pre></details>").format(
+        json.dumps(access, ensure_ascii=False, indent=2, default=str)
+    )
+    if not isinstance(check, dict):
+        routing = access.get("routing")
+        if not isinstance(routing, dict):
+            return Markup("<p>Проверки при отправке не было</p>") + raw
+        meters = routing.get("distance_meters")
+        seconds = routing.get("movement_duration_seconds")
+        metrics: dict[str, object] = {
+            "distance_km": round(meters / 1000, 1) if isinstance(meters, int | float) else None,
+            "movement_hours": round(seconds / 3600, 1)
+            if isinstance(seconds, int | float)
+            else None,
+            "elevation_gain_meters": routing.get("elevation_gain_meters"),
+            "line_drawn": routing.get("synthetic") is False,
+            "road_types": routing.get("road_types") or [],
+            "transport": "car" if routing.get("transport_mode") == "car" else "walk",
+            "difficulty_level": getattr(model, "difficulty_level", None),
+        }
+        head = Markup("<p>Проверки при отправке не было, расчёты маршрутизатора:</p>")
+        problems = Markup("")
+    else:
+        stored = check.get("metrics")
+        metrics = stored if isinstance(stored, dict) else {}
+        checked = str(check.get("checked_at") or "")
+        with contextlib.suppress(ValueError):
+            checked = format_moscow_plain(datetime.fromisoformat(checked))
+        verdict = (
+            Markup('<b style="color:#1a7f37">прошёл</b>')
+            if check.get("passed")
+            else Markup('<b style="color:#cf222e">не прошёл</b>')
+        )
+        head = Markup("<p>Проверка при отправке {}: {}</p>").format(checked, verdict)
+        problems = Markup("")
+        for key, colour, title in (
+            ("blockers", "#cf222e", "Не пускает на модерацию"),
+            ("warnings", "#9a6700", "Обратить внимание"),
+        ):
+            items = [item for item in check.get(key) or [] if isinstance(item, dict)]
+            if not items:
+                continue
+            problems += Markup('<p style="color:{}"><b>{}</b></p><ul>').format(colour, title)
+            for item in items:
+                problems += Markup("<li>{}</li>").format(item.get("message") or item.get("code"))
+            problems += Markup("</ul>")
+    table = Markup('<table class="table table-sm" style="width:auto">')
+    for label, value in _check_rows(metrics):
+        table += Markup("<tr><th>{}</th><td>{}</td></tr>").format(label, value)
+    table += Markup("</table>")
+    return head + problems + table + raw
