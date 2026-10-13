@@ -1,0 +1,39 @@
+{% extends "sqladmin/layout.html" %}
+{% block content_header %}
+<div class="row align-items-center">
+  <div class="col">
+    <h2 class="page-title">Горные маршруты</h2>
+    <div class="page-pretitle">Перед стартом горного маршрута приложение предупреждает. Изменения применяются сразу. Пустое поле означает значение по умолчанию.</div>
+  </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="col-12 col-xl-8">
+  <div class="card mb-3">
+    <div class="card-body text-secondary">
+      Маршрут горный, если так отметил модератор или редакция, если его сложность не ниже порога
+      или набор высоты не меньше порога. Если расчёт сложности неточный или высот нет, маршрут,
+      большая часть точек которого вне населённых пунктов, тоже считается горным: предупреждаем
+      с запасом. Пользовательский маршрут модератор одобряет кнопкой «Одобрить: горный» или
+      «Одобрить: не горный».
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-body">
+      <form action="/admin/config/mountain/save" method="POST">
+        {% for field in fields %}
+        <div class="mb-3">
+          <label class="form-label" for="mt-{{ field.key }}">{{ field.label }}</label>
+          <input id="mt-{{ field.key }}" class="form-control" type="text" name="{{ field.key }}"
+            value="{{ field.value }}" placeholder="{{ field.default }}" {% if not can_write %}disabled{% endif %}>
+          <div class="form-hint">{{ field.hint }}</div>
+        </div>
+        {% endfor %}
+        {% if can_write %}
+        <button type="submit" class="btn btn-primary ct-btn-primary">Сохранить</button>
+        {% endif %}
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

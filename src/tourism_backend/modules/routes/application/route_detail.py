@@ -21,6 +21,7 @@ from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.application import place_covers
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.routes.application import coauthors
+from tourism_backend.modules.routes.application.mountain import mountain_status
 from tourism_backend.modules.routes.application.route_catalog import (
     _PUBLIC_CATALOG,
     _author_fields_for_routes,
@@ -132,6 +133,7 @@ async def _route_detail_from_model(
         rating=ratings.get(route.id, (None, 0)),
     )
     base.coauthors = (await coauthors.coauthors_out(session, [route.id])).get(route.id, [])
+    mountain = await mountain_status(session, route)
     return RouteDetailOut(
         **base.model_dump(),
         description=route.description,
@@ -147,6 +149,8 @@ async def _route_detail_from_model(
         needs_public_transport=route.needs_public_transport,
         segments=await _segments_for_route(session, route.id),
         days=await _days_for_route(session, route.id),
+        is_mountain=mountain.is_mountain,
+        mountain_source=mountain.source,
     )
 
 

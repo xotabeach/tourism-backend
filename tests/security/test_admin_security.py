@@ -1454,8 +1454,22 @@ async def test_moderator_compares_and_approves_an_edit_of_a_published_route(
         assert listing.status_code == 200, listing.text
         assert "Сравнить версии" in listing.text
 
-        approved = await admin_client.get(
+        # A user's route is not approved without «горный или нет» (BACKEND-39).
+        refused = await admin_client.get(
             f"/admin/route/action/approve-routes?pks={revision_id}",
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert refused.status_code in {302, 303}, refused.text
+        async with engine.connect() as conn:
+            still = await conn.scalar(
+                text("SELECT publication_status FROM routes WHERE id = :id"),
+                {"id": revision_id},
+            )
+        assert still == "pending_review"
+
+        approved = await admin_client.get(
+            f"/admin/route/action/approve-routes-flat?pks={revision_id}",
             headers=headers,
             follow_redirects=False,
         )
@@ -1463,6 +1477,8 @@ async def test_moderator_compares_and_approves_an_edit_of_a_published_route(
 
         public = await admin_client.get(f"/api/v1/routes/{route_id}")
         assert public.status_code == 200, public.text
+        assert public.json()["is_mountain"] is False
+        assert public.json()["mountain_source"] == "manual"
         assert public.json()["name"] == "Версия вторая"
         assert len(public.json()["stops"]) == 3
         assert len(public.json()["media"]) == 1
