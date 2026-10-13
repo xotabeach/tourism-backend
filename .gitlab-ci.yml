@@ -8,10 +8,14 @@
 # spend the shared quota. This file now mirrors tourism-mobile and
 # tourism-platform instead of being the odd one out.
 
+# Branches: task branches merge into `gamma`, and `gamma` merges into `main`
+# in batches (owner's decision 2026-10-13). `gamma` runs only the quick check
+# below, in seconds; the full pipeline (tests, scanners, image, deploy) runs
+# on `main`, once per batch instead of once per task.
 include:
   - local: ".gitlab-ci.full.yml"
     rules:
-      - if: '$CI_PIPELINE_MODE == "full"'
+      - if: '$CI_PIPELINE_MODE == "full" && $CI_COMMIT_BRANCH != "gamma"'
 
 workflow:
   rules:
@@ -29,6 +33,18 @@ stages:
   - deploy
   - mirror
 
+# The whole gamma pipeline: lint and format, no database, no image.
+gamma-quick-check:
+  stage: lean
+  image: python:3.13-slim
+  script:
+    - pip install --quiet ruff==0.15.22
+    - ruff check src tests
+    - ruff format --check src tests
+    - python -m compileall -q src
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "gamma"'
+
 ci-lean-notice:
   stage: lean
   image: alpine:3.21
@@ -36,6 +52,8 @@ ci-lean-notice:
     - 'echo "Lean CI — ruff/mypy/pytest run locally (uv run pytest)."'
     - 'echo "Set CI_PIPELINE_MODE=full for style + tests + scanners + deploy."'
   rules:
+    - if: '$CI_COMMIT_BRANCH == "gamma"'
+      when: never
     - if: '$CI_PIPELINE_MODE == "full"'
       when: never
     - when: on_success
