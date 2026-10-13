@@ -37,6 +37,41 @@ RouteQualityStatus = Literal[
 ROUTE_NAME_MAX = 60
 #: Longest note to a stop.
 STOP_NOTE_MAX = 200
+#: An author's own points per route (BACKEND-43, spec 15 D10).
+AUTHOR_POINTS_MAX = 5
+#: Crimea, with a margin: an author point outside it is a mistake.
+_CRIMEA_BOUNDS = (44.2, 32.3, 46.4, 36.8)
+
+AuthorPointKind = Literal["viewpoint", "spring", "parking", "rest", "start", "other"]
+
+
+class AuthorPointIn(BaseModel):
+    """A point the author adds that is not in the catalogue (BACKEND-43).
+
+    ``id`` is made on the device and stands in ``place_ids`` where the point
+    goes; saving again with the same id updates the point.
+    """
+
+    id: UUID
+    name: str = Field(min_length=2, max_length=80)
+    kind: AuthorPointKind = "other"
+    lat: float
+    lng: float
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) < 2:
+            raise ValueError("Point name is required")
+        return cleaned
+
+    @model_validator(mode="after")
+    def inside_crimea(self) -> "AuthorPointIn":
+        south, west, north, east = _CRIMEA_BOUNDS
+        if not (south <= self.lat <= north and west <= self.lng <= east):
+            raise ValueError("The point must be in Crimea")
+        return self
 
 
 class UserRouteDraftIn(BaseModel):
@@ -56,6 +91,8 @@ class UserRouteDraftIn(BaseModel):
     # до 18»), BACKEND-44. Absent: keep the notes the stops had (older apps);
     # a stop missing from the map has none.
     stop_notes: dict[UUID, str] | None = Field(default=None, max_length=22)
+    # The author's own points among place_ids (BACKEND-43). Absent: none.
+    author_points: list[AuthorPointIn] = Field(default_factory=list, max_length=AUTHOR_POINTS_MAX)
     filters: list[str] = Field(default_factory=list, max_length=20)
     pace: Literal["calm", "moderate", "active"] = "calm"
     difficulty: int = Field(default=3, ge=1, le=5)
@@ -90,6 +127,13 @@ class UserRouteDraftIn(BaseModel):
         if any(len(note) > STOP_NOTE_MAX for note in cleaned.values()):
             raise ValueError("Stop note is too long")
         return cleaned
+
+    @model_validator(mode="after")
+    def author_points_are_stops(self) -> "UserRouteDraftIn":
+        ids = [point.id for point in self.author_points]
+        if len(set(ids)) != len(ids) or not set(ids) <= set(self.place_ids):
+            raise ValueError("author_points must be route places, each once")
+        return self
 
     @model_validator(mode="after")
     def notes_follow_the_stops(self) -> "UserRouteDraftIn":
@@ -181,6 +225,8 @@ class UserRouteEditablePlaceOut(BaseModel):
     lng: float | None = None
     #: The author's note to this stop (BACKEND-44).
     note: str | None = None
+    #: Set for the author's own point (BACKEND-43): its kind.
+    author_point_kind: str | None = None
 
 
 class UserRouteEditableOut(BaseModel):
@@ -254,6 +300,9 @@ class RouteStopOut(BaseModel):
     # a second round trip per stop.
     place_short_description: str | None = None
     place_cover_url: str | None = None
+    #: The author's own point (BACKEND-43): its kind; not a catalogue place,
+    #: so the app does not open a place page for it.
+    author_point_kind: str | None = None
 
 
 class RouteMediaOut(BaseModel):

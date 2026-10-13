@@ -106,6 +106,13 @@ class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
         default="published",
         index=True,
     )
+    # An author's own point (BACKEND-43): ``route_only`` places that live in
+    # one route, never in the catalogue. The editors promote one by
+    # publishing it.
+    author_route_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("routes.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    author_point_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source_external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_license: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

@@ -1220,3 +1220,111 @@ async def test_long_name_and_stop_notes_are_kept(
             if route is not None:
                 await session.delete(route)
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_author_points_live_only_in_their_route(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """BACKEND-43: the author's own points (spec 15, D10/D18)."""
+    client, app = publication_context
+    tokens = await _login(client, f"+7915{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    places = await client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 3})
+    ids = [item["id"] for item in places.json()["items"]][:2]
+    if len(ids) < 2:
+        pytest.skip("Seed data has fewer than two places")
+    spring = str(uuid4())
+    draft = {
+        "name": "Маршрут с родником",
+        "description": "",
+        "place_ids": [ids[0], spring, ids[1]],
+        "author_points": [
+            {"id": spring, "name": "Родник у тропы", "kind": "spring", "lat": 44.47, "lng": 34.1}
+        ],
+        "filters": [],
+        "pace": "calm",
+        "difficulty": 2,
+    }
+    saved = await client.post("/api/v1/routes/drafts", headers=headers, json=draft)
+    assert saved.status_code == 200, saved.text
+    route_id = saved.json()["id"]
+    try:
+        mine = (await client.get(f"/api/v1/routes/mine/{route_id}", headers=headers)).json()
+        middle = mine["stops"][1]
+        assert middle["place_name"] == "Родник у тропы"
+        assert middle["author_point_kind"] == "spring"
+        assert middle["is_optional"] is True
+        assert mine["stops"][0]["author_point_kind"] is None
+        editable = (await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)).json()
+        assert [place["author_point_kind"] for place in editable["places"]] == [
+            None,
+            "spring",
+            None,
+        ]
+
+        # Not a catalogue place: no page, not in the list.
+        assert (await client.get(f"/api/v1/places/{spring}")).status_code == 404
+        listed = await client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 100})
+        assert spring not in {item["id"] for item in listed.json()["items"]}
+
+        # Saving again with the same id updates the point.
+        renamed = {
+            **draft,
+            "route_id": route_id,
+            "author_points": [{**draft["author_points"][0], "name": "Родник Кара-Су"}],
+        }
+        assert (
+            await client.post("/api/v1/routes/drafts", headers=headers, json=renamed)
+        ).status_code == 200
+        mine = (await client.get(f"/api/v1/routes/mine/{route_id}", headers=headers)).json()
+        assert mine["stops"][1]["place_name"] == "Родник Кара-Су"
+
+        # Someone else cannot take the point into their route.
+        other = await _login(client, f"+7916{uuid4().int % 10_000_000:07d}")
+        other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+        stolen = await client.post("/api/v1/routes/drafts", headers=other_headers, json=draft)
+        assert stolen.status_code == 400, stolen.text
+
+        # Outside Crimea and over the limit are refused.
+        far = {**draft, "author_points": [{**draft["author_points"][0], "lat": 55.75}]}
+        assert (
+            await client.post("/api/v1/routes/drafts", headers=headers, json=far)
+        ).status_code == 422
+        many = [str(uuid4()) for _ in range(6)]
+        too_many = {
+            **draft,
+            "place_ids": [ids[0], *many, ids[1]],
+            "author_points": [
+                {"id": pid, "name": f"Точка {n}", "lat": 44.47, "lng": 34.1 + n / 100}
+                for n, pid in enumerate(many)
+            ],
+        }
+        assert (
+            await client.post("/api/v1/routes/drafts", headers=headers, json=too_many)
+        ).status_code == 422
+
+        # A straight line to the point is not sent to the moderator (D18).
+        media = await client.post(
+            f"/api/v1/routes/drafts/{route_id}/media",
+            headers=headers,
+            data={"position": "0"},
+            files={"file": ("route.png", _png_bytes(), "image/png")},
+        )
+        assert media.status_code == 200, media.text
+        async with app.state.session_factory() as session:
+            route = await session.get(Route, UUID(route_id))
+            assert route is not None
+            access = dict(route.accessibility or {})
+            access["routing"] = {**(access.get("routing") or {}), "synthetic": True}
+            route.accessibility = access
+            await session.commit()
+        refused = await client.post(f"/api/v1/routes/{route_id}/submit", headers=headers)
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["error"]["code"] == "route_line_required"
+    finally:
+        async with app.state.session_factory() as session:
+            route = await session.get(Route, UUID(route_id))
+            if route is not None:
+                await session.delete(route)
+            await session.commit()

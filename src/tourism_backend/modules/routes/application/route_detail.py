@@ -112,6 +112,7 @@ async def _route_detail_from_model(
             lat=float(lat) if lat is not None else None,
             place_short_description=place.short_description,
             place_cover_url=stop_covers.get(place.id),
+            author_point_kind=place.author_point_kind if place.author_route_id else None,
         )
         for stop, place, lng, lat in stops_rows
     ]
