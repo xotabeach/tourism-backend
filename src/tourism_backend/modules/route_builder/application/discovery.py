@@ -4,16 +4,48 @@ import re
 from typing import Any
 
 SOUTH_COAST = "Южный берег Крыма"
+EAST_CRIMEA = "Восточный Крым"
+WEST_CRIMEA = "Западный Крым"
+SEVASTOPOL_AREA = "Севастополь и окрестности"
+MOUNTAIN_CRIMEA = "Горный Крым"
+KERCH_PENINSULA = "Керченский полуостров"
+
 # Product areas are geometry, not lists of “important cities”.  Bounds are a
 # coarse catalogue pre-filter; exact route geometry remains authoritative.
 _AREA_BOUNDS: dict[str, tuple[float, float, float, float]] = {
     # west, south, east, north
     SOUTH_COAST: (33.70, 44.35, 34.60, 44.72),
+    EAST_CRIMEA: (34.75, 44.75, 36.70, 45.50),
+    WEST_CRIMEA: (32.45, 45.05, 33.75, 45.75),
+    SEVASTOPOL_AREA: (33.35, 44.38, 33.95, 44.75),
+    MOUNTAIN_CRIMEA: (33.70, 44.45, 35.20, 44.95),
+    KERCH_PENINSULA: (35.40, 44.95, 36.70, 45.55),
 }
 _AREAS = (
-    (r"\b(?:юбк|южн\w*\s+берег\w*)\b", SOUTH_COAST),
+    (r"\b(?:юбк|южн\w*\s+(?:берег|побереж)\w*|больш\w*\s+ялт\w*)\b", SOUTH_COAST),
+    (r"\b(?:восточн\w*\s+крым\w*|восток\w*\s+крым\w*)\b", EAST_CRIMEA),
+    (r"\b(?:западн\w*\s+(?:крым|берег|побереж)\w*|тарханкут\w*)\b", WEST_CRIMEA),
+    (r"\b(?:керченск\w*\s+полуостров\w*)\b", KERCH_PENINSULA),
+    (r"\b(?:горн\w*\s+крым\w*|крымск\w*\s+гор\w*)\b", MOUNTAIN_CRIMEA),
+    (r"\b(?:окрестност\w*\s+севастопол\w*|севастопол\w*\s+и\s+окрестност\w*)\b", SEVASTOPOL_AREA),
     (r"\b(?:крым\w*|crimea)\b", "Крым"),
 )
+
+
+def normalize_area(area: str | None) -> str | None:
+    """The product area a name stands for: «ЮБК», «южное побережье» and
+    «Южный берег Крыма» are one area (BACKEND-68). Unknown names are kept as
+    they are, so a town given as an area still matches by name."""
+    if not area:
+        return None
+    folded = area.casefold().replace("ё", "е").strip()
+    for canonical in _AREA_BOUNDS:
+        if folded == canonical.casefold():
+            return canonical
+    for pattern, canonical in _AREAS:
+        if re.search(pattern, folded):
+            return canonical
+    return area.strip()
 
 
 def discovery_patch(text: str) -> dict[str, Any]:
@@ -76,10 +108,11 @@ def wants_discovery(text: str) -> bool:
 
 
 def area_localities(area: str) -> tuple[str, ...]:
-    if area.casefold() in {"крым", "crimea", "весь крым"}:
+    canonical = normalize_area(area) or ""
+    if canonical.casefold() in {"крым", "crimea", "весь крым"} or canonical in _AREA_BOUNDS:
         return ()
-    return (area,)
+    return (canonical,)
 
 
 def area_bounds(area: str) -> tuple[float, float, float, float] | None:
-    return _AREA_BOUNDS.get(area)
+    return _AREA_BOUNDS.get(normalize_area(area) or "")

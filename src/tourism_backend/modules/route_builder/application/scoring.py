@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from uuid import UUID
@@ -91,7 +92,7 @@ _PACE_DIFFICULTY: dict[PaceOption, set[str]] = {
 }
 
 _TRIP_KEYWORDS: dict[TripType, tuple[str, ...]] = {
-    "romance": ("роман", "пар", "закат", "вид", "дворец", "море"),
+    "romance": ("роман", "закат", "вид", "дворец", "море"),
     "rest": ("спокой", "пляж", "отдых", "релакс", "набереж"),
     "adventure": ("приключ", "экстрим", "тропа", "пещер", "скал"),
     "active": ("актив", "спорт", "велосипед", "треккинг", "поход"),
@@ -101,6 +102,7 @@ _TRIP_KEYWORDS: dict[TripType, tuple[str, ...]] = {
 _INTEREST_KEYWORDS: dict[str, tuple[str, ...]] = {
     "природа": ("природ", "лес", "парк", "водопад", "заповед"),
     "пляж": ("пляж", "море", "бухт", "набереж"),
+    # «гор» alone also matched «город» (BACKEND-68): see _STEM_EXCLUSIONS.
     "горы": ("гор", "перевал", "вершин", "скал"),
     "еда": ("еда", "ресторан", "кафе", "вино", "дегустац"),
     "история": ("истори", "музей", "крепост", "дворец", "античн"),
@@ -122,8 +124,12 @@ INTEREST_KEYWORDS = _INTEREST_KEYWORDS
 INTEREST_CATEGORIES: dict[str, frozenset[str]] = {
     "природа": frozenset({"nature", "park", "waterfall", "trail"}),
     "пляж": frozenset({"beach"}),
-    "море": frozenset({"beach", "viewpoint"}),
-    "горы": frozenset({"mountain", "viewpoint", "cave", "trail"}),
+    # A viewpoint is in a third of all routes, in a city as often as at
+    # sea or in the mountains: it made «море» and «горы» match nearly
+    # everything (BACKEND-68). The sea comes from beaches and the route's
+    # «Море» tag, the mountains from mountains, caves and trails.
+    "море": frozenset({"beach"}),
+    "горы": frozenset({"mountain", "cave", "trail"}),
     "еда": frozenset({"winery"}),
     "лес": frozenset({"nature", "park", "trail"}),
     "леса": frozenset({"nature", "park", "trail"}),
@@ -223,6 +229,10 @@ class ScoredMatch:
     full_match: bool = False
     requested_signals: int = 0
     excluded: bool = False
+    #: How strongly it answers among equal scores (BACKEND-68): the share of
+    #: stops in the named towns and how many of its kinds of places answer
+    #: the interests. Ranks a route with five beaches above one with a pier.
+    depth: float = 0.0
 
 
 def _haystack(candidate: RouteMatchCandidate) -> str:
@@ -249,7 +259,7 @@ def _location_score(
     places = [name.casefold() for name in candidate.place_names]
     name = candidate.name.casefold()
     if any(needle in loc or loc in needle for loc in localities if loc):
-        return 1.0, f"есть точки рядом с {location}"
+        return 1.0, f"есть точки в районе: {location}"
     if needle in name:
         return 0.85, f"в названии есть {location}"
     if any(needle in place for place in places):
@@ -277,8 +287,22 @@ def _duration_score(
     return max(0.15, 1.0 - gap), None
 
 
+# Stems that start other words: «гор» is also «город», «горожане».
+_STEM_EXCLUSIONS: dict[str, str] = {"гор": "од|ожан", "вид": "ео"}
+
+
 def _keyword_hits(text: str, keywords: tuple[str, ...]) -> int:
-    return sum(1 for kw in keywords if kw in text)
+    """How many stems start a word in [text] (BACKEND-68).
+
+    A plain substring test made «гор» hit «город» and «парк» answer «пар».
+    """
+    hits = 0
+    for kw in keywords:
+        exclusion = _STEM_EXCLUSIONS.get(kw)
+        pattern = rf"(?<![а-яёa-z]){re.escape(kw)}" + (f"(?!{exclusion})" if exclusion else "")
+        if re.search(pattern, text):
+            hits += 1
+    return hits
 
 
 def _interests_score(
@@ -303,7 +327,7 @@ def _interests_score(
         by_tag = seaside and key in SEASIDE_INTERESTS
         by_category = by_tag or bool(categories & categories_for_interest(key))
         stems = _INTEREST_KEYWORDS.get(key, (key,))
-        by_text = _keyword_hits(text, stems) > 0 or key in text
+        by_text = _keyword_hits(text, stems) > 0
         if by_category or by_text:
             hits += 1
             matched.append(interest)
@@ -479,6 +503,30 @@ _START_FIELDS = frozenset({"city", "start_query", "start_locality_id", "start_pl
 
 # A route counts as «по Евпатории» when at least this share of its stops is
 # there: a three-day tour of Crimea with one stop in town does not.
+#: The share of a route's stops inside a named area for it to be «there».
+MIN_AREA_SHARE = 0.5
+#: A stop this close to a named town's centre is in that town (BACKEND-68).
+TOWN_RADIUS_KM = 6.0
+
+
+def _km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Distance between two lng/lat points, km."""
+    lng1, lat1 = map(math.radians, a)
+    lng2, lat2 = map(math.radians, b)
+    h = (
+        math.sin((lat2 - lat1) / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin((lng2 - lng1) / 2) ** 2
+    )
+    return 2 * 6371.0 * math.asin(math.sqrt(h))
+
+
+def _named(town: str, place: str) -> bool:
+    """«Форос» names «Форосский парк»: the town's stem starts a word of the
+    place name. A short stem is not enough to match inside another word."""
+    stem = town[: max(4, len(town) - 2)] if len(town) > 5 else town
+    return re.search(rf"(?<![а-яёa-z]){re.escape(stem)}", place.casefold()) is not None
+
+
 MIN_NAMED_TOWN_SHARE = 0.25
 
 
@@ -563,7 +611,11 @@ def score_candidate(
     *,
     confirmed_fields: list[str] | None = None,
     explicit_fields: list[str] | None = None,
+    town_points: Mapping[str, tuple[float, float]] | None = None,
 ) -> ScoredMatch:
+    """[town_points]: lng/lat of the named towns, from the localities
+    directory, so a stop counts as in Симеиз by distance even when its place
+    is filed under the municipality (Ялта) — BACKEND-68."""
     signals = requested_signal_count(
         params, confirmed_fields=confirmed_fields, explicit_fields=explicit_fields
     )
@@ -575,6 +627,7 @@ def score_candidate(
 
     text = _haystack(candidate)
     parts: list[_Part] = []
+    depth = 0.0
 
     # --- start / area
     c_score, c_reason = _location_score(params.effective_start_query, candidate)
@@ -588,13 +641,21 @@ def score_candidate(
         locations = area_localities(params.search_area)
         bounds = area_bounds(params.search_area)
         # Structured locality wins over a marketing title mentioning another area.
-        inside_bounds = bool(
-            bounds
-            and any(
+        # Most of the route is in the area, not one stop of it: a mountain
+        # hike from Бахчисарай with one stop over Ялта is not «по ЮБК»
+        # (BACKEND-68). The share also ranks equal scores.
+        in_area: list[bool] = (
+            [
                 bounds[0] <= lng <= bounds[2] and bounds[1] <= lat <= bounds[3]
                 for lng, lat in candidate.stop_coordinates
-            )
+            ]
+            if bounds
+            else []
         )
+        inside_share = sum(in_area) / len(in_area) if in_area else 0.0
+        inside_bounds = bool(bounds) and inside_share >= MIN_AREA_SHARE
+        if bounds:
+            depth += 2.0 * inside_share
         if (
             locations
             and not bounds
@@ -603,6 +664,11 @@ def score_candidate(
             return _excluded(candidate, "вне выбранного района", "вне выбранного района", signals)
         c_score, c_reason = 1.0, f"район поиска: {params.search_area}"
     if _location_requested(params, confirmed_fields):
+        start = (params.effective_start_query or "").casefold()
+        first = (candidate.stop_localities[0] or "") if candidate.stop_localities else ""
+        # Starts right there: above a route that only passes by (BACKEND-68).
+        if start and first and (start in first.casefold() or first.casefold() in start):
+            depth += 1.0
         parts.append(
             _Part(
                 0.32,
@@ -618,17 +684,30 @@ def score_candidate(
         # the area, and a route elsewhere is not an answer (BACKEND-64).
         # «Посёлки вроде Фороса» inside a named area stay a soft wish.
         whole_region = (params.search_area or "").casefold() in {"крым", "crimea", "весь крым"}
-        towns_are_the_area = whole_region or not _location_requested(params, confirmed_fields)
+        # A named area that is not all Crimea makes the towns examples:
+        # «вдоль ЮБК, по типу Симеиза, Фороса» (BACKEND-68).
+        towns_are_the_area = whole_region or (
+            not params.search_area and not _location_requested(params, confirmed_fields)
+        )
+        points = [point for name, point in (town_points or {}).items() if name.casefold() in wanted]
+
+        def near_a_town(coordinate: tuple[float, float] | None) -> bool:
+            return coordinate is not None and any(
+                _km(coordinate, point) <= TOWN_RADIUS_KM for point in points
+            )
+
         if candidate.stop_localities:
+            coordinates: list[tuple[float, float] | None] = list(candidate.stop_coordinates)
+            coordinates += [None] * (len(candidate.stop_localities) - len(coordinates))
             inside = sum(
                 1
-                for locality, place in zip(
-                    candidate.stop_localities, candidate.place_names, strict=False
+                for locality, place, coordinate in zip(
+                    candidate.stop_localities, candidate.place_names, coordinates, strict=False
                 )
                 if any(
-                    name in (locality or "").casefold() or name in place.casefold()
-                    for name in wanted
+                    name in (locality or "").casefold() or _named(name, place) for name in wanted
                 )
+                or near_a_town(coordinate)
             )
             share = inside / len(candidate.stop_localities)
         else:
@@ -639,6 +718,7 @@ def score_candidate(
                     for name in wanted
                 )
             )
+        depth += 2.0 * share
         if towns_are_the_area and share < MIN_NAMED_TOWN_SHARE:
             return _excluded(candidate, "вне названного города", "вне названного города", signals)
         has_preferred = share > 0
@@ -675,6 +755,10 @@ def score_candidate(
             candidate.category_slugs,
             seaside=candidate.is_seaside,
         )
+        wanted_kinds = frozenset().union(
+            *(categories_for_interest(interest) for interest in params.interests)
+        )
+        depth += 0.25 * len(candidate.category_slugs & wanted_kinds)
         no_hits = i_reason is None
         parts.append(
             _Part(
@@ -854,6 +938,7 @@ def score_candidate(
         has_violation=violation,
         full_match=full_match,
         requested_signals=signals,
+        depth=depth,
     )
 
 
@@ -881,9 +966,10 @@ def select_hits(
     hits and whether to offer generating a route: no hit reaches "ideal".
     """
 
-    def key(item: ScoredMatch) -> tuple[float, float, str]:
+    def key(item: ScoredMatch) -> tuple[float, float, float, str]:
         rating, name = tiebreak(item) if tiebreak else (0.0, item.candidate.name)
-        return (-item.score, -rating, name)
+        # Equal scores: the stronger answer, then the better rated (BACKEND-68).
+        return (-item.score, -item.depth, -rating, name)
 
     eligible = [item for item in scored if not item.excluded and item.score >= MIN_MATCH_SCORE]
     hits = sorted(eligible, key=key)[:MAX_HITS]

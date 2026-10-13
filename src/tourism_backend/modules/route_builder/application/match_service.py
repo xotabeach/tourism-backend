@@ -15,6 +15,11 @@ from tourism_backend.api.errors import AppError
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.places.infrastructure.models import Category, Place, PlaceCategory
+from tourism_backend.modules.route_builder.application.discovery import (
+    area_bounds,
+    area_localities,
+    normalize_area,
+)
 from tourism_backend.modules.route_builder.application.quota import quota_snapshot
 from tourism_backend.modules.route_builder.application.schemas import (
     RouteMatchHitOut,
@@ -44,6 +49,10 @@ from tourism_backend.modules.subscriptions.application.entitlements import polic
 logger = logging.getLogger(__name__)
 
 
+#: Far above the catalogue; a guard, not a filter.
+_MAX_CANDIDATES = 2000
+
+
 async def match_routes(
     session: AsyncSession,
     *,
@@ -64,6 +73,8 @@ async def match_routes(
         region_slug=params.region_slug,
         excluded_route_ids=excluded_route_ids,
     )
+    params = effective_area(params, candidates)
+    town_points = await _town_points(session, params.preferred_localities)
     preferences = UserPreferenceSignals(
         categories=frozenset(user.preferred_categories or ()),
         difficulty=user.preferred_difficulty,
@@ -104,6 +115,7 @@ async def match_routes(
             preferences,
             confirmed_fields=confirmed_fields,
             explicit_fields=params.explicit_fields,
+            town_points=town_points,
         )
         for candidate in candidates
     ]
@@ -163,6 +175,57 @@ async def match_routes(
     )
 
 
+def effective_area(
+    params: RouteMatchParamsIn, candidates: list[RouteMatchCandidate]
+) -> RouteMatchParamsIn:
+    """The search area as the matching can use it (BACKEND-68).
+
+    «ЮБК» and «южное побережье» become the product area with its bounds.
+    A name that is neither a known area nor a town of any route cannot be
+    checked, and used to rule out the whole catalogue: it is dropped, and
+    the towns and interests decide.
+    """
+    if not params.search_area:
+        return params
+    area = normalize_area(params.search_area)
+    if area and not area_bounds(area):
+        towns = area_localities(area)
+        known = not towns or any(
+            town.casefold() in " ".join(candidate.locality_names).casefold()
+            or any(town.casefold() in place.casefold() for place in candidate.place_names)
+            for candidate in candidates
+            for town in towns
+        )
+        if not known:
+            logger.info("route_match area_dropped area=%s", params.search_area)
+            area = None
+    return params.model_copy(update={"search_area": area})
+
+
+async def _town_points(session: AsyncSession, names: list[str]) -> dict[str, tuple[float, float]]:
+    """lng/lat of the named towns from the localities directory, by name or
+    alias, so a stop is in Симеиз by distance (BACKEND-68)."""
+    if not names:
+        return {}
+    wanted = {name.casefold().strip(): name for name in names}
+    geom = cast(Locality.center, Geometry)
+    rows = (
+        await session.execute(
+            select(Locality.name, Locality.aliases, ST_X(geom), ST_Y(geom)).where(
+                Locality.center.is_not(None)
+            )
+        )
+    ).all()
+    points: dict[str, tuple[float, float]] = {}
+    for name, aliases, lng, lat in rows:
+        if lng is None or lat is None:
+            continue
+        spellings = {name.casefold(), *(str(alias).casefold() for alias in aliases or ())}
+        for spelling in spellings & wanted.keys():
+            points[wanted[spelling]] = (float(lng), float(lat))
+    return points
+
+
 def _log_outcome(hits: list[ScoredMatch], *, signals: int, empty: bool, confirmed: bool) -> None:
     """One line per match: enough to see the spread of percents and empty results."""
 
@@ -214,7 +277,9 @@ async def _load_candidates(
                     *exclusions,
                 )
                 .order_by(Route.name, Route.id)
-                .limit(200)
+                # The whole public catalogue: a cap ordered by name silently
+                # left routes late in the alphabet out (BACKEND-68).
+                .limit(_MAX_CANDIDATES)
             )
         ).all()
     )
