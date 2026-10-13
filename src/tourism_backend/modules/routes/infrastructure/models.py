@@ -114,6 +114,9 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     difficulty_level: Mapped[int | None] = mapped_column(SmallInteger, nullable=True, index=True)
     difficulty_confidence: Mapped[str | None] = mapped_column(String(8), nullable=True)
     difficulty_formula_version: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # «Горный маршрут» chosen by a moderator or an editor (BACKEND-39); None
+    # leaves it to the numbers (routes/application/mountain.py).
+    mountain_manual: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     budget_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     seasonality: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     transport_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)

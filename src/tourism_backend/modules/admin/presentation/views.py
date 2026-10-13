@@ -94,6 +94,7 @@ from tourism_backend.modules.admin.presentation.formatters import (
     format_user_fk,
     format_user_id_peek,
 )
+from tourism_backend.modules.admin.presentation.mountain_admin import MountainConfigAdmin
 from tourism_backend.modules.admin.presentation.permissions import (
     PermissionedModelView as ModelView,
 )
@@ -1677,9 +1678,17 @@ class RouteAdmin(ModelView, model=Route):
         Route.suitable_for_children,
         Route.pets_allowed,
         Route.is_seaside,
+        Route.mountain_manual,
         Route.moderator_note,
     ]
     form_args = {
+        "mountain_manual": {
+            "label": "Горный маршрут",
+            "description": (
+                "Перед стартом горного маршрута приложение предупреждает. Пусто: "
+                "по расчёту (сложность, набор высоты, запас при неточном расчёте)."
+            ),
+        },
         "moderator_note": {
             "label": "Заметка модератора",
             "description": (
@@ -1732,6 +1741,7 @@ class RouteAdmin(ModelView, model=Route):
         *,
         publication_status: str,
         rejection: RejectionReason | None = None,
+        mountain: bool | None = None,
     ) -> Response:
         actor_id = session_principal_id(request)
         if actor_id is None:
@@ -1748,6 +1758,7 @@ class RouteAdmin(ModelView, model=Route):
                 )
                 now = datetime.now(UTC)
                 without_note: list[str] = []
+                without_mountain: list[str] = []
                 for route in routes:
                     previous = route.publication_status
                     if (
@@ -1755,6 +1766,21 @@ class RouteAdmin(ModelView, model=Route):
                         and previous != "pending_review"
                     ):
                         continue
+                    if publication_status == "published":
+                        # A user's route is approved only with the moderator's
+                        # «горный или нет» (spec 15, D21); it is kept on the
+                        # route people see, the published one for an edit.
+                        target = (
+                            await session.get(Route, route.revision_of_route_id)
+                            if route.revision_of_route_id is not None
+                            else route
+                        ) or route
+                        if mountain is not None:
+                            target.mountain_manual = mountain
+                            route.mountain_manual = mountain
+                        elif route.owner_user_id is not None and target.mountain_manual is None:
+                            without_mountain.append(route.name)
+                            continue
                     if publication_status == "rejected":
                         # A rejection always tells the author what to fix
                         # (spec 15, D6). This reason is nothing but the
@@ -1850,6 +1876,13 @@ class RouteAdmin(ModelView, model=Route):
                                 ),
                             )
                 await session.commit()
+                if without_mountain:
+                    Flash.error(
+                        request,
+                        "Не опубликованы, нужно выбрать «горный или нет»: "
+                        + ", ".join(without_mountain)
+                        + ". Нажмите «Одобрить: горный» или «Одобрить: не горный».",
+                    )
                 if without_note:
                     Flash.error(
                         request,
@@ -1876,6 +1909,32 @@ class RouteAdmin(ModelView, model=Route):
     )
     async def approve_routes(self, request: Request) -> Response:
         return await self._set_publication_status(request, publication_status="published")
+
+    @action(
+        name="approve_routes_mountain",
+        label="Одобрить: горный",
+        confirmation_message=(
+            "Опубликовать как горные? Перед стартом приложение предупредит о горном маршруте."
+        ),
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def approve_routes_mountain(self, request: Request) -> Response:
+        return await self._set_publication_status(
+            request, publication_status="published", mountain=True
+        )
+
+    @action(
+        name="approve_routes_flat",
+        label="Одобрить: не горный",
+        confirmation_message="Опубликовать как не горные?",
+        add_in_detail=True,
+        add_in_list=True,
+    )
+    async def approve_routes_flat(self, request: Request) -> Response:
+        return await self._set_publication_status(
+            request, publication_status="published", mountain=False
+        )
 
     async def _reject_with(self, request: Request, code: str) -> Response:
         return await self._set_publication_status(
@@ -4430,6 +4489,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(RuntimeConfigAdmin)
     admin.add_view(SmsConfigAdmin)
     admin.add_view(AppUpdateConfigAdmin)
+    admin.add_view(MountainConfigAdmin)
     admin.add_view(RoutePointsHoldAdmin)
     admin.add_view(UserFraudStateAdmin)
     admin.add_view(RoutePaceViolationAdmin)
@@ -4445,6 +4505,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         RuntimeConfigAdmin.session_maker = session_maker
         SmsConfigAdmin.session_maker = session_maker
         AppUpdateConfigAdmin.session_maker = session_maker
+        MountainConfigAdmin.session_maker = session_maker
         AntiFraudConfigAdmin.session_maker = session_maker
         AchievementsOperationsAdmin.session_maker = session_maker
         RouteStructureAdmin.session_maker = session_maker

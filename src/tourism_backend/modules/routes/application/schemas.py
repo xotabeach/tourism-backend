@@ -406,6 +406,10 @@ class RouteDetailOut(RouteListItemOut):
     segments: list[RouteSegmentOut] = Field(default_factory=list)
     #: Days in order; empty until the route has them, one for a short route.
     days: list[RouteDayOut] = Field(default_factory=list)
+    #: Warn before the start (BACKEND-39, spec 15 D8/D21).
+    is_mountain: bool = False
+    #: manual / level / ascent / unreliable / none: why it is or is not.
+    mountain_source: str = "none"
 
 
 class RouteListOut(BaseModel):
