@@ -74,6 +74,8 @@ backend-publish-manual:
     # Same two-part build as backend-publish in .gitlab-ci.full.yml.
     - sh scripts/ci-publish-image.sh "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:production"
   rules:
+    - if: '$CI_COMMIT_BRANCH == "gamma"'
+      when: never
     - if: '$CI_PIPELINE_MODE == "full"'
       when: never
     - when: manual
