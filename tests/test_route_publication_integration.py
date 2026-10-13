@@ -1145,3 +1145,72 @@ async def test_author_difficulty_rules_and_older_apps(
     body = (await client.get(f"/api/v1/routes/{route_id}/editable", headers=headers)).json()
     assert (body["difficulty"], body["difficulty_manual"]) == (estimate, False)
     await _delete_drafts(app, route_id)
+
+
+@pytest.mark.asyncio
+async def test_long_name_and_stop_notes_are_kept(
+    publication_context: tuple[AsyncClient, Any],
+) -> None:
+    """BACKEND-44: a name past 30 characters and the author's stop notes."""
+    client, app = publication_context
+    tokens = await _login(client, f"+7914{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    places = await client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 3})
+    ids = [item["id"] for item in places.json()["items"]][:2]
+    if len(ids) < 2:
+        pytest.skip("Seed data has fewer than two places")
+
+    name = "Ялта • Ай-Петри и горный серпантин до водопада Учан-Су"
+    draft = {
+        "name": name,
+        "description": "",
+        "place_ids": ids,
+        "stop_notes": {ids[1]: "  Вход платный с 9 до 18  "},
+        "filters": [],
+        "pace": "calm",
+        "difficulty": 2,
+    }
+    saved = await client.post("/api/v1/routes/drafts", headers=headers, json=draft)
+    assert saved.status_code == 200, saved.text
+    route_id = saved.json()["id"]
+    try:
+
+        async def notes() -> list[str | None]:
+            mine = await client.get(f"/api/v1/routes/mine/{route_id}", headers=headers)
+            assert mine.json()["name"] == name
+            return [stop["note"] for stop in mine.json()["stops"]]
+
+        assert await notes() == [None, "Вход платный с 9 до 18"]
+
+        # An older app sends no notes: they stay.
+        older = {key: value for key, value in draft.items() if key != "stop_notes"}
+        resaved = await client.post(
+            "/api/v1/routes/drafts", headers=headers, json={**older, "route_id": route_id}
+        )
+        assert resaved.status_code == 200, resaved.text
+        assert await notes() == [None, "Вход платный с 9 до 18"]
+
+        # An empty map clears them; a note for a place not in the route is refused.
+        cleared = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**draft, "route_id": route_id, "stop_notes": {}},
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert await notes() == [None, None]
+        stray = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**draft, "route_id": route_id, "stop_notes": {str(uuid4()): "x"}},
+        )
+        assert stray.status_code in {400, 422}
+        too_long = await client.post(
+            "/api/v1/routes/drafts", headers=headers, json={**draft, "name": "Я" * 61}
+        )
+        assert too_long.status_code in {400, 422}
+    finally:
+        async with app.state.session_factory() as session:
+            route = await session.get(Route, UUID(route_id))
+            if route is not None:
+                await session.delete(route)
+            await session.commit()

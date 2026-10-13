@@ -33,6 +33,12 @@ RouteQualityStatus = Literal[
 ]
 
 
+#: Longest route name the editor accepts (BACKEND-44); the column holds 255.
+ROUTE_NAME_MAX = 60
+#: Longest note to a stop.
+STOP_NOTE_MAX = 200
+
+
 class UserRouteDraftIn(BaseModel):
     route_id: UUID | None = None
     # Generated on the device when the local draft is created. A save without a
@@ -42,9 +48,14 @@ class UserRouteDraftIn(BaseModel):
     # The server's updated_at the author last saw. If the draft was changed
     # since (another device), the save is refused with 409 draft_conflict.
     expected_updated_at: datetime | None = None
-    name: str = Field(min_length=1, max_length=30)
+    # 30 cut «Ялта • Ай-Петри и горный...» (BACKEND-44).
+    name: str = Field(min_length=1, max_length=ROUTE_NAME_MAX)
     description: str = Field(default="", max_length=500)
     place_ids: list[UUID] = Field(min_length=2, max_length=22)
+    # The author's note to a stop by place («крутой спуск», «вход платный с 9
+    # до 18»), BACKEND-44. Absent: keep the notes the stops had (older apps);
+    # a stop missing from the map has none.
+    stop_notes: dict[UUID, str] | None = Field(default=None, max_length=22)
     filters: list[str] = Field(default_factory=list, max_length=20)
     pace: Literal["calm", "moderate", "active"] = "calm"
     difficulty: int = Field(default=3, ge=1, le=5)
@@ -68,6 +79,22 @@ class UserRouteDraftIn(BaseModel):
             or positions[-1] == len(self.place_ids) - 1
         ):
             raise ValueError("day_breaks must be route places in order, before the last one")
+        return self
+
+    @field_validator("stop_notes")
+    @classmethod
+    def clean_stop_notes(cls, value: dict[UUID, str] | None) -> dict[UUID, str] | None:
+        if value is None:
+            return None
+        cleaned = {key: note.strip() for key, note in value.items() if note.strip()}
+        if any(len(note) > STOP_NOTE_MAX for note in cleaned.values()):
+            raise ValueError("Stop note is too long")
+        return cleaned
+
+    @model_validator(mode="after")
+    def notes_follow_the_stops(self) -> "UserRouteDraftIn":
+        if self.stop_notes and not set(self.stop_notes) <= set(self.place_ids):
+            raise ValueError("stop_notes must be keyed by route places")
         return self
 
     @field_validator("client_draft_id")

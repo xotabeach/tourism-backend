@@ -396,6 +396,7 @@ async def save_user_route_draft(
         )
 
     now = datetime.now(UTC)
+    previous_notes: dict[UUID, str] = {}
     route_key = payload.route_id
     if route_key is None and payload.client_draft_id is not None:
         # A retry after a lost response: reuse the draft this key already made.
@@ -450,6 +451,18 @@ async def save_user_route_draft(
         # moderator only when the author sends it, and saving again takes a
         # waiting edit back out of the queue (D17).
         previous_status = "draft" if route is not public else route.publication_status
+        # Notes ride along by place when an older app does not send them.
+        previous_notes = {
+            row.place_id: row.note
+            for row in (
+                await session.execute(
+                    select(RouteStop.place_id, RouteStop.note).where(
+                        RouteStop.route_id == route.id, RouteStop.note.is_not(None)
+                    )
+                )
+            ).all()
+            if row.note is not None
+        }
         await session.execute(delete(RouteStop).where(RouteStop.route_id == route.id))
 
     route.region_id = next(iter(region_ids))
@@ -523,12 +536,14 @@ async def save_user_route_draft(
     route.accessibility = accessibility
     route.updated_at = now
 
+    notes = payload.stop_notes if payload.stop_notes is not None else previous_notes
     for position, place_id in enumerate(payload.place_ids, start=1):
         session.add(
             RouteStop(
                 id=uuid4(),
                 route_id=route.id,
                 place_id=place_id,
+                note=notes.get(place_id),
                 position=position,
                 is_optional=False,
                 created_at=now,
