@@ -530,3 +530,124 @@ def test_short_durations_fit_short_routes() -> None:
         "длительность совпадает"
         in score_candidate(half_day, _candidate(estimated_duration_minutes=240)).reasons
     )
+
+
+# BACKEND-68: review of the AI matching on the public catalogue.
+
+_FOROS = (33.788, 44.392)
+_SIMEIZ = (33.997, 44.405)
+
+
+def _south_coast_route(name: str, coords: tuple[tuple[float, float], ...]) -> RouteMatchCandidate:
+    return _candidate(
+        name=name,
+        place_names=tuple(f"Точка {n}" for n in range(len(coords))),
+        locality_names=("Ялта",),
+        stop_localities=("Ялта",) * len(coords),
+        stop_coordinates=coords,
+        category_slugs=frozenset({"landmark"}),
+    )
+
+
+def test_ubk_is_the_south_coast_not_a_town() -> None:
+    from tourism_backend.modules.route_builder.application.discovery import (
+        area_bounds,
+        normalize_area,
+    )
+
+    for spelling in ("ЮБК", "южное побережье", "Большая Ялта"):
+        assert normalize_area(spelling) == "Южный берег Крыма"
+        assert area_bounds(spelling) is not None
+    assert normalize_area("Тарханкут") == "Западный Крым"
+    route = _south_coast_route("Ялта", ((34.17, 44.50), (34.16, 44.49)))
+    scored = score_candidate(
+        RouteMatchParamsIn(search_area="ЮБК", flexible_start=True),
+        route,
+        confirmed_fields=["search_area"],
+    )
+    assert not scored.excluded
+
+
+def test_an_unknown_area_does_not_empty_the_catalogue() -> None:
+    from tourism_backend.modules.route_builder.application.match_service import effective_area
+
+    routes = [_south_coast_route("Ялта", ((34.17, 44.50),))]
+    params = effective_area(RouteMatchParamsIn(search_area="Где-то у моря"), routes)
+    assert params.search_area is None
+    town = effective_area(RouteMatchParamsIn(search_area="Ялта"), routes)
+    assert town.search_area == "Ялта"
+
+
+def test_a_route_is_in_an_area_with_most_of_its_stops() -> None:
+    passing = _south_coast_route(
+        "Поход из Бахчисарая", ((33.86, 44.75), (33.90, 44.80), (34.10, 44.47))
+    )
+    scored = score_candidate(
+        RouteMatchParamsIn(search_area="Южный берег Крыма", flexible_start=True),
+        passing,
+        confirmed_fields=["search_area"],
+    )
+    assert scored.excluded
+
+
+def test_towns_inside_a_named_area_are_examples_found_by_distance() -> None:
+    params = RouteMatchParamsIn(
+        search_area="ЮБК",
+        preferred_localities=["Симеиз", "Форос"],
+        flexible_start=True,
+    )
+    fields = ["search_area", "preferred_localities"]
+    towns = {"Симеиз": _SIMEIZ, "Форос": _FOROS}
+    # Filed under Ялта, standing in Simeiz: found by distance.
+    simeiz = _south_coast_route("Виды Симеиза", ((33.99, 44.40), (34.0, 44.41)))
+    elsewhere = _south_coast_route("Дворцы Ялты", ((34.17, 44.50), (34.16, 44.49)))
+    near = score_candidate(params, simeiz, confirmed_fields=fields, town_points=towns)
+    far = score_candidate(params, elsewhere, confirmed_fields=fields, town_points=towns)
+    assert not near.excluded
+    assert not far.excluded  # examples, not a filter
+    hits, _ = select_hits([far, near])
+    assert hits[0].candidate.name == "Виды Симеиза"
+
+
+def test_a_town_alone_still_narrows_to_it() -> None:
+    params = RouteMatchParamsIn(preferred_localities=["Форос"], flexible_start=True)
+    elsewhere = _south_coast_route("Дворцы Ялты", ((34.17, 44.50),))
+    scored = score_candidate(
+        params,
+        elsewhere,
+        confirmed_fields=["preferred_localities"],
+        town_points={"Форос": _FOROS},
+    )
+    assert scored.excluded
+
+
+def test_mountains_are_not_cities_or_viewpoints() -> None:
+    params = RouteMatchParamsIn(interests=["Горы"], flexible_start=True)
+    city = _candidate(
+        name="Городская симфония",
+        description="Старый город",
+        short_description=None,
+        place_names=("Городской сад",),
+        category_slugs=frozenset({"viewpoint", "landmark"}),
+    )
+    mountain = _candidate(
+        name="Тропа на вершину",
+        category_slugs=frozenset({"mountain"}),
+    )
+    fields = ["interests"]
+    assert "интересы: Горы" not in score_candidate(params, city, confirmed_fields=fields).reasons
+    assert "интересы: Горы" in score_candidate(params, mountain, confirmed_fields=fields).reasons
+
+
+def test_equal_scores_rank_the_stronger_answer_first() -> None:
+    params = RouteMatchParamsIn(interests=["История"], flexible_start=True)
+    fields = ["interests"]
+    one = _candidate(name="А один музей", category_slugs=frozenset({"museum"}))
+    many = _candidate(
+        name="Я крепости и дворцы",
+        category_slugs=frozenset({"museum", "fortress", "palace"}),
+    )
+    hits, _ = select_hits(
+        [score_candidate(params, c, confirmed_fields=fields) for c in (one, many)]
+    )
+    assert [hit.candidate.name for hit in hits] == ["Я крепости и дворцы", "А один музей"]
