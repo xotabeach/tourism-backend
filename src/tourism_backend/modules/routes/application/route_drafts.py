@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.geography.infrastructure.models import Region
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.infrastructure.models import Place
 from tourism_backend.modules.route_builder.application.routing import (
@@ -294,6 +295,7 @@ async def get_user_route_for_edit(
                 lat=lat,
                 lng=lng,
                 note=note,
+                author_point_kind=place.author_point_kind if place.author_route_id else None,
             )
             for place, lng, lat, note in stop_rows
         ],
@@ -364,6 +366,64 @@ def _reject_stale_draft_save(route: Route, expected_updated_at: datetime | None)
         )
 
 
+async def _default_region_id(session: AsyncSession) -> UUID:
+    """The region of a route made only of the author's own points: Crimea."""
+    region_id = await session.scalar(
+        select(Region.id).order_by((Region.slug == "crimea").desc(), Region.created_at).limit(1)
+    )
+    if region_id is None:
+        raise AppError(code="invalid_route_region", message="No region", status_code=400)
+    return region_id
+
+
+async def _save_author_points(
+    session: AsyncSession,
+    *,
+    payload: UserRouteDraftIn,
+    route_id: UUID,
+    region_id: UUID,
+    now: datetime,
+) -> list[Place]:
+    """Creates or updates the author's own points of [route_id] (BACKEND-43).
+
+    Each is a ``route_only`` place of this route: the catalogue never lists
+    it. An id that belongs to another place or route is refused.
+    """
+    saved: list[Place] = []
+    for point in payload.author_points:
+        place = await session.get(Place, point.id)
+        location = WKTElement(f"POINT({point.lng} {point.lat})", srid=4326)
+        if place is None:
+            place = Place(
+                id=point.id,
+                region_id=region_id,
+                name=point.name,
+                slug=f"author-{point.id.hex}",
+                location=location,
+                publication_status="route_only",
+                author_route_id=route_id,
+                author_point_kind=point.kind,
+                source_name="author_point",
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(place)
+        elif place.author_route_id != route_id or place.publication_status != "route_only":
+            raise AppError(
+                code="invalid_route_place",
+                message="One or more route places are unavailable",
+                status_code=400,
+            )
+        else:
+            place.name = point.name
+            place.location = location
+            place.author_point_kind = point.kind
+            place.updated_at = now
+        saved.append(place)
+    await session.flush()
+    return saved
+
+
 async def save_user_route_draft(
     session: AsyncSession,
     *,
@@ -371,30 +431,34 @@ async def save_user_route_draft(
     payload: UserRouteDraftIn,
     redis: Redis | None = None,
 ) -> UserRouteDraftOut:
+    # The author's own points come as data, not from the catalogue (BACKEND-43).
+    author_ids = {point.id for point in payload.author_points}
+    catalog_ids = [place_id for place_id in payload.place_ids if place_id not in author_ids]
     places = list(
         (
             await session.scalars(
                 select(Place).where(
-                    Place.id.in_(payload.place_ids),
+                    Place.id.in_(catalog_ids),
                     Place.publication_status == "published",
                 )
             )
         ).all()
     )
     place_by_id = {place.id: place for place in places}
-    if len(place_by_id) != len(payload.place_ids):
+    if len(place_by_id) != len(catalog_ids):
         raise AppError(
             code="invalid_route_place",
             message="One or more route places are unavailable",
             status_code=400,
         )
     region_ids = {place.region_id for place in places}
-    if len(region_ids) != 1:
+    if len(region_ids) > 1:
         raise AppError(
             code="invalid_route_region",
             message="All route places must belong to one region",
             status_code=400,
         )
+    region_id = next(iter(region_ids)) if region_ids else await _default_region_id(session)
 
     now = datetime.now(UTC)
     previous_notes: dict[UUID, str] = {}
@@ -413,7 +477,7 @@ async def save_user_route_draft(
         route = Route(
             client_draft_id=payload.client_draft_id,
             id=route_id,
-            region_id=next(iter(region_ids)),
+            region_id=region_id,
             owner_user_id=owner_user_id,
             name=payload.name,
             slug=f"user-{route_id.hex}",
@@ -466,7 +530,12 @@ async def save_user_route_draft(
         }
         await session.execute(delete(RouteStop).where(RouteStop.route_id == route.id))
 
-    route.region_id = next(iter(region_ids))
+    route.region_id = region_id
+    places.extend(
+        await _save_author_points(
+            session, payload=payload, route_id=public.id, region_id=region_id, now=now
+        )
+    )
     route.name = payload.name
     route.short_description = payload.description[:240] or None
     route.description = payload.description or None
@@ -546,7 +615,9 @@ async def save_user_route_draft(
                 place_id=place_id,
                 note=notes.get(place_id),
                 position=position,
-                is_optional=False,
+                # An author's point never pays or counts towards the 70%
+                # (spec 15, D18).
+                is_optional=place_id in author_ids,
                 created_at=now,
                 updated_at=now,
             )
@@ -630,6 +701,29 @@ async def submit_user_route(
         raise AppError(
             code="route_points_required",
             message="Start and finish are required",
+            status_code=400,
+        )
+    # A route with the author's own points goes to the moderator only with
+    # its line drawn to them (spec 15, D18): a straight line says nothing
+    # about whether the point can be reached.
+    has_author_points = bool(
+        await session.scalar(
+            select(func.count())
+            .select_from(RouteStop)
+            .join(Place, Place.id == RouteStop.place_id)
+            .where(RouteStop.route_id == route.id, Place.author_route_id.is_not(None))
+        )
+    )
+    routing = route.accessibility.get("routing") if isinstance(route.accessibility, dict) else None
+    line_drawn = (
+        route.geometry is not None
+        and isinstance(routing, dict)
+        and not routing.get("synthetic", False)
+    )
+    if has_author_points and not line_drawn:
+        raise AppError(
+            code="route_line_required",
+            message="The route line to the author's points could not be built",
             status_code=400,
         )
     # «Опубликовать» is each author's consent; with co-authors the route

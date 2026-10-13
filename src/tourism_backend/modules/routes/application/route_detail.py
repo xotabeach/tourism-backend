@@ -9,6 +9,7 @@ from uuid import UUID
 from geoalchemy2 import Geometry
 from geoalchemy2.functions import ST_X, ST_Y, ST_AsGeoJSON
 from sqlalchemy import (
+    and_,
     cast,
     or_,
     select,
@@ -69,7 +70,16 @@ async def _route_detail_from_model(
         .order_by(RouteStop.position)
     )
     if public_stops_only:
-        stops_stmt = stops_stmt.where(Place.publication_status == "published")
+        # The route's own author points are part of it (BACKEND-43).
+        stops_stmt = stops_stmt.where(
+            or_(
+                Place.publication_status == "published",
+                and_(
+                    Place.publication_status == "route_only",
+                    Place.author_route_id == RouteStop.route_id,
+                ),
+            )
+        )
     stops_rows = (await session.execute(stops_stmt)).all()
     attachments = list(
         (
@@ -112,6 +122,7 @@ async def _route_detail_from_model(
             lat=float(lat) if lat is not None else None,
             place_short_description=place.short_description,
             place_cover_url=stop_covers.get(place.id),
+            author_point_kind=place.author_point_kind if place.author_route_id else None,
         )
         for stop, place, lng, lat in stops_rows
     ]
