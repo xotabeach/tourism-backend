@@ -41,6 +41,25 @@ uv run tourism-backend
 По умолчанию local ports: Postgres `5433`, Redis `6380` (см. `.env.example`).
 Admin: `http://localhost:8000/admin` (bootstrap login из `.env`).
 
+## Тесты
+
+Тесты нужны PostgreSQL с PostGIS и pgvector и Redis. На базе разработки их
+не гоняем: они оставляют записи и зависят от того, что уже лежит в базе.
+Одна команда поднимает временную базу того же образа, что в CI, применяет
+миграции, заливает данные и запускает pytest:
+
+```bash
+scripts/test-with-db.sh                       # весь набор, около 5 минут
+scripts/test-with-db.sh tests/unit -k rating  # любые аргументы pytest
+TEST_KEEP_DB=1 scripts/test-with-db.sh tests/security/test_admin_security.py
+```
+
+Контейнеры `tourism-test-pg` (порт 5544) и `tourism-test-redis` (6390)
+остаются между запусками; база пересоздаётся каждый раз, кроме
+`TEST_KEEP_DB=1`. Перед MR: `uv run ruff check src tests`,
+`uv run ruff format --check src tests`, `uv run mypy src` и весь набор
+зелёный. Упавший тест это поломка, а не фон.
+
 ## Окружения
 
 `APP_ENV` принимает только `local`, `test`, `staging` или `production`.
