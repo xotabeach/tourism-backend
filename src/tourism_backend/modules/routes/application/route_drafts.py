@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from typing import cast as type_cast
 from uuid import UUID, uuid4
 
@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.config import get_settings
 from tourism_backend.modules.geography.infrastructure.models import Region
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.infrastructure.models import Place
@@ -58,8 +59,14 @@ from tourism_backend.modules.routes.application.schemas import (
 )
 from tourism_backend.modules.routes.application.seaside import is_seaside as stops_are_seaside
 from tourism_backend.modules.routes.application.structure import refresh_route_structure
+from tourism_backend.modules.routes.application.submit_checks import (
+    SubmitFacts,
+    SubmitReport,
+    check_submission,
+)
 from tourism_backend.modules.routes.infrastructure.models import (
     Route,
+    RouteDay,
     RouteStop,
 )
 
@@ -626,6 +633,13 @@ async def save_user_route_draft(
     # The stops are new rows: rebuild days and segments now, keeping the
     # author's day boundaries by place (spec 14a).
     await refresh_route_structure(session, route)
+    if route.publication_status == "pending_review":
+        # Still in the queue after a fix: the moderator gets what was
+        # checked, and a version that would not pass leaves the queue
+        # until the author sends it again and sees why (BACKEND-41).
+        report = await check_route_for_review(session, route, reroute=False)
+        if not report.passed:
+            route.publication_status = "draft"
     if (
         payload.difficulty_manual is True
         and route.difficulty_manual is not None
@@ -694,37 +708,26 @@ async def submit_user_route(
     if media_count == 0:
         raise AppError(
             code="route_media_required",
-            message="At least one route photo or video is required",
+            message="Добавьте хотя бы одно фото или видео маршрута",
             status_code=400,
         )
     if stops_count < 2:
         raise AppError(
             code="route_points_required",
-            message="Start and finish are required",
+            message="Укажите старт и финиш маршрута",
             status_code=400,
         )
-    # A route with the author's own points goes to the moderator only with
-    # its line drawn to them (spec 15, D18): a straight line says nothing
-    # about whether the point can be reached.
-    has_author_points = bool(
-        await session.scalar(
-            select(func.count())
-            .select_from(RouteStop)
-            .join(Place, Place.id == RouteStop.place_id)
-            .where(RouteStop.route_id == route.id, Place.author_route_id.is_not(None))
-        )
-    )
-    routing = route.accessibility.get("routing") if isinstance(route.accessibility, dict) else None
-    line_drawn = (
-        route.geometry is not None
-        and isinstance(routing, dict)
-        and not routing.get("synthetic", False)
-    )
-    if has_author_points and not line_drawn:
+    # Length, time, the line and the region (BACKEND-41). The report goes
+    # with the route to the moderator.
+    report = await check_route_for_review(session, route)
+    if not report.passed:
+        await session.commit()
+        first = report.blockers[0]
         raise AppError(
-            code="route_line_required",
-            message="The route line to the author's points could not be built",
+            code=first.code,
+            message=first.message,
             status_code=400,
+            details={"problems": [{"code": p.code, "message": p.message} for p in report.blockers]},
         )
     # «Опубликовать» is each author's consent; with co-authors the route
     # waits until all of them gave it to this version (spec 11c, D7).
@@ -842,3 +845,101 @@ async def withdraw_user_route(
     await session.commit()
     await session.refresh(route)
     return _draft_out(route, route)
+
+
+async def check_route_for_review(
+    session: AsyncSession,
+    route: Route,
+    *,
+    reroute: bool = True,
+) -> SubmitReport:
+    """Run the submission checks on [route] and keep the report on it.
+
+    With ``reroute`` a straight line is routed once more first: the router
+    may have been down when the draft was saved, and its straight line sits
+    in the cache for a day, so this goes past the cache.
+    """
+    settings = get_settings()
+    real_router = settings.routing_provider != "stub"
+    geom = cast(Place.location, Geometry)
+    stop_rows = (
+        await session.execute(
+            select(Place, ST_X(geom), ST_Y(geom))
+            .join(RouteStop, RouteStop.place_id == Place.id)
+            .where(RouteStop.route_id == route.id)
+            .order_by(RouteStop.position)
+        )
+    ).all()
+    has_author_points = any(row[0].author_route_id is not None for row in stop_rows)
+
+    def routing_meta() -> dict[str, Any]:
+        access = route.accessibility if isinstance(route.accessibility, dict) else {}
+        meta = access.get("routing")
+        return meta if isinstance(meta, dict) else {}
+
+    def drawn() -> bool:
+        return route.geometry is not None and routing_meta().get("synthetic") is False
+
+    transport: Literal["walk", "car"] = "car" if route.transport_mode == "car" else "walk"
+    if reroute and not drawn() and (real_router or has_author_points) and len(stop_rows) >= 2:
+        places = [row[0] for row in stop_rows]
+        routed = await _route_geometry_for_places(
+            session,
+            places=places,
+            place_ids=[place.id for place in places],
+            redis=None,
+            transport_mode=transport,
+        )
+        if routed is not None and routed[1].get("synthetic") is False:
+            geometry_wkt, meta = routed
+            route.geometry = WKTElement(geometry_wkt, srid=4326)
+            route.accessibility = {
+                **(route.accessibility or {}),
+                "routing": {
+                    **meta,
+                    "place_ids": [str(place.id) for place in places],
+                    "transport_mode": transport,
+                },
+            }
+            await session.flush()
+            await refresh_route_structure(session, route)
+
+    meta = routing_meta()
+
+    def _int(key: str) -> int | None:
+        value = meta.get(key)
+        return int(value) if isinstance(value, int | float) else None
+
+    day_count = int(
+        await session.scalar(
+            select(func.count()).select_from(RouteDay).where(RouteDay.route_id == route.id)
+        )
+        or 0
+    )
+    report = check_submission(
+        SubmitFacts(
+            transport=transport,
+            distance_meters=_int("distance_meters"),
+            movement_seconds=_int("movement_duration_seconds"),
+            elevation_gain_meters=_int("elevation_gain_meters"),
+            day_count=day_count,
+            line_drawn=drawn(),
+            real_router=real_router,
+            has_author_points=has_author_points,
+            region_count=len({row[0].region_id for row in stop_rows}),
+            stop_points=[
+                (float(lng), float(lat))
+                for _place, lng, lat in stop_rows
+                if lng is not None and lat is not None
+            ],
+            difficulty_level=route.difficulty_level,
+            router_warnings=[str(code) for code in meta.get("warnings") or []],
+            road_types=[str(kind) for kind in meta.get("road_types") or []],
+        )
+    )
+    route.accessibility = {
+        **(route.accessibility or {}),
+        "submit_check": report.as_json(checked_at=datetime.now(UTC)),
+    }
+    await session.flush()
+    return report

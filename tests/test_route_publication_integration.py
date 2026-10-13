@@ -1352,3 +1352,138 @@ async def test_author_points_live_only_in_their_route(
             if route is not None:
                 await session.delete(route)
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_submission_checks_length_line_and_queue(
+    publication_context: tuple[AsyncClient, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BACKEND-41: what a route is checked for before the moderator."""
+    from tourism_backend.config import get_settings
+    from tourism_backend.modules.routes.application import route_drafts
+
+    client, app = publication_context
+    tokens = await _login(client, f"+7917{uuid4().int % 10_000_000:07d}")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    ids = await _two_place_ids(client)
+    if len(ids) < 2:
+        pytest.skip("Seed data has fewer than two places")
+
+    def far_points() -> dict[str, Any]:
+        # Own points belong to one route: new ids for each.
+        kerch, tarkhankut = str(uuid4()), str(uuid4())
+        return {
+            "place_ids": [ids[0], kerch, tarkhankut],
+            "author_points": [
+                {"id": kerch, "name": "Мыс", "kind": "viewpoint", "lat": 45.35, "lng": 36.47},
+                {
+                    "id": tarkhankut,
+                    "name": "Тарханкут",
+                    "kind": "viewpoint",
+                    "lat": 45.35,
+                    "lng": 32.5,
+                },
+            ],
+        }
+
+    async def add_photo(route_id: str) -> None:
+        media = await client.post(
+            f"/api/v1/routes/drafts/{route_id}/media",
+            headers=headers,
+            data={"position": "0"},
+            files={"file": ("route.png", _png_bytes(), "image/png")},
+        )
+        assert media.status_code == 200, media.text
+
+    async def stored_check(route_id: str) -> dict[str, Any]:
+        async with app.state.session_factory() as session:
+            route = await session.get(Route, UUID(route_id))
+            assert route is not None
+            return dict((route.accessibility or {})["submit_check"])
+
+    route_ids: list[str] = []
+    try:
+        # Across the whole of Crimea on foot in a day: refused, and why.
+        far = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**_draft_payload(ids, name="Через весь Крым"), **far_points()},
+        )
+        assert far.status_code == 200, far.text
+        far_id = far.json()["id"]
+        route_ids.append(far_id)
+        await add_photo(far_id)
+        refused = await client.post(f"/api/v1/routes/{far_id}/submit", headers=headers)
+        assert refused.status_code == 400, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == "route_too_long"
+        assert "км за день" in error["message"]
+        problems = [p["code"] for p in error["details"]["problems"]]
+        assert problems[0] == "route_too_long"
+        assert problems[-1] == "route_line_required"
+        assert (await stored_check(far_id))["passed"] is False
+
+        # An ordinary route goes, and the moderator gets its figures.
+        near = await client.post(
+            "/api/v1/routes/drafts", headers=headers, json=_draft_payload(ids, name="Рядом")
+        )
+        assert near.status_code == 200, near.text
+        near_id = near.json()["id"]
+        route_ids.append(near_id)
+        await add_photo(near_id)
+        sent = await client.post(f"/api/v1/routes/{near_id}/submit", headers=headers)
+        assert sent.status_code == 200, sent.text
+        assert sent.json()["publication_status"] == "pending_review"
+        check = await stored_check(near_id)
+        assert check["passed"] is True
+        assert check["metrics"]["transport"] == "walk"
+        assert check["metrics"]["day_count"] >= 1
+
+        # Fixed into something that would not pass while in the queue: it
+        # leaves the queue instead of waiting there unchecked.
+        worse = await client.post(
+            "/api/v1/routes/drafts",
+            headers=headers,
+            json={**_draft_payload(ids, name="Рядом", route_id=near_id), **far_points()},
+        )
+        assert worse.status_code == 200, worse.text
+        assert worse.json()["publication_status"] == "draft"
+
+        # With a real router the straight line is routed once more on
+        # submit, past the cache; it goes only if the line is drawn now.
+        real = get_settings().model_copy(update={"routing_provider": "2gis"})
+        monkeypatch.setattr(route_drafts, "get_settings", lambda: real)
+        line = await client.post(
+            "/api/v1/routes/drafts", headers=headers, json=_draft_payload(ids, name="Линия")
+        )
+        line_id = line.json()["id"]
+        route_ids.append(line_id)
+        await add_photo(line_id)
+
+        async def router_down(*_args: Any, **_kwargs: Any) -> tuple[str, dict[str, Any]]:
+            return "LINESTRING(34.1 44.4, 34.2 44.5)", {"synthetic": True}
+
+        monkeypatch.setattr(route_drafts, "_route_geometry_for_places", router_down)
+        down = await client.post(f"/api/v1/routes/{line_id}/submit", headers=headers)
+        assert down.status_code == 400, down.text
+        assert down.json()["error"]["code"] == "route_line_required"
+
+        async def router_up(*_args: Any, **_kwargs: Any) -> tuple[str, dict[str, Any]]:
+            return "LINESTRING(34.1 44.4, 34.15 44.45, 34.2 44.5)", {
+                "synthetic": False,
+                "provider": "2gis",
+                "distance_meters": 9_800,
+                "movement_duration_seconds": 3 * 3600,
+                "elevation_gain_meters": 250,
+            }
+
+        monkeypatch.setattr(route_drafts, "_route_geometry_for_places", router_up)
+        up = await client.post(f"/api/v1/routes/{line_id}/submit", headers=headers)
+        assert up.status_code == 200, up.text
+        check = await stored_check(line_id)
+        assert check["metrics"]["line_drawn"] is True
+        assert check["metrics"]["distance_km"] == 9.8
+        assert check["metrics"]["elevation_gain_meters"] == 250
+    finally:
+        await _delete_drafts(app, *route_ids)
