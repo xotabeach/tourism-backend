@@ -82,7 +82,8 @@ async def _draft_preview_places(
             message="One or more route places are unavailable",
             status_code=400,
         )
-    if len({place.region_id for place in rows}) != 1:
+    # Only the author's own points: no catalogue region to compare.
+    if len({place.region_id for place in rows}) > 1:
         raise AppError(
             code="invalid_route_region",
             message="All route places must belong to one region",
@@ -289,7 +290,10 @@ async def preview_user_route_draft(
     preview is advisory, and a straight line on the real basemap still tells
     the author more than the placeholder did.
     """
-    places = await _draft_preview_places(session, place_ids=payload.place_ids)
+    authored = {point.id: point for point in payload.author_points}
+    places = await _draft_preview_places(
+        session, place_ids=[pid for pid in payload.place_ids if pid not in authored]
+    )
     geom = cast(Place.location, Geometry)
     rows = (
         await session.execute(
@@ -303,15 +307,20 @@ async def preview_user_route_draft(
         for place_id, lng, lat in rows
         if lng is not None and lat is not None
     }
+    names = {place.id: place.name for place in places}
+    for point in authored.values():
+        point_by_id[point.id] = (point.lng, point.lat)
+        names[point.id] = point.name
+    # In the author's order, their own points where they put them.
     waypoints = [
         RouteWaypoint(
-            lng=point_by_id[place.id][0],
-            lat=point_by_id[place.id][1],
-            place_id=place.id,
-            label=place.name,
+            lng=point_by_id[place_id][0],
+            lat=point_by_id[place_id][1],
+            place_id=place_id,
+            label=names[place_id],
         )
-        for place in places
-        if place.id in point_by_id
+        for place_id in payload.place_ids
+        if place_id in point_by_id
     ]
     if len(waypoints) < 2:
         raise AppError(

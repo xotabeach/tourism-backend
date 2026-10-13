@@ -1263,6 +1263,17 @@ async def test_author_points_live_only_in_their_route(
             None,
         ]
 
+        # The editor's preview draws the line through the unsaved point too.
+        preview = await client.post(
+            "/api/v1/routes/drafts/preview",
+            headers=headers,
+            json={
+                "place_ids": [ids[0], spring, ids[1]],
+                "author_points": draft["author_points"],
+            },
+        )
+        assert preview.status_code == 200, preview.text
+
         # Not a catalogue place: no page, not in the list.
         assert (await client.get(f"/api/v1/places/{spring}")).status_code == 404
         listed = await client.get("/api/v1/places", params={"region_slug": "crimea", "limit": 100})

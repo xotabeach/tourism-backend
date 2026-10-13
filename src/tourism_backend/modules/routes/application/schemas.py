@@ -321,6 +321,8 @@ class RouteDraftPreviewIn(BaseModel):
 
     place_ids: list[UUID] = Field(min_length=2, max_length=22)
     transport_mode: Literal["walk", "car", "mixed", "bicycle", "public_transport"] = "walk"
+    #: The author's own points among place_ids, not saved yet (BACKEND-43).
+    author_points: list[AuthorPointIn] = Field(default_factory=list, max_length=AUTHOR_POINTS_MAX)
 
 
 class RouteDraftPreviewOut(BaseModel):
