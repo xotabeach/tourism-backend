@@ -22,6 +22,9 @@ class PublicUserOut(BaseModel):
     #: The hat on this person's companion character; None is the hat the
     #: account was given (BACKEND-65).
     bean_hat: str | None = None
+    #: The character's build and clothes (BACKEND-71).
+    bean_kind: str | None = None
+    bean_outfit: str | None = None
     is_expert: bool = False
     #: The КРЫМТРИП editorial profile: badge «Редакция», no rating (spec 16).
     is_editorial: bool = False

@@ -541,6 +541,8 @@ async def _me_out(session: AsyncSession, user: User) -> MeOut:
         notify_haptics_enabled=user.notify_haptics_enabled,
         invite_policy=user.invite_policy,  # type: ignore[arg-type]
         bean_hat=user.bean_hat,
+        bean_kind=user.bean_kind,
+        bean_outfit=user.bean_outfit,
         travel_plus_active=user.travel_plus_active,
         travel_plus_plan=user.travel_plus_plan,
         travel_plus_expires_at=expires.isoformat() if expires is not None else None,
