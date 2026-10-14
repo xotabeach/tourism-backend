@@ -1,0 +1,40 @@
+{% extends "sqladmin/layout.html" %}
+{% block content_header %}
+<div class="row align-items-center">
+  <div class="col">
+    <h2 class="page-title">Стоимость маршрутов</h2>
+    <div class="page-pretitle">Уровень цены маршрута и строки «дорога на машину» и «ночлег». После сохранения стоимость всех маршрутов пересчитывается. Пустое поле означает значение по умолчанию.</div>
+  </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="col-12 col-xl-8">
+  <div class="card mb-3">
+    <div class="card-body text-secondary">
+      В уровень цены входят билеты обязательных точек и платные участки: автобус и троллейбус
+      по цене поездки ниже, канатная дорога, паром и поезд по цене, которую редактор указал у
+      участка. Уровень считается по расходам на человека в день. Стоимость известна, только когда
+      у всех обязательных точек цена проверена редактором (страница «Цены мест»). Топливо
+      считается на машину и в уровень не входит, ночлег показывается по уровню, который выбрал
+      человек.
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-body">
+      <form action="/admin/config/route-cost/save" method="POST">
+        {% for field in fields %}
+        <div class="mb-3">
+          <label class="form-label" for="rc-{{ field.key }}">{{ field.label }}</label>
+          <input id="rc-{{ field.key }}" class="form-control" type="text" name="{{ field.key }}"
+            value="{{ field.value }}" placeholder="{{ field.default }}" {% if not can_write %}disabled{% endif %}>
+          <div class="form-hint">{{ field.hint }}</div>
+        </div>
+        {% endfor %}
+        {% if can_write %}
+        <button type="submit" class="btn btn-primary ct-btn-primary">Сохранить</button>
+        {% endif %}
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

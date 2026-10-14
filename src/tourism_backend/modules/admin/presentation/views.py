@@ -100,6 +100,7 @@ from tourism_backend.modules.admin.presentation.permissions import (
     PermissionedModelView as ModelView,
 )
 from tourism_backend.modules.admin.presentation.place_prices_admin import PlacePricesAdmin
+from tourism_backend.modules.admin.presentation.route_cost_admin import CostConfigAdmin
 from tourism_backend.modules.admin.presentation.route_revision_admin import RouteRevisionAdmin
 from tourism_backend.modules.admin.presentation.route_structure_admin import RouteStructureAdmin
 from tourism_backend.modules.admin.presentation.skip_signals_admin import SkipSignalsAdmin
@@ -4507,6 +4508,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(SmsConfigAdmin)
     admin.add_view(AppUpdateConfigAdmin)
     admin.add_view(MountainConfigAdmin)
+    admin.add_view(CostConfigAdmin)
     admin.add_view(RoutePointsHoldAdmin)
     admin.add_view(UserFraudStateAdmin)
     admin.add_view(RoutePaceViolationAdmin)
@@ -4523,6 +4525,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         SmsConfigAdmin.session_maker = session_maker
         AppUpdateConfigAdmin.session_maker = session_maker
         MountainConfigAdmin.session_maker = session_maker
+        CostConfigAdmin.session_maker = session_maker
         AntiFraudConfigAdmin.session_maker = session_maker
         AchievementsOperationsAdmin.session_maker = session_maker
         RouteStructureAdmin.session_maker = session_maker

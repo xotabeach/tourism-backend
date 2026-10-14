@@ -36,6 +36,7 @@ from tourism_backend.modules.routes.application.difficulty import (
     route_difficulty,
     shown_level,
 )
+from tourism_backend.modules.routes.application.route_cost import refresh_route_cost
 from tourism_backend.modules.routes.application.structure_rules import (
     PlannedDay,
     PlannedSegment,
@@ -264,6 +265,7 @@ async def refresh_route_structure(
         if day_row.difficulty_level != scored.level:
             day_row.difficulty_level = scored.level
     await session.flush()
+    await refresh_route_cost(session, route)
     return RouteStructure(
         segments=segments,
         days=days,

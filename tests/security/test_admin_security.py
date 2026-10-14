@@ -1651,10 +1651,80 @@ async def test_place_price_save_marks_editor_and_counts_for_routes(
             assert row.counts is True
             todo = await price_queue(session, now=datetime.now(UTC))
             assert all(r.place_id != place_id for r in todo.rows)
+            # BACKEND-56: the routes through the place were recounted at once.
+            costs = list(
+                await session.scalars(
+                    select(Route.cost).where(
+                        Route.id.in_(
+                            select(RouteStop.route_id).where(RouteStop.place_id == place_id)
+                        )
+                    )
+                )
+            )
+            assert costs
+            assert all(c is not None for c in costs)
+            assert all(c["tickets"]["max"] >= 700 for c in costs)
     finally:
         async with app.state.session_factory() as session:
             place = await session.get(Place, place_id)
             assert place is not None
             for key, value in saved_state.items():
                 setattr(place, key, value)
+            await session.commit()
+
+
+async def test_route_cost_rules_save_validates_and_recounts(admin_client: AsyncClient) -> None:
+    """BACKEND-56: the cost rules page refuses a bad value and recounts routes."""
+    from tourism_backend.modules.routes.infrastructure.models import Route
+    from tourism_backend.modules.runtime_config.infrastructure.models import RuntimeSetting
+
+    headers = {"Origin": "http://test"}
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+    page = await admin_client.get("/admin/config/route-cost", headers=headers)
+    assert page.status_code == 200, page.text
+    assert "Стоимость маршрутов" in page.text
+
+    app = admin_client._transport.app  # type: ignore[attr-defined]
+    try:
+        bad = await admin_client.post(
+            "/admin/config/route-cost/save",
+            data={"rt_cost_level_bounds": "5000,1000,9000"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert bad.status_code == 303
+        async with app.state.session_factory() as session:
+            assert await session.get(RuntimeSetting, "rt_cost_level_bounds") is None
+
+        ok = await admin_client.post(
+            "/admin/config/route-cost/save",
+            data={"rt_cost_level_bounds": "1000,3000,9000", "rt_cost_bus_fare": "70"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert ok.status_code == 303, ok.text
+        async with app.state.session_factory() as session:
+            stored = await session.get(RuntimeSetting, "rt_cost_level_bounds")
+            assert stored is not None
+            assert stored.value == "1000,3000,9000"
+            costs = list(
+                await session.scalars(
+                    select(Route.cost).where(Route.publication_status == "published")
+                )
+            )
+            assert costs
+            assert all(c is not None for c in costs)
+            assert all(c["level_bounds"] == [1000, 3000, 9000] for c in costs)
+    finally:
+        async with app.state.session_factory() as session:
+            for key in ("rt_cost_level_bounds", "rt_cost_bus_fare"):
+                row = await session.get(RuntimeSetting, key)
+                if row is not None:
+                    await session.delete(row)
             await session.commit()
