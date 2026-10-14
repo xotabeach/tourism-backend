@@ -39,6 +39,7 @@ _CONFIRMABLE_FIELDS: frozenset[str] = frozenset(
         "transport_mode",
         "day_kind",
         "budget_amount",
+        "budget_level",
         "paid_ok",
         "with_children",
         "with_pets",
@@ -185,9 +186,30 @@ _ACTION_CATALOG: dict[str, dict[str, Any]] = {
         "patch": {"people": 3},
         "field": "people",
     },
-    # Budget is a slider control: this action only opens the budget slider
-    # (sets ask_field=budget); the actual value comes from the control, not a
-    # constraint patch.
+    # The budget is one of four levels, none chosen in advance (spec 33,
+    # D13): the old slider started at 3 000 ₽, a budget nobody had picked.
+    # A level clears a sum an older slider left behind.
+    "budget_level_1": {
+        "label": "Экономно",
+        "patch": {"budget_level": 1, "budget_amount": None},
+        "field": "budget_amount",
+    },
+    "budget_level_2": {
+        "label": "Средне",
+        "patch": {"budget_level": 2, "budget_amount": None},
+        "field": "budget_amount",
+    },
+    "budget_level_3": {
+        "label": "Комфорт",
+        "patch": {"budget_level": 3, "budget_amount": None},
+        "field": "budget_amount",
+    },
+    "budget_level_4": {
+        "label": "Без ограничений",
+        "patch": {"budget_level": 4, "budget_amount": None},
+        "field": "budget_amount",
+    },
+    # Kept for chips already in old conversations: it only asks the budget.
     "ask_budget": {
         "label": "Бюджет",
         "patch": None,
@@ -279,7 +301,7 @@ _ASK_FIELD_DEFAULTS: dict[str, tuple[str, ...]] = {
     ),
     "people": ("people_1", "people_2", "people_3_plus"),
     "with_children": ("with_children",),
-    "budget": ("ask_budget",),
+    "budget": ("budget_level_1", "budget_level_2", "budget_level_3", "budget_level_4"),
     "ready": ("want_generate",),
 }
 
@@ -618,7 +640,6 @@ def interactive_control_blocks(
     from tourism_backend.modules.route_builder.application.schemas import (
         SelectBlockOut,
         SelectOptionOut,
-        SliderBlockOut,
         ToggleBlockOut,
     )
 
@@ -648,20 +669,6 @@ def interactive_control_blocks(
                     options=[SelectOptionOut(value=value, label=label) for value, label in options],
                 )
             )
-    if ask_field == "budget":
-        current = constraints.get("budget_amount")
-        value = float(current) if isinstance(current, int) else 3000.0
-        out.append(
-            SliderBlockOut(
-                id="budget_amount",
-                label="Бюджет на день, ₽",
-                min_value=0,
-                max_value=20000,
-                step=500,
-                value=value,
-                unit="₽",
-            )
-        )
     if ask_field in {"with_children", "budget"}:
         out.append(
             ToggleBlockOut(

@@ -15,6 +15,7 @@ from tourism_backend.api.errors import AppError
 from tourism_backend.modules.geography.infrastructure.models import Locality, Region
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.places.infrastructure.models import Category, Place, PlaceCategory
+from tourism_backend.modules.route_builder.application.budget import normalize_budget
 from tourism_backend.modules.route_builder.application.discovery import (
     area_bounds,
     area_localities,
@@ -41,6 +42,7 @@ from tourism_backend.modules.route_builder.application.scoring import (
     select_hits,
 )
 from tourism_backend.modules.routes.application import service as routes_service
+from tourism_backend.modules.routes.application.route_cost import load_rules as load_cost_rules
 from tourism_backend.modules.routes.application.schemas import RouteListItemOut
 from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
 from tourism_backend.modules.subscriptions.application import service as travel_plus
@@ -97,6 +99,7 @@ async def match_routes(
             "trip_type",
             "season",
             "budget_amount",
+            "budget_level",
             "paid_ok",
             "with_children",
             "with_pets",
@@ -108,6 +111,8 @@ async def match_routes(
                 **({"interests": []} if "interests" not in confirmed_fields else {}),
             }
         )
+    # A sum from an older build or the chat becomes a level (spec 33, D13).
+    params = normalize_budget(params, (await load_cost_rules(session)).level_bounds)
     scored = [
         score_candidate(
             params,
@@ -153,7 +158,11 @@ async def match_routes(
     ideal = [to_hit(item) for item in legacy_ideal if item.candidate.route_id in items_by_id]
     close = [to_hit(item) for item in legacy_close if item.candidate.route_id in items_by_id]
     _log_outcome(
-        hit_scored, signals=signals, empty=not hits, confirmed=confirmed_fields is not None
+        hit_scored,
+        signals=signals,
+        empty=not hits,
+        confirmed=confirmed_fields is not None,
+        budget_level=params.budget_level,
     )
 
     ai_rerank_eligible = bool(ai_planning_enabled and policy.ai_chat_enabled)
@@ -226,12 +235,32 @@ async def _town_points(session: AsyncSession, names: list[str]) -> dict[str, tup
     return points
 
 
-def _log_outcome(hits: list[ScoredMatch], *, signals: int, empty: bool, confirmed: bool) -> None:
-    """One line per match: enough to see the spread of percents and empty results."""
+def _log_outcome(
+    hits: list[ScoredMatch],
+    *,
+    signals: int,
+    empty: bool,
+    confirmed: bool,
+    budget_level: int | None = None,
+) -> None:
+    """One line per match: enough to see the spread of percents and empty results.
+
+    With a budget, also how many hits had a known cost and how many were
+    capped by it (spec 33): without that one cannot tell whether it helped.
+    """
 
     best = hits[0] if hits else None
+    priced = sum(1 for item in hits if item.candidate.price_level is not None)
+    capped = sum(
+        1
+        for item in hits
+        if budget_level is not None
+        and item.candidate.price_level is not None
+        and item.candidate.price_level - budget_level >= 2
+    )
     logger.info(
-        "route_match formula=%d channel=%s signals=%d hits=%d best=%s partial=%s empty=%s",
+        "route_match formula=%d channel=%s signals=%d hits=%d best=%s partial=%s empty=%s "
+        "budget=%s priced=%d capped_by_budget=%d",
         MATCH_FORMULA_VERSION,
         "chat" if confirmed else "form",
         signals,
@@ -239,6 +268,9 @@ def _log_outcome(hits: list[ScoredMatch], *, signals: int, empty: bool, confirme
         f"{best.score:.2f}" if best else "-",
         best.partial_data if best else "-",
         empty,
+        budget_level if budget_level is not None else "-",
+        priced,
+        capped,
     )
 
 
@@ -318,15 +350,29 @@ async def _load_candidates(
     # Distinct category slugs across each route's stops (ADR-009).
     category_rows = (
         await session.execute(
-            select(RouteStop.route_id, Category.slug)
+            select(RouteStop.route_id, Category.slug, Category.is_paid_experience)
             .join(PlaceCategory, PlaceCategory.place_id == RouteStop.place_id)
             .join(Category, Category.id == PlaceCategory.category_id)
             .where(RouteStop.route_id.in_(route_ids))
         )
     ).all()
     categories_by_route: dict[UUID, set[str]] = defaultdict(set)
-    for route_id, slug in category_rows:
+    paid_experience: set[UUID] = set()
+    for route_id, slug, is_paid_experience in category_rows:
         categories_by_route[route_id].add(slug)
+        if is_paid_experience:
+            paid_experience.add(route_id)
+    # «Только бесплатное» goes by the status, checked or not (spec 33).
+    with_paid_places = set(
+        (
+            await session.scalars(
+                select(RouteStop.route_id)
+                .join(Place, Place.id == RouteStop.place_id)
+                .where(RouteStop.route_id.in_(route_ids), Place.payment_status == "paid")
+                .distinct()
+            )
+        ).all()
+    )
 
     counts = await routes_service._stops_count_map(session, route_ids)  # noqa: SLF001
     out: list[RouteMatchCandidate] = []
@@ -351,7 +397,9 @@ async def _load_candidates(
                 stops_count=counts.get(route.id, 0),
                 category_slugs=frozenset(categories_by_route.get(route.id, frozenset())),
                 typical_crowding=route.typical_crowding,
-                price_min_amount=route.price_min_amount,
+                price_level=route.price_level,
+                has_paid_places=route.id in with_paid_places,
+                paid_experience=route.id in paid_experience,
                 is_seaside=route.is_seaside,
                 difficulty_level=route.difficulty_level,
                 walk_level=_walk_level(route),
