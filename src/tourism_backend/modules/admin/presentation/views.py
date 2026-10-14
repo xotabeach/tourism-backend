@@ -99,6 +99,7 @@ from tourism_backend.modules.admin.presentation.mountain_admin import MountainCo
 from tourism_backend.modules.admin.presentation.permissions import (
     PermissionedModelView as ModelView,
 )
+from tourism_backend.modules.admin.presentation.place_prices_admin import PlacePricesAdmin
 from tourism_backend.modules.admin.presentation.route_revision_admin import RouteRevisionAdmin
 from tourism_backend.modules.admin.presentation.route_structure_admin import RouteStructureAdmin
 from tourism_backend.modules.admin.presentation.skip_signals_admin import SkipSignalsAdmin
@@ -2070,6 +2071,12 @@ class PlaceAdmin(ModelView, model=Place):
         Place.recommended_visit_minutes: "Время осмотра, мин",
         Place.is_paid: "Платное",
         Place.payment_status: "Оплата",
+        Place.price_min_amount: "Цена от, ₽",
+        Place.price_max_amount: "Цена до, ₽",
+        Place.price_notes: "Заметка о цене",
+        Place.price_source: "Цену указал",
+        Place.price_checked_at: "Цена проверена",
+        Place.price_hint: "Подсказка цены",
         Place.is_suitable_for_children: "Подходит детям",
         Place.is_suitable_for_pets: "Можно с животными",
         Place.temporary_closure_status: "Временное закрытие",
@@ -2086,6 +2093,9 @@ class PlaceAdmin(ModelView, model=Place):
     }
     column_formatters_detail = {
         Place.publication_status: format_place_publication_status,
+        Place.price_source: choice_formatter(
+            "price_source", {"editor": "Редактор", "import": "Импорт, не проверено"}
+        ),
     }
     column_searchable_list = [Place.name, Place.description, Place.address]
     column_sortable_list = [
@@ -2940,6 +2950,7 @@ class CategoryAdmin(ModelView, model=Category):
         Category.code,
         Category.slug,
         Category.status,
+        Category.is_paid_experience,
     ]
     column_labels = {
         Category.sort_order: "Порядок",
@@ -2949,6 +2960,7 @@ class CategoryAdmin(ModelView, model=Category):
         Category.status: "Статус",
         Category.description: "Описание",
         Category.icon_key: "Иконка",
+        Category.is_paid_experience: "Платное впечатление",
     }
     column_formatters = {
         Category.status: choice_formatter("status", {"active": "Активна", "inactive": "Выключена"})
@@ -2960,6 +2972,7 @@ class CategoryAdmin(ModelView, model=Category):
         Category.icon_key,
         Category.sort_order,
         Category.status,
+        Category.is_paid_experience,
     ]
     column_searchable_list = [Category.name]
     column_default_sort = (Category.sort_order, False)
@@ -4451,6 +4464,7 @@ def register_views(admin: Any, settings: Settings) -> None:
     admin.add_view(SupportTicketAdmin)
     admin.add_view(SupportMessageAdmin)
     admin.add_view(PlaceAdmin)
+    admin.add_view(PlacePricesAdmin)
     admin.add_view(RouteAdmin)
     admin.add_view(RouteReviewAdmin)
     admin.add_view(ArticleAdmin)
@@ -4514,6 +4528,7 @@ def register_views(admin: Any, settings: Settings) -> None:
         RouteStructureAdmin.session_maker = session_maker
         DifficultyFeedbackAdmin.session_maker = session_maker
         SkipSignalsAdmin.session_maker = session_maker
+        PlacePricesAdmin.session_maker = session_maker
         RouteRevisionAdmin.session_maker = session_maker
         TransitAdmin.session_maker = session_maker
         TransitLineAdmin.session_maker = session_maker

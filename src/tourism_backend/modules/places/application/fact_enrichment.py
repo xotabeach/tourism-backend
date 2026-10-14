@@ -202,6 +202,23 @@ def facts_from_place_payload(
     return facts_from_osm_tags(_tags_from_payload(payload), category_hint=category_hint)
 
 
+def price_hint(patch: PlaceFactPatch) -> dict[str, Any] | None:
+    """What ``places.price_hint`` keeps from OSM, or None when it said nothing."""
+
+    if patch.price_min_amount is None and patch.price_max_amount is None and not patch.price_notes:
+        return None
+    hint: dict[str, Any] = {"source": "osm"}
+    for key, value in (
+        ("min", patch.price_min_amount),
+        ("max", patch.price_max_amount),
+        ("currency", patch.price_currency),
+        ("notes", patch.price_notes),
+    ):
+        if value is not None:
+            hint[key] = value
+    return hint
+
+
 def merge_fact_patch(
     *,
     current: dict[str, Any],
@@ -222,23 +239,23 @@ def merge_fact_patch(
             updates[field] = value
 
     _set("typical_crowding", patch.typical_crowding)
-    _set("price_min_amount", patch.price_min_amount)
-    _set("price_max_amount", patch.price_max_amount)
-    if (
-        patch.price_currency
-        and (overwrite or current.get("price_currency") in (None, "RUB"))
-        and (patch.price_min_amount is not None or patch.price_max_amount is not None)
-    ):
-        updates["price_currency"] = patch.price_currency
-    _set("price_notes", patch.price_notes)
+    # A price from OSM is a hint for the editor, never the price itself
+    # (spec 33, D15): nobody checked it, and it has no date.
+    hint = price_hint(patch)
+    if hint is not None and (overwrite or not current.get("price_hint")):
+        updates["price_hint"] = hint
     _set("access_transport", list(patch.access_transport) if patch.access_transport else None)
     _set("parking_available", patch.parking_available)
     _set("seasonality", list(patch.seasonality) if patch.seasonality else None)
     _set("recommended_visit_minutes", patch.recommended_visit_minutes)
-    _set("payment_status", patch.payment_status)
+    # What an editor confirmed is not the import's to change.
+    if current.get("price_source") != "editor":
+        _set("payment_status", patch.payment_status)
     _set("is_suitable_for_pets", patch.is_suitable_for_pets)
     if patch.accessibility and (overwrite or not current.get("accessibility")):
         updates["accessibility"] = patch.accessibility
+    if "payment_status" in updates:
+        updates["price_source"] = "import"
     if updates.get("payment_status") == "paid":
         updates["is_paid"] = True
     elif updates.get("payment_status") == "free":

@@ -91,6 +91,8 @@ class PlannedSegment:
     duration_seconds: int | None
     elevation_gain_meters: int | None = None
     elevation_loss_meters: int | None = None
+    #: An editor's ticket price (spec 33, D14); the planner never sets it.
+    price_amount: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
