@@ -152,7 +152,9 @@ async def group_progress(
     session: AsyncSession, *, settings: Settings | None, group_id: str, user_id: UUID
 ) -> CompanionProgressOut:
     group, member = await groups._visible_group(session, group_id, user_id)
-    inside = group.organizer_user_id == user_id or (member is not None and member.state == "joined")
+    inside = (member is not None and member.state == "joined") or (
+        group.organizer_user_id == user_id and member is None
+    )
     if not inside:
         raise groups._not_found()
     await groups._check_route_still_open(session, settings, group)

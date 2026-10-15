@@ -322,3 +322,22 @@ async def test_leaving_on_the_way_tells_the_others(live_client: AsyncClient) -> 
     assert left.status_code == 204, left.text
     inbox = await live_client.get("/api/v1/me/notifications", headers=anna_h)
     assert any(n["kind"] == "companion_member_left" for n in inbox.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_the_organizer_may_leave_on_the_way(live_client: AsyncClient) -> None:
+    """BACKEND-72: after the start the group cannot be cancelled, so the
+    organizer leaves like anyone else and is free for another group."""
+    group, url, (anna, anna_h), (_vera, vera_h), _started = await _started_pair(live_client)
+    left = await live_client.delete(f"{url}/members/{anna}", headers=anna_h)
+    assert left.status_code == 204, left.text
+    inbox = await live_client.get("/api/v1/me/notifications", headers=vera_h)
+    assert any(n["kind"] == "companion_member_left" for n in inbox.json()["items"])
+    mine = await live_client.get("/api/v1/me/companion-groups", headers=anna_h)
+    assert group["id"] not in {g["id"] for g in mine.json()["items"]}
+    assert (await live_client.get(f"{url}/progress", headers=anna_h)).status_code == 404
+    # The others walk on.
+    progress = await live_client.get(f"{url}/progress", headers=vera_h)
+    assert progress.status_code == 200, progress.text
+    assert anna not in {m["user_id"] for m in progress.json()["members"]}
+    await _group(live_client, anna_h)
