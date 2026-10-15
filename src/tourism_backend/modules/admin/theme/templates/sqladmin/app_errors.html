@@ -1,0 +1,44 @@
+{% extends "sqladmin/layout.html" %}
+{% block content %}
+<div class="col-12"><div class="card"><div class="card-body">
+<h2>Ошибки приложения</h2>
+<p class="text-muted">Что приложение сообщило о своих сбоях, о данных на телефоне, которые не прочитались, и о пустом экране вместо маршрута. В отчёте нет телефона, имени и введённого текста. Отчёты хранятся {{ retention_days }} дней.</p>
+<form method="get" class="d-flex flex-wrap gap-2 mb-3">
+  <select name="kind" class="form-select" style="width:auto">
+    <option value="">Все виды</option>
+    {% for key, label in kinds.items() %}<option value="{{ key }}" {% if key == kind %}selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <input name="version" value="{{ version }}" class="form-control" style="width:8rem" placeholder="Версия">
+  <input type="search" name="user" value="{{ who }}" class="form-control" style="width:18rem" placeholder="Имя или id пользователя">
+  <button class="btn btn-outline-primary" type="submit">Показать</button>
+</form>
+<h3 class="h5">За неделю</h3>
+{% if summary %}
+<div class="table-responsive"><table class="table table-sm align-middle">
+<thead><tr><th>Вид</th><th>Ошибка</th><th>Экран</th><th>Отчётов</th><th>Людей</th><th>Последний</th></tr></thead>
+<tbody>
+{% for item in summary %}
+<tr><td>{{ kinds.get(item.kind, item.kind) }}</td><td><code>{{ item.error_type }}</code></td><td>{{ item.screen or '' }}</td><td>{{ item.reports }}</td><td>{{ item.people }}</td><td>{{ item.last.strftime('%d.%m %H:%M') }}</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% else %}<p class="text-muted">За неделю отчётов нет.</p>{% endif %}
+<h3 class="h5 mt-4">Отчёты</h3>
+{% if rows %}
+<div class="table-responsive"><table class="table table-sm align-top">
+<thead><tr><th>Когда (UTC)</th><th>Кто</th><th>Вид</th><th>Ошибка и экран</th><th>Приложение и телефон</th></tr></thead>
+<tbody>
+{% for report, name in rows %}
+<tr>
+  <td>{{ report.occurred_at.strftime('%d.%m.%Y %H:%M') }}</td>
+  <td><a href="?user={{ report.user_id }}">{{ name }}</a></td>
+  <td>{{ kinds.get(report.kind, report.kind) }}</td>
+  <td><code>{{ report.error_type }}</code>{% if report.screen %}<br><small>{{ report.screen }}</small>{% endif %}
+    {% if report.stack %}<details><summary><small>Стек</small></summary><pre class="small mb-0" style="white-space:pre-wrap">{{ report.stack }}</pre></details>{% endif %}</td>
+  <td><small>{{ report.app_version }} ({{ report.build_number }}), {{ report.platform }}<br>{{ report.device_model or '' }} {{ report.os_version or '' }}</small></td>
+</tr>
+{% endfor %}
+</tbody></table></div>
+{% if rows|length >= page_rows %}<p class="text-muted">Показаны последние {{ page_rows }}. Сузьте фильтр.</p>{% endif %}
+{% else %}<p class="text-muted">Отчётов нет.</p>{% endif %}
+</div></div></div>
+{% endblock %}

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Aggregate app-version activity and drop per-user rows older than 35 days.
+"""Aggregate app-version activity and drop per-user rows older than 35 days;
+drop the app's error reports older than 30 days (BACKEND-73).
 
 Dry-run by default; ``--apply`` aggregates every complete day first (so nothing
 is lost), then deletes. Run daily from a scheduled maintenance job.
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from tourism_backend.config import get_settings
 from tourism_backend.modules.app_stats.application.common import moscow_today
+from tourism_backend.modules.app_stats.application.error_reports import purge_reports
 from tourism_backend.modules.app_stats.application.retention import (
     aggregate_complete_days,
     purge_user_rows,
@@ -29,10 +31,11 @@ def main() -> None:
     with Session(engine) as session:
         aggregated = aggregate_complete_days(session, today=today) if args.apply else 0
         purged = purge_user_rows(session, today=today, apply=args.apply)
+        errors = purge_reports(session, today=today, apply=args.apply)
         if args.apply:
             session.commit()
     mode = "applied" if args.apply else "dry-run"
-    print(f"app_version_rows {mode}: aggregated={aggregated} purged={purged}")
+    print(f"app_version_rows {mode}: aggregated={aggregated} purged={purged} errors={errors}")
 
 
 if __name__ == "__main__":

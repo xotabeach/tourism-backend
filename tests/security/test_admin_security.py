@@ -1728,3 +1728,66 @@ async def test_route_cost_rules_save_validates_and_recounts(admin_client: AsyncC
                 if row is not None:
                     await session.delete(row)
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_app_errors_page_lists_what_the_app_reported(admin_client: AsyncClient) -> None:
+    """BACKEND-73: the page shows a report under its own permission."""
+    from datetime import UTC, datetime
+
+    from tourism_backend.modules.admin.application.permissions import PERMISSION_LABELS
+    from tourism_backend.modules.app_stats.infrastructure.models import AppErrorReport
+    from tourism_backend.modules.identity.infrastructure.models import User
+
+    assert "app_errors.read" in PERMISSION_LABELS
+    headers = {"Origin": "http://test"}
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+    phone = f"+7906{uuid4().int % 10_000_000:07d}"
+    await admin_client.post(
+        "/api/v1/auth/otp/request", json={"display_name": "Тестер", "phone": phone}
+    )
+    app = admin_client._transport.app  # type: ignore[attr-defined]
+    async with app.state.session_factory() as session:
+        user_id = await session.scalar(select(User.id).limit(1))
+        if user_id is None:
+            verified = await admin_client.post(
+                "/api/v1/auth/otp/verify",
+                json={
+                    "phone": phone,
+                    "code": "1234",
+                    "privacy_accepted": True,
+                    "personal_data_accepted": True,
+                },
+            )
+            assert verified.status_code == 200, verified.text
+            user_id = await session.scalar(select(User.id).limit(1))
+        assert user_id is not None
+        now = datetime.now(UTC)
+        report = AppErrorReport(
+            user_id=user_id,
+            kind="blank_screen",
+            error_type="RouteScreenNotShown",
+            screen="/routes/:id",
+            app_version="0.3.6",
+            build_number=34,
+            platform="android",
+            occurred_at=now,
+            created_at=now,
+        )
+        session.add(report)
+        await session.commit()
+    try:
+        page = await admin_client.get("/admin/app-errors?kind=blank_screen", headers=headers)
+        assert page.status_code == 200, page.text
+        assert "RouteScreenNotShown" in page.text
+        assert "Пустой экран" in page.text
+    finally:
+        async with app.state.session_factory() as session:
+            await session.delete(await session.get(AppErrorReport, report.id))
+            await session.commit()
