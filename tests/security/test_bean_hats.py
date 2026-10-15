@@ -134,7 +134,7 @@ async def test_hats_open_by_tier_and_others_see_the_chosen_one(live_client: Asyn
     listed = await live_client.get("/api/v1/me/bean-hats", headers=anna_h)
     assert listed.status_code == 200, listed.text
     body = listed.json()
-    assert len(body["items"]) == 21
+    assert len(body["items"]) == 23
     items = _items(body)
     assert [s for s, i in items.items() if i["available"]] == ["beanie", "cap", "headband", "tuft"]
     assert items["panama"]["points_required"] == 300

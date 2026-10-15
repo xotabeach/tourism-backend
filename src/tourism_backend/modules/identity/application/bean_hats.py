@@ -57,6 +57,8 @@ CATALOG: tuple[BeanHat, ...] = (
     BeanHat("wizard", "Колпак волшебника", "premium"),
     BeanHat("party", "Праздничный колпак", "premium"),
     BeanHat("headphones", "Наушники", "points", 500),
+    BeanHat("winter_hat", "Зимняя шапка", "points", 1000),
+    BeanHat("flat_cap", "Кепка-восьмиклинка", "points", 2000),
 )
 BY_SLUG = {hat.slug: hat for hat in CATALOG}
 
