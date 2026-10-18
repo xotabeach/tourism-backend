@@ -215,7 +215,7 @@ async def test_skip_rules_of_a_run_in_progress(live_client: AsyncClient) -> None
         assert stop_now["skip_reason"] == "closed"
         assert stop_now["skipped_at"] == stop_before["skipped_at"]
 
-        # Taking the skip back makes the stop block the end again.
+        # Taking the skip back leaves the stop open again.
         unskipped = await live_client.delete(
             f"{API}/{run_id}/stops/{second['id']}/skip", headers=headers
         )
@@ -227,9 +227,6 @@ async def test_skip_rules_of_a_run_in_progress(live_client: AsyncClient) -> None
         assert again.status_code == 200
         for stop in rest:
             await _mark(live_client, headers, run_id, stop["id"])
-        blocked = await live_client.post(f"{API}/{run_id}/complete", headers=headers)
-        assert blocked.status_code == 409
-        assert blocked.json()["error"]["code"] == "required_stops_incomplete"
 
         # Reaching a skipped stop after all: the mark replaces the skip.
         await live_client.put(
@@ -266,6 +263,46 @@ async def test_a_run_with_every_stop_skipped_cannot_be_completed(
         cancelled = await live_client.post(f"{API}/{run['id']}/cancel", headers=headers)
         assert cancelled.json()["counted"] is False
         assert cancelled.json()["completed_share_percent"] is None
+
+
+async def test_a_run_can_be_completed_with_stops_left_open(
+    live_client: AsyncClient,
+) -> None:
+    """BACKEND-75: «Завершить маршрут» at any point. The stops still open are
+    closed as «not_reached» and the run counts by the share marked."""
+    route_id = await _route_with_stops(live_client)
+    headers = await _headers(live_client)
+    run = await _start(live_client, headers, route_id)
+    stops = run["stops"]
+    await _set_threshold(100)
+    try:
+        # Marked out of order, the first one left open: the owner's own run.
+        await _mark(live_client, headers, run["id"], stops[2]["id"])
+        await _mark(live_client, headers, run["id"], stops[1]["id"])
+        finished = await live_client.post(f"{API}/{run['id']}/complete", headers=headers)
+        assert finished.status_code == 200, finished.text
+        body = finished.json()
+        assert body["status"] == "completed"
+        by_id = {stop["id"]: stop for stop in body["stops"]}
+        assert by_id[stops[0]["id"]]["skip_reason"] == "not_reached"
+        assert by_id[stops[0]["id"]]["skipped_at"] is not None
+        for stop in stops[3:]:
+            assert by_id[stop["id"]]["skip_reason"] == "not_reached"
+        assert by_id[stops[1]["id"]]["skip_reason"] is None
+        assert by_id[stops[2]["id"]]["completed_at"] is not None
+        assert body["completed_share_percent"] < 100
+        assert body["counted"] is False
+        # The walker cannot pick «not_reached» by hand.
+        second = await _start(live_client, headers, route_id)
+        refused = await live_client.put(
+            f"{API}/{second['id']}/stops/{second['stops'][0]['id']}/skip",
+            json={"reason": "not_reached"},
+            headers=headers,
+        )
+        assert refused.status_code == 422
+        await live_client.post(f"{API}/{second['id']}/cancel", headers=headers)
+    finally:
+        await _set_threshold(None)
 
 
 async def test_an_early_end_pays_for_what_was_walked_and_does_not_count(

@@ -26,6 +26,7 @@ from tourism_backend.modules.route_execution.application.offline_sync import (
     terminal_conflict_details,
 )
 from tourism_backend.modules.route_execution.application.rewards import (
+    SKIP_REASONS_PAYING_THE_LEG,
     completed_share_percent,
     run_counts,
 )
@@ -74,57 +75,52 @@ async def complete_execution(
             status_code=409,
             details=terminal_conflict_details(execution.status),
         )
-    incomplete = list(
-        (
-            await session.scalars(
-                select(RouteExecutionStop)
-                .where(
-                    RouteExecutionStop.execution_id == execution.id,
-                    RouteExecutionStop.is_optional.is_(False),
-                    RouteExecutionStop.completed_at.is_(None),
-                    # A skipped stop is settled: it no longer blocks the end.
-                    RouteExecutionStop.skipped_at.is_(None),
-                )
-                .order_by(RouteExecutionStop.position)
-            )
-        ).all()
-    )
-    if incomplete:
-        raise AppError(
-            code="required_stops_incomplete",
-            message="Complete all required stops first",
-            status_code=409,
-            details={
-                "stop_ids": [str(stop.id) for stop in incomplete],
-                "retryable": False,
-            },
-        )
     last_stop_at = await _latest_stop_completion(session, execution_id=execution.id)
     if last_stop_at is None:
-        # Every stop skipped and none reached is not a walked route: the run
-        # can only be cancelled.
+        # Not a single stop reached is not a walked route: the run can only
+        # be cancelled.
         raise AppError(
             code="no_stops_marked",
             message="Mark at least one stop before completing the route",
             status_code=409,
             details={"retryable": False},
         )
-    required = list(
-        await session.scalars(
-            select(RouteExecutionStop).where(
-                RouteExecutionStop.execution_id == execution.id,
-                RouteExecutionStop.is_optional.is_(False),
-            )
-        )
-    )
-    settings = await load_settings(session)
-    share = completed_share_percent(
-        sum(stop.completed_at is not None for stop in required), len(required)
-    )
     resolved = resolve_event_time(
         event.occurred_at if event is not None else None,
         now=now,
-        not_before=max(execution.started_at, last_stop_at or execution.started_at),
+        not_before=max(execution.started_at, last_stop_at),
+    )
+    # The route may be finished at any point (BACKEND-75): the stops still
+    # open are closed as «not_reached». Every required one, and an optional
+    # one past the last stop reached; an optional one before it was walked
+    # past and stays as it is, so its leg is still paid.
+    stops = list(
+        await session.scalars(
+            select(RouteExecutionStop)
+            .where(RouteExecutionStop.execution_id == execution.id)
+            .order_by(RouteExecutionStop.position)
+        )
+    )
+    last_reached = max(
+        (
+            stop.position
+            for stop in stops
+            if stop.completed_at is not None or stop.skip_reason in SKIP_REASONS_PAYING_THE_LEG
+        ),
+        default=0,
+    )
+    for stop in stops:
+        if stop.completed_at is not None or stop.skipped_at is not None:
+            continue
+        if stop.is_optional and stop.position < last_reached:
+            continue
+        stop.skipped_at = resolved.effective
+        stop.skip_reason = "not_reached"
+        stop.updated_at = now
+    required = [stop for stop in stops if not stop.is_optional]
+    settings = await load_settings(session)
+    share = completed_share_percent(
+        sum(stop.completed_at is not None for stop in required), len(required)
     )
     execution.status = "completed"
     execution.completed_at = resolved.effective
