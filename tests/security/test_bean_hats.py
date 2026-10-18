@@ -134,7 +134,7 @@ async def test_hats_open_by_tier_and_others_see_the_chosen_one(live_client: Asyn
     listed = await live_client.get("/api/v1/me/bean-hats", headers=anna_h)
     assert listed.status_code == 200, listed.text
     body = listed.json()
-    assert len(body["items"]) == 20
+    assert len(body["items"]) == 23
     items = _items(body)
     assert [s for s, i in items.items() if i["available"]] == ["beanie", "cap", "headband", "tuft"]
     assert items["panama"]["points_required"] == 300
@@ -181,3 +181,78 @@ async def test_hats_open_by_tier_and_others_see_the_chosen_one(live_client: Asyn
 
     back = await live_client.put("/api/v1/me/bean-hat", headers=anna_h, json={"slug": None})
     assert back.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_build_and_clothes_are_chosen_and_seen_by_companions(
+    live_client: AsyncClient,
+) -> None:
+    anna, anna_h = await _user(live_client, "Анна")
+    vera, vera_h = await _user(live_client, "Вера")
+    body = (await live_client.get("/api/v1/me/bean-hats", headers=anna_h)).json()
+    assert [k["slug"] for k in body["kinds"]] == ["pin", "tall", "small", "round"]
+    assert body["kind"] is None
+    assert body["outfit"] is None
+    outfits = {o["slug"]: o for o in body["outfits"]}
+    assert [s for s, o in outfits.items() if o["available"]] == ["hoodie", "sweater"]
+    assert outfits["varsity"]["points_required"] == 1500
+    assert outfits["vest"]["tier"] == "premium"
+
+    # Every build is free.
+    tall = await live_client.put("/api/v1/me/bean-kind", headers=anna_h, json={"slug": "tall"})
+    assert tall.status_code == 200, tall.text
+    assert tall.json()["kind"] == "tall"
+    nope = await live_client.put("/api/v1/me/bean-kind", headers=anna_h, json={"slug": "huge"})
+    assert nope.status_code == 404
+
+    locked = await live_client.put(
+        "/api/v1/me/bean-outfit", headers=anna_h, json={"slug": "varsity"}
+    )
+    assert locked.status_code == 409
+    assert locked.json()["error"]["code"] == "bean_outfit_locked"
+    unknown = await live_client.put("/api/v1/me/bean-outfit", headers=anna_h, json={"slug": "cape"})
+    assert unknown.status_code == 404
+    hoodie = await live_client.put(
+        "/api/v1/me/bean-outfit", headers=anna_h, json={"slug": "hoodie"}
+    )
+    assert hoodie.status_code == 200, hoodie.text
+    assert hoodie.json()["outfit"] == "hoodie"
+
+    profile = (await live_client.get(f"/api/v1/users/{anna}")).json()
+    assert (profile["bean_kind"], profile["bean_outfit"]) == ("tall", "hoodie")
+    me = (await live_client.get("/api/v1/me", headers=anna_h)).json()
+    assert (me["bean_kind"], me["bean_outfit"]) == ("tall", "hoodie")
+
+    await _friends(live_client, anna_h, anna, vera_h, vera)
+    group = await _group(live_client, anna_h)
+    seen = await live_client.get(f"/api/v1/companion-groups/{group['id']}", headers=anna_h)
+    member = next(m for m in seen.json()["members"] if m["user_id"] == anna)
+    assert (member["bean_kind"], member["bean_outfit"]) == ("tall", "hoodie")
+
+    off = await live_client.put("/api/v1/me/bean-outfit", headers=anna_h, json={"slug": None})
+    assert off.json()["outfit"] is None
+    given = await live_client.put("/api/v1/me/bean-kind", headers=anna_h, json={"slug": None})
+    assert given.json()["kind"] is None
+
+
+@pytest.mark.asyncio
+async def test_an_expert_has_every_hat_and_every_outfit(live_client: AsyncClient) -> None:
+    anna, anna_h = await _user(live_client, "Анна")
+    await _sql("UPDATE users SET is_expert = true WHERE id = :id", id=anna)
+    body = (await live_client.get("/api/v1/me/bean-hats", headers=anna_h)).json()
+    assert body["is_expert"] is True
+    assert all(item["available"] for item in body["items"])
+    assert all(outfit["available"] for outfit in body["outfits"])
+    assert {i["unlocked_by"] for i in body["items"]} == {"free", "expert"}
+
+    crown = await live_client.put("/api/v1/me/bean-hat", headers=anna_h, json={"slug": "crown"})
+    assert crown.status_code == 200, crown.text
+    vest = await live_client.put("/api/v1/me/bean-outfit", headers=anna_h, json={"slug": "vest"})
+    assert vest.status_code == 200, vest.text
+    profile = (await live_client.get(f"/api/v1/users/{anna}")).json()
+    assert (profile["bean_hat"], profile["bean_outfit"]) == ("crown", "vest")
+
+    # When the rank is taken away, what it opened comes off.
+    await _sql("UPDATE users SET is_expert = false WHERE id = :id", id=anna)
+    profile = (await live_client.get(f"/api/v1/users/{anna}")).json()
+    assert (profile["bean_hat"], profile["bean_outfit"]) == (None, None)

@@ -25,7 +25,7 @@ from tourism_backend.modules.companions.infrastructure.models import (
     CompanionGroup,
     CompanionMember,
 )
-from tourism_backend.modules.identity.application.bean_hats import effective_hats
+from tourism_backend.modules.identity.application.bean_hats import effective_looks
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.route_execution.infrastructure.models import (
@@ -200,7 +200,7 @@ async def group_progress(
     avatars = await media_service.resolve_urls(
         session, entity_type="user", entity_ids=user_ids, role="avatar"
     )
-    hats = await effective_hats(session, list(users.values()))
+    looks = await effective_looks(session, list(users.values()))
 
     # First at each stop: the earliest mark made online (D7, D11).
     firsts: dict[int, tuple[datetime, UUID]] = {}
@@ -239,7 +239,9 @@ async def group_progress(
                 user_id=str(m.user_id),
                 display_name=user.display_name if user is not None else "",
                 avatar_url=avatars.get(m.user_id),
-                bean_hat=hats.get(m.user_id),
+                bean_hat=looks[m.user_id].hat if m.user_id in looks else None,
+                bean_kind=looks[m.user_id].kind if m.user_id in looks else None,
+                bean_outfit=looks[m.user_id].outfit if m.user_id in looks else None,
                 is_organizer=m.user_id == group.organizer_user_id,
                 joined_late=m.joined_late,
                 status=_status(group, m, run),  # type: ignore[arg-type]

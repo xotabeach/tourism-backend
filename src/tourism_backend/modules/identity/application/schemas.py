@@ -159,8 +159,11 @@ class MeOut(BaseModel):
     preferences_updated_at: str | None = None
     #: Who may invite me to companions or co-authoring (spec 11b D15).
     invite_policy: InvitePolicy = "mutual"
-    #: The hat on one's companion character (BACKEND-65).
+    #: The hat on one's companion character (BACKEND-65), its build and
+    #: clothes (BACKEND-71).
     bean_hat: str | None = None
+    bean_kind: str | None = None
+    bean_outfit: str | None = None
 
 
 class MePatchIn(BaseModel):
