@@ -1,0 +1,56 @@
+{% extends "sqladmin/layout.html" %}
+{% block content %}
+<div class="col-12"><div class="card"><div class="card-body">
+<h2>Цены мест</h2>
+<p class="text-muted">Места опубликованных маршрутов. В стоимость маршрута идёт только то, что проверил редактор: место отмечено бесплатным или платным с ценой в рублях на взрослого. Маршрут получает стоимость, когда так отмечены все его точки. Подсказка из OSM или сида никуда не идёт, это только ориентир. Цена старше {{ recheck_months }} месяцев попадает в «Старше года».</p>
+<p>
+  Проверено мест: <b>{{ queue.confirmed }}</b> из {{ queue.places_in_routes }}.
+  Маршрутов со стоимостью: <b>{{ queue.routes_with_cost }}</b> из {{ queue.routes }}.
+  {% if queue.stale %}Старше года: <b>{{ queue.stale }}</b>.{% endif %}
+</p>
+<form method="get" class="d-flex flex-wrap gap-2 mb-3">
+  <select name="show" class="form-select" style="width:auto">
+    {% for key, label in shows.items() %}<option value="{{ key }}" {% if key == show %}selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <input type="search" name="q" value="{{ search }}" class="form-control" style="width:16rem" placeholder="Название места">
+  <button class="btn btn-outline-primary" type="submit">Показать</button>
+</form>
+{% if rows %}
+<div class="table-responsive"><table class="table table-sm align-middle">
+<thead><tr><th>Место</th><th>Маршрутов</th><th>Сейчас</th><th>Подсказка</th><th>Цена</th></tr></thead>
+<tbody>
+{% for item in rows %}{% set row = item.row %}
+<tr>
+  <td><a href="/admin/place/details/{{ row.place_id }}">{{ row.name }}</a></td>
+  <td>{{ row.routes }}</td>
+  <td>
+    {{ item.status_label }}{% if row.price_min_amount is not none %}, {{ row.price_min_amount }}{% if row.price_max_amount is not none %}–{{ row.price_max_amount }}{% endif %} ₽{% endif %}
+    {% if row.counts %}<br><small class="text-success">проверено {{ item.checked }}</small>{% if row.stale %} <small class="text-danger">пора перепроверить</small>{% endif %}
+    {% elif item.by_import %}<br><small class="text-muted">из импорта, не проверено</small>{% endif %}
+  </td>
+  <td><small>{{ item.hint }}</small></td>
+  <td>
+    {% if can_write %}
+    <form method="post" action="/admin/place-prices/save" class="d-flex flex-wrap gap-1 align-items-center">
+      <input type="hidden" name="place_id" value="{{ row.place_id }}">
+      <input type="hidden" name="back_query" value="{{ request.url.query }}">
+      <select name="payment_status" class="form-select form-select-sm" style="width:auto">
+        <option value="free" {% if row.payment_status == 'free' %}selected{% endif %}>Бесплатно</option>
+        <option value="paid" {% if row.payment_status == 'paid' %}selected{% endif %}>Платно</option>
+        <option value="unknown" {% if row.payment_status == 'unknown' %}selected{% endif %}>Не знаю</option>
+      </select>
+      <input name="min_amount" inputmode="numeric" class="form-control form-control-sm" style="width:5.5rem" placeholder="от, ₽" value="{{ row.price_min_amount if row.price_min_amount is not none else '' }}">
+      <input name="max_amount" inputmode="numeric" class="form-control form-control-sm" style="width:5.5rem" placeholder="до, ₽" value="{{ row.price_max_amount if row.price_max_amount is not none else '' }}">
+      <input name="notes" class="form-control form-control-sm" style="width:12rem" placeholder="Заметка: экосбор, льготы" value="{{ row.price_notes or '' }}">
+      <button class="btn btn-sm btn-primary" type="submit">{% if row.counts %}Подтвердить{% else %}Сохранить{% endif %}</button>
+    </form>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+</tbody>
+</table></div>
+{% if more %}<p class="text-muted">И ещё {{ more }}. Сохраните верхние, список подвинется.</p>{% endif %}
+{% else %}<p>Здесь пусто.</p>{% endif %}
+</div></div></div>
+{% endblock %}

@@ -25,7 +25,17 @@ from tourism_backend.modules.routes.infrastructure.models import (
     RouteStop,
 )
 
-_MODES = {"walk": "пешком", "car": "на машине"}
+_MODES = {
+    "walk": "пешком",
+    "car": "на машине",
+    "bus": "автобус",
+    "trolleybus": "троллейбус",
+    "train": "поезд",
+    "cable_car": "канатная дорога",
+    "ferry": "паром",
+}
+#: Segments one buys a ticket for; their price is the editor's (spec 33, D14).
+PAID_MODES = frozenset({"bus", "trolleybus", "train", "cable_car", "ferry"})
 _ROLES = {"approach": " от парковки", "return": " обратно к машине", "main": ""}
 
 
@@ -103,6 +113,23 @@ class RouteStructureAdmin(BaseView):
                     for _stop_id, place_id, _name in stops[:-1]
                     if form.get(f"break_{place_id}") == "on"
                 ]
+                prices: dict[str, int | None] = {}
+                for segment in await session.scalars(
+                    select(RouteSegment).where(
+                        RouteSegment.route_id == route.id,
+                        RouteSegment.mode.in_(PAID_MODES),
+                    )
+                ):
+                    raw_price = str(form.get(f"price_{segment.id}", "")).strip()
+                    if raw_price and not raw_price.isdigit():
+                        Flash.error(request, "Цена участка: целое число рублей, например 120.")
+                        return RedirectResponse(
+                            f"{request.url.path}?route_id={route.id}",
+                            status_code=303,
+                        )
+                    # Set before the rebuild, which keeps it for the same stops.
+                    segment.price_amount = int(raw_price) if raw_price else None
+                    prices[str(segment.id)] = segment.price_amount
                 route.day_breaks = breaks or None
                 route.days_manual = bool(breaks)
                 route.parking_overrides = overrides or None
@@ -113,7 +140,11 @@ class RouteStructureAdmin(BaseView):
                     action="route.structure.update",
                     entity_type="route",
                     entity_id=str(route.id),
-                    metadata={"day_breaks": breaks, "parking_overrides": overrides},
+                    metadata={
+                        "day_breaks": breaks,
+                        "parking_overrides": overrides,
+                        "segment_prices": prices,
+                    },
                     ip=request.client.host if request.client else None,
                 )
                 await session.commit()
@@ -169,6 +200,15 @@ class RouteStructureAdmin(BaseView):
                         for s in leg
                     ),
                     "day": day_of.get(stop_id),
+                    "paid_segments": [
+                        {
+                            "id": str(s.id),
+                            "label": _MODES.get(s.mode, s.mode),
+                            "price": s.price_amount,
+                        }
+                        for s in leg
+                        if s.mode in PAID_MODES
+                    ],
                 }
             )
         return {

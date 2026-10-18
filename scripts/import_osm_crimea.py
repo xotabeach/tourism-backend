@@ -192,8 +192,11 @@ def apply_candidates(session: Session, result: OsmNormalizationResult) -> tuple[
         place.location = _point(candidate.lng, candidate.lat)
         place.address = candidate.address
         place.accessibility = candidate.accessibility
-        place.payment_status = candidate.payment_status
-        place.is_paid = candidate.payment_status == "paid"
+        # A status an editor confirmed is theirs (spec 33, D15).
+        if place.price_source != "editor":
+            place.payment_status = candidate.payment_status
+            place.is_paid = candidate.payment_status == "paid"
+            place.price_source = "import" if candidate.payment_status != "unknown" else None
         place.is_suitable_for_pets = candidate.is_suitable_for_pets
         place.source_name = OSM_SOURCE_NAME
         place.source_external_id = candidate.source_external_id

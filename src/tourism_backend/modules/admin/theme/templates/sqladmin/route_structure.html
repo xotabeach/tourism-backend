@@ -16,14 +16,14 @@
 <tr>
 <td>{{ row.position }}</td>
 <td>{{ row.name }}{% if row.day and row.day.overnight_note %}<br><small class="text-muted">{{ row.day.overnight_note }}</small>{% endif %}{% if row.day and row.day.overloaded %}<br><small class="text-warning">День перегружен</small>{% endif %}</td>
-<td><small>{{ row.leg }}</small></td>
+<td><small>{{ row.leg }}</small>{% for seg in row.paid_segments %}<br><label class="small">{{ seg.label }}, билет ₽ <input class="form-control form-control-sm d-inline-block" style="width:6rem" name="price_{{ seg.id }}" inputmode="numeric" value="{{ seg.price if seg.price is not none else '' }}" placeholder="не указана"></label>{% endfor %}</td>
 <td>{% if not row.last %}<input type="checkbox" class="form-check-input" name="break_{{ row.place_id }}" aria-label="Конец дня после точки {{ row.name }}" {% if row.ends_day %}checked{% endif %}>{% endif %}</td>
 <td><input class="form-control form-control-sm" name="parking_{{ row.place_id }}" aria-label="Парковка для точки {{ row.name }}" value="{{ row.parking }}" placeholder="например 44.742, 33.92"></td>
 </tr>
 {% endfor %}
 </tbody>
 </table></div>
-<p class="text-muted">Без отмеченных концов дня маршрут делится на дни по нормам. Своя парковка работает у машинных маршрутов: машина едет до неё, дальше пешком. Сохранение пересобирает маршрут.</p>
+<p class="text-muted">Без отмеченных концов дня маршрут делится на дни по нормам. Своя парковка работает у машинных маршрутов: машина едет до неё, дальше пешком. Цена билета нужна у канатной дороги, парома и поезда: без неё стоимость маршрута не считается. Автобус и троллейбус без цены считаются по общей цене поездки. Сохранение пересобирает маршрут.</p>
 <button class="btn btn-primary" type="submit">Сохранить и пересобрать</button>
 </form>
 {% endif %}

@@ -309,6 +309,7 @@ class RouteSegment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ),
         CheckConstraint("role IN ('main', 'approach', 'return')", name="role"),
         CheckConstraint("origin IN ('router', 'synthetic', 'editor', 'transit')", name="origin"),
+        CheckConstraint("price_amount IS NULL OR price_amount >= 0", name="price_amount"),
     )
 
     route_id: Mapped[UUID] = mapped_column(
@@ -333,6 +334,9 @@ class RouteSegment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     quality_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # A 12b transit line once public transport is routed; free text until then.
     transit_line_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Ticket per person in roubles, set by an editor (spec 33, D14). Kept
+    #: through rebuilds while the same two stops are joined the same way.
+    price_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
