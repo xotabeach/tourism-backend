@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import get_settings
+from tourism_backend.modules.identity.application.bean_looks import bean_looks
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
 from tourism_backend.modules.places.application import place_covers
 from tourism_backend.modules.places.infrastructure.models import Place
@@ -133,6 +134,7 @@ async def _route_detail_from_model(
     authors = await _author_fields_for_routes(session, [route])
     ratings = await route_ratings(session, [route.id])
     owner_id, label, avatar, is_expert, rank_title = authors[route.id]
+    looks = await bean_looks(session, [owner_id] if owner_id else [])
     base = _to_list_item(
         route,
         len(stops),
@@ -140,6 +142,7 @@ async def _route_detail_from_model(
         owner_user_id=owner_id,
         author_label=label,
         author_avatar_url=avatar,
+        author_look=looks.get(owner_id) if owner_id else None,
         author_is_expert=is_expert,
         author_rank_title=rank_title,
         rating=ratings.get(route.id, (None, 0)),

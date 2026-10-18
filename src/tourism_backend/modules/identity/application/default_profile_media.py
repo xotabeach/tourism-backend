@@ -1,4 +1,9 @@
-"""Assign bundled-style default avatar/cover from existing route/place photos."""
+"""Assign a default cover from existing route/place photos.
+
+No default avatar any more (BACKEND-76): who has no picture of their own is
+shown as their companion character's portrait in the app (FRONTEND-97); a
+random place photo in its place read as someone else's picture.
+"""
 
 from __future__ import annotations
 
@@ -14,14 +19,10 @@ async def ensure_default_user_media(session: AsyncSession, user_id: UUID) -> Non
     if not covers:
         return
 
-    avatar_url = await media_service.resolve_url(
-        session, entity_type="user", entity_id=user_id, role="avatar"
-    )
     cover_url = await media_service.resolve_url(
         session, entity_type="user", entity_id=user_id, role="cover"
     )
     cover_source = covers[user_id.int % len(covers)]
-    avatar_source = covers[(user_id.int // 7) % len(covers)]
 
     if cover_url is None:
         await media_service.replace_attachment(
@@ -32,14 +33,4 @@ async def ensure_default_user_media(session: AsyncSession, user_id: UUID) -> Non
             storage_key=cover_source.storage_key,
             content_type=cover_source.content_type,
             alt_text="Default profile cover",
-        )
-    if avatar_url is None:
-        await media_service.replace_attachment(
-            session,
-            entity_type="user",
-            entity_id=user_id,
-            role="avatar",
-            storage_key=avatar_source.storage_key,
-            content_type=avatar_source.content_type,
-            alt_text="Default profile avatar",
         )

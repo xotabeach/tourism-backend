@@ -50,6 +50,9 @@ class RouteReviewOut(BaseModel):
     author_display_name: str
     author_rank_title: str
     author_avatar_url: str | None
+    #: The character and hat for the avatar without a picture (BACKEND-76).
+    author_bean_kind: str | None = None
+    author_bean_hat: str | None = None
     body: str
     rating: int
     status: ReviewStatus

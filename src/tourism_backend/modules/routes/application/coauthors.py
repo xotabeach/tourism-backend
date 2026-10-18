@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import Settings
+from tourism_backend.modules.identity.application.bean_hats import effective_hat, effective_kind
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.notifications.application import service as notifications
@@ -170,6 +171,8 @@ async def coauthors_out(
                 user_id=row.user_id,
                 display_name=user.display_name if user is not None else "",
                 avatar_url=avatars.get(row.user_id),
+                bean_kind=effective_kind(user) if user is not None else None,
+                bean_hat=effective_hat(user, set()) if user is not None else None,
                 state=row.state,  # type: ignore[arg-type]
                 consented=row.consented_at is not None,
             )

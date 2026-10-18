@@ -40,6 +40,7 @@ from tourism_backend.modules.content.infrastructure.models import (
     ArticleLike,
     ArticleView,
 )
+from tourism_backend.modules.identity.application.bean_hats import effective_hat, effective_kind
 from tourism_backend.modules.identity.infrastructure.models import (
     EXPERT_RANK_ID,
     TravelRank,
@@ -241,6 +242,8 @@ def _summary_out(
         author_user_id=str(article.author_user_id),
         author_display_name=author.display_name if author is not None else _ANONYMOUS_AUTHOR,
         author_avatar_url=avatars.get(article.author_user_id),
+        author_bean_kind=effective_kind(author) if author is not None else None,
+        author_bean_hat=effective_hat(author, set()) if author is not None else None,
         author_rank_title=ranks.get(article.author_user_id),
         # Без доп. запроса: _authors уже отдаёт целые строки User.
         author_is_expert=bool(author.is_expert) if author is not None else False,
@@ -329,6 +332,8 @@ async def _article_out(
         author_user_id=str(article.author_user_id),
         author_display_name=author.display_name if author is not None else _ANONYMOUS_AUTHOR,
         author_avatar_url=avatars.get(article.author_user_id),
+        author_bean_kind=effective_kind(author) if author is not None else None,
+        author_bean_hat=effective_hat(author, set()) if author is not None else None,
         author_rank_title=ranks.get(article.author_user_id),
         author_is_expert=bool(author.is_expert) if author is not None else False,
         author_is_editorial=bool(author.is_system_account) if author is not None else False,
