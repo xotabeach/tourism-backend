@@ -156,8 +156,8 @@ def test_control_patch_helpers() -> None:
         _control_patch,
     )
 
-    assert _control_patch("budget_amount", 1500.7) == {"budget_amount": 1500}
-    assert _control_patch("budget_amount", -5) == {"budget_amount": 0}
+    assert _control_patch("budget_amount", 1500.7) == {"budget_amount": 1500, "budget_level": None}
+    assert _control_patch("budget_amount", -5) == {"budget_amount": 0, "budget_level": None}
     assert _control_patch("with_children", True) == {"with_children": True}
     assert _control_patch("with_pets", False) == {"with_pets": False}
     assert _control_patch("with_children", None) == {"with_children": True}

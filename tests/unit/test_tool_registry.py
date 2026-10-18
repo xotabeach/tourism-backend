@@ -3,7 +3,10 @@
 import pytest
 
 from tourism_backend.modules.route_builder.application.chat_actions import (
+    build_actions_block,
+    field_for_action,
     interactive_control_blocks,
+    patch_for_action,
     prefer_ready_ask_field,
 )
 from tourism_backend.modules.route_builder.application.session_service import (
@@ -66,8 +69,14 @@ def test_prefer_ready_and_controls() -> None:
     assert interactive_control_blocks(ask_field="ready", constraints={}) == []
     controls = interactive_control_blocks(ask_field="budget", constraints={})
     types = {block.type for block in controls}
-    assert "slider" in types
+    # The budget is four buttons now (spec 33, D13), no slider at 3 000 ₽.
+    assert "slider" not in types
     assert "toggle" in types
+    chips = build_actions_block(ask_field="budget", confirmed_fields=[])
+    ids = [action["id"] for block in chips for action in block.actions]
+    assert ids[:4] == ["budget_level_1", "budget_level_2", "budget_level_3", "budget_level_4"]
+    assert patch_for_action("budget_level_3") == {"budget_level": 3, "budget_amount": None}
+    assert field_for_action("budget_level_3") == "budget_amount"
 
 
 def test_season_from_month() -> None:
@@ -76,7 +85,7 @@ def test_season_from_month() -> None:
 
 
 def test_compose_blocks_and_control_patch() -> None:
-    assert _control_patch("budget_amount", 4500.0) == {"budget_amount": 4500}
+    assert _control_patch("budget_amount", 4500.0) == {"budget_amount": 4500, "budget_level": None}
     assert _control_patch("with_children", True) == {"with_children": True}
     assert _control_patch("with_pets", False) == {"with_pets": False}
     assert _control_patch("with_children", None) == {"with_children": True}
