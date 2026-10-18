@@ -283,7 +283,8 @@ async def _out(session: AsyncSession, group: CompanionGroup, viewer_id: UUID) ->
     members = await _members(session, group.id)
     mine = next((m for m in members if m.user_id == viewer_id), None)
     is_organizer = group.organizer_user_id == viewer_id
-    inside = is_organizer or (mine is not None and mine.state == "joined")
+    # An organizer who left the group on the way is out like anyone else.
+    inside = (mine is not None and mine.state == "joined") or (is_organizer and mine is None)
     shown = [
         m
         for m in members
@@ -668,7 +669,9 @@ async def remove_member(
     user_id: str,
 ) -> CompanionGroupOut | None:
     """The organizer takes back an invitation or removes someone; anyone else
-    may only leave. The organizer leaves by cancelling the group."""
+    may only leave. Before the start the organizer leaves by cancelling the
+    group; on the way, when cancelling is no longer possible, the organizer
+    may leave like anyone else (BACKEND-72)."""
     group = await _group_for(session, group_id)
     target = _parse_uuid(user_id)
     member = await _member(session, group.id, target)
@@ -676,7 +679,7 @@ async def remove_member(
         raise _not_found()
     now = _now()
     if target == actor_id:
-        if target == group.organizer_user_id:
+        if target == group.organizer_user_id and group.status != "started":
             raise _conflict(
                 "companion_organizer_leaves",
                 "Организатор не выходит из группы, а отменяет её",
