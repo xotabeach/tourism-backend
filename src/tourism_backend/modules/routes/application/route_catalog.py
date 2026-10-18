@@ -204,6 +204,22 @@ async def _author_fields_for_routes(
         role="avatar",
     )
     ranks = await _rank_titles(session, list(users.values()))
+    # An editorial route from before the КРЫМТРИП profile has no owner; it
+    # shows that profile's picture, as the newer editorial routes do
+    # (BACKEND-76: no stock photo in the app any more).
+    editorial_avatar: str | None = None
+    if any(route.owner_user_id is None and route.source == "editorial" for route in routes):
+        editors = list(
+            await session.scalars(
+                select(User.id).where(User.is_system_account.is_(True)).order_by(User.created_at)
+            )
+        )
+        pictures = await media_service.resolve_urls(
+            session, entity_type="user", entity_ids=editors, role="avatar"
+        )
+        editorial_avatar = next(
+            (pictures[editor] for editor in editors if editor in pictures), None
+        )
     result: dict[UUID, tuple[UUID | None, str | None, str | None, bool, str | None]] = {}
     for route in routes:
         owner_id = route.owner_user_id
@@ -219,7 +235,7 @@ async def _author_fields_for_routes(
         else:
             # Editorial route: no owning user, so no travel rank to show.
             label = route.author_label
-            avatar = None
+            avatar = editorial_avatar if route.source == "editorial" else None
             is_expert = False
             rank_title = None
         result[route.id] = (owner_id, label, avatar, is_expert, rank_title)
