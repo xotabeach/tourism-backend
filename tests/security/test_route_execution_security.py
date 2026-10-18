@@ -143,8 +143,9 @@ async def test_route_execution_lifecycle_is_idempotent(live_client: AsyncClient)
             f"/api/v1/route-executions/{execution['id']}/complete",
             headers=headers,
         )
+        # Nothing marked yet: the run can only be cancelled (BACKEND-75).
         assert incomplete.status_code == 409
-        assert incomplete.json()["error"]["code"] == "required_stops_incomplete"
+        assert incomplete.json()["error"]["code"] == "no_stops_marked"
 
     for stop in execution["stops"]:
         completed = await live_client.put(

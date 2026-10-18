@@ -25,6 +25,10 @@ RouteExecutionEventAction = Literal[
     "unskip_stop",
 ]
 StopSkipReason = Literal["closed", "no_time", "hard", "other"]
+#: What a stop of a run may show: the walker's own reasons, plus «not_reached»
+#: set by the server for the stops left open when a run is finished early
+#: (BACKEND-75). The walker cannot pick it.
+StopSkipReasonOut = Literal["closed", "no_time", "hard", "other", "not_reached"]
 PointsStatus = Literal["none", "awarded", "held", "rejected"]
 PaceVerdictOut = Literal["ok", "too_fast", "ahead", "unknown", "skipped"]
 
@@ -134,7 +138,7 @@ class RouteExecutionStopOut(BaseModel):
     # Passed by instead of marked (spec 15): when and why. A stop is never
     # both marked and skipped.
     skipped_at: datetime | None = None
-    skip_reason: StopSkipReason | None = None
+    skip_reason: StopSkipReasonOut | None = None
     # Expected leg from the previous stop; None for the first stop, for stops
     # without coordinates and for runs that started before anti-fraud shipped.
     leg_distance_meters: int | None = Field(default=None, ge=0)
