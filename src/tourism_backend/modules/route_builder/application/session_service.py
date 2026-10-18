@@ -35,6 +35,7 @@ from tourism_backend.modules.route_builder.application.ai import (
     ChatMessage,
     ChatTurnResult,
 )
+from tourism_backend.modules.route_builder.application.budget import budget_level_label
 from tourism_backend.modules.route_builder.application.chat_actions import (
     ask_field_from_text,
     clarification_action_blocks,
@@ -1584,7 +1585,10 @@ def _catalog_match_block(
                     else None
                 ),
                 tags=tags[:8],
-                budget_label=None,
+                budget_label=price_level_label(
+                    getattr(route, "price_level", None),
+                    free=bool(getattr(route, "price_free", False)),
+                ),
                 difficulty_label=difficulty_label,
                 stops_count=int(getattr(route, "stops_count", 0) or 0),
                 duration_minutes=int(getattr(route, "estimated_duration_minutes", 0) or 0),
@@ -1609,7 +1613,8 @@ def _control_patch(
     ):
         amount = int(control_value)
         amount = max(0, min(amount, 1_000_000))
-        return {"budget_amount": amount}
+        # A slider in an older message: the sum wins over a level picked before.
+        return {"budget_amount": amount, "budget_level": None}
     if action_id == "with_children" and isinstance(control_value, bool):
         return {"with_children": control_value}
     if action_id == "with_pets" and isinstance(control_value, bool):
@@ -1781,10 +1786,22 @@ async def _comparison_context(
                 "transport_mode": route.transport_mode,
                 "difficulty": route.difficulty,
                 "stops_count": route.stops_count,
+                "price_level": route.price_level,
+                "price_free": route.price_free,
             }
             for route in routes
         ]
     }
+
+
+def price_level_label(level: int | None, *, free: bool = False) -> str | None:
+    """«₽₽ · Средне» from a route's price level, «Бесплатно», or None while
+    its cost is unknown (spec 33, D8): no «не указана» on every card."""
+
+    if free:
+        return "Бесплатно"
+    name = budget_level_label(level)
+    return f"{'₽' * level} · {name}" if name and level else None
 
 
 _DIFFICULTY_LABELS = {
@@ -1830,6 +1847,10 @@ def route_comparison_block(routes: list[dict[str, Any]]) -> RouteComparisonBlock
                 difficulty_label=(_DIFFICULTY_LABELS.get(difficulty) or "").capitalize() or None,
                 difficulty_level=_DIFFICULTY_LEVELS.get(difficulty),
                 stops_count=stops if isinstance(stops, int) and stops > 0 else None,
+                cost_label=price_level_label(
+                    route.get("price_level") if isinstance(route.get("price_level"), int) else None,
+                    free=route.get("price_free") is True,
+                ),
             )
         )
     items = [item for item in items if item.route_id]

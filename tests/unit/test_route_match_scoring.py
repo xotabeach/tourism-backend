@@ -205,17 +205,57 @@ def test_crowd_preference_changes_order_without_inventing_unknown_data() -> None
     assert not any("мало людей" in reason for reason in unknown.reasons)
 
 
-def test_daily_budget_affects_known_cost_ranking() -> None:
-    params = RouteMatchParamsIn(city="Ялта", budget_amount=2000)
-    affordable = score_candidate(params, _candidate(price_min_amount=500))
-    expensive = score_candidate(params, _candidate(price_min_amount=100_000))
-    assert affordable.score > expensive.score
+def test_budget_level_against_route_price_level() -> None:
+    """Spec 33, D5/D10: same level or cheaper fits, one dearer loses the
+    part, two and more are capped; an unknown cost is left alone."""
+    params = RouteMatchParamsIn(city="Ялта", budget_level=2)
+    fits = score_candidate(params, _candidate(price_level=2))
+    cheaper = score_candidate(params, _candidate(price_level=1))
+    dearer = score_candidate(params, _candidate(price_level=3))
+    much_dearer = score_candidate(params, _candidate(price_level=4))
+    unknown = score_candidate(params, _candidate(price_level=None))
+    assert "по вашему бюджету" in fits.reasons
+    assert cheaper.score == fits.score
+    assert dearer.score < fits.score
+    assert "дороже вашего бюджета" in dearer.mismatches
+    assert dearer.has_violation is False
+    assert much_dearer.has_violation is True
+    assert much_dearer.score <= PENALTY_CAP
+    assert unknown.score == score_candidate(RouteMatchParamsIn(city="Ялта"), _candidate()).score
+    assert unknown.partial_data is False
+
+
+def test_no_limit_asks_nothing_and_orders_paid_experiences_first() -> None:
+    """D11: «Без ограничений» is not a requested parameter; among equal
+    percents a route with paid experiences goes first for the high levels."""
+    no_limit = RouteMatchParamsIn(city="Ялта", budget_level=4)
+    assert requested_signal_count(no_limit) == requested_signal_count(
+        RouteMatchParamsIn(city="Ялта")
+    )
+    museum = score_candidate(no_limit, _candidate(name="Б", paid_experience=True, price_level=3))
+    beach = score_candidate(no_limit, _candidate(name="А", price_level=1))
+    assert museum.score == beach.score
+    hits, _ = select_hits([beach, museum])
+    assert hits[0] is museum
+    # «Экономно» does not lift paid experiences, but prefers its own level.
+    cheap = RouteMatchParamsIn(city="Ялта", budget_level=1)
+    a = score_candidate(cheap, _candidate(name="А", paid_experience=True, price_level=1))
+    b = score_candidate(cheap, _candidate(name="Б", price_level=1))
+    assert a.budget_order == b.budget_order
+    comfort = RouteMatchParamsIn(city="Ялта", budget_level=3)
+    close = score_candidate(comfort, _candidate(name="Б", price_level=3))
+    far = score_candidate(comfort, _candidate(name="А", price_level=1))
+    hits, _ = select_hits([far, close])
+    assert hits[0] is close
+
+
+def test_free_only_goes_by_paid_status() -> None:
     free_only = RouteMatchParamsIn(city="Ялта", paid_ok=False)
-    paid = score_candidate(free_only, _candidate(price_min_amount=500))
+    paid = score_candidate(free_only, _candidate(has_paid_places=True))
     assert 0 < paid.score <= PENALTY_CAP
     assert paid.has_violation is True
     assert "есть платные места" in paid.mismatches
-    assert score_candidate(free_only, _candidate(price_min_amount=None)).has_violation is False
+    assert score_candidate(free_only, _candidate()).has_violation is False
 
 
 def test_short_route_is_an_option_for_part_of_a_long_trip() -> None:

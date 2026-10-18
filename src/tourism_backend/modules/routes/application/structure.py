@@ -36,6 +36,7 @@ from tourism_backend.modules.routes.application.difficulty import (
     route_difficulty,
     shown_level,
 )
+from tourism_backend.modules.routes.application.route_cost import refresh_route_cost
 from tourism_backend.modules.routes.application.structure_rules import (
     PlannedDay,
     PlannedSegment,
@@ -94,6 +95,7 @@ def _as_planned_segment(row: RouteSegment) -> PlannedSegment:
         duration_seconds=row.duration_seconds,
         elevation_gain_meters=row.elevation_gain_meters,
         elevation_loss_meters=row.elevation_loss_meters,
+        price_amount=row.price_amount,
     )
 
 
@@ -180,11 +182,18 @@ async def refresh_route_structure(
         pair = (row.from_stop_id, row.to_stop_id)
         if pair in edited:
             edited[pair].append(row)
+    # An editor's price stays while the same stops are joined the same way.
+    prices = {
+        (row.from_stop_id, row.to_stop_id, row.mode): row.price_amount
+        for row in existing_segments
+        if row.price_amount is not None
+    }
     segments: list[PlannedSegment] = []
     for segment in planned:
         kept = edited.get((segment.from_stop_id, segment.to_stop_id))
         if kept is None:
-            segments.append(segment)
+            price = prices.get((segment.from_stop_id, segment.to_stop_id, segment.mode))
+            segments.append(segment if price is None else replace(segment, price_amount=price))
         else:
             segments.extend(
                 replace(_as_planned_segment(row), leg_index=segment.leg_index) for row in kept
@@ -208,6 +217,7 @@ async def refresh_route_structure(
                     duration_seconds=segment.duration_seconds,
                     elevation_gain_meters=segment.elevation_gain_meters,
                     elevation_loss_meters=segment.elevation_loss_meters,
+                    price_amount=segment.price_amount,
                     geometry=_line(shapes.get((segment.leg_index, segment.seq))),
                 )
             )
@@ -255,6 +265,7 @@ async def refresh_route_structure(
         if day_row.difficulty_level != scored.level:
             day_row.difficulty_level = scored.level
     await session.flush()
+    await refresh_route_cost(session, route)
     return RouteStructure(
         segments=segments,
         days=days,

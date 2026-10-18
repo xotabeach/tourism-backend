@@ -240,3 +240,19 @@ async def select_bean_hat(
     payload: bean_hats.BeanHatSelectIn, session: DbSession, user_id: CurrentUserId
 ) -> bean_hats.BeanHatsOut:
     return await bean_hats.select_hat(session, user_id=user_id, payload=payload)
+
+
+@router.put("/me/bean-kind", response_model=bean_hats.BeanHatsOut)
+async def select_bean_kind(
+    payload: bean_hats.BeanHatSelectIn, session: DbSession, user_id: CurrentUserId
+) -> bean_hats.BeanHatsOut:
+    """One of the four characters (BACKEND-71); None goes back to the given one."""
+    return await bean_hats.select_kind(session, user_id=user_id, payload=payload)
+
+
+@router.put("/me/bean-outfit", response_model=bean_hats.BeanHatsOut)
+async def select_bean_outfit(
+    payload: bean_hats.BeanHatSelectIn, session: DbSession, user_id: CurrentUserId
+) -> bean_hats.BeanHatsOut:
+    """Clothes for the character (BACKEND-71); None takes them off."""
+    return await bean_hats.select_outfit(session, user_id=user_id, payload=payload)

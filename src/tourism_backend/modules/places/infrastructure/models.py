@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     Time,
     UniqueConstraint,
+    false,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -43,6 +44,12 @@ class Category(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     icon_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
+    #: Places of this category are something one pays for and remembers
+    #: (a museum, a boat trip): for the higher budgets such a route goes
+    #: first among equal matches (spec 33, D11).
+    is_paid_experience: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
 
 class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
@@ -52,6 +59,13 @@ class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
         Index("ix_places_publication_region", "publication_status", "region_id"),
         Index("ix_places_name", "name"),
         Index("ix_places_payment_status", "payment_status"),
+        CheckConstraint("price_source IN ('editor', 'import')", name="price_source"),
+        CheckConstraint(
+            "(price_min_amount IS NULL OR price_min_amount >= 0) AND "
+            "(price_max_amount IS NULL OR price_min_amount IS NULL "
+            "OR price_max_amount >= price_min_amount)",
+            name="price_amounts",
+        ),
         Index("ix_places_difficulty", "difficulty"),
         Index(
             "uq_places_source_external_id",
@@ -137,6 +151,15 @@ class Place(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
         default="RUB",
         server_default="RUB",
     )
+    #: Who set the payment status and the price (spec 33, D15): ``editor``
+    #: counts for the route's cost, ``import`` (OSM, seed) is unconfirmed.
+    #: None while the status is unknown.
+    price_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    price_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: What OSM said about the price, shown to the editor, never counted.
+    price_hint: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     access_transport: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     parking_available: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     content_enrichment_status: Mapped[str] = mapped_column(

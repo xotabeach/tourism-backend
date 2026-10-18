@@ -32,6 +32,7 @@ from tourism_backend.modules.routes.application.route_catalog import (
     route_ratings,
     with_revision_state,
 )
+from tourism_backend.modules.routes.application.route_cost import cost_out
 from tourism_backend.modules.routes.application.route_revisions import revision_of
 from tourism_backend.modules.routes.application.schemas import (
     RouteDayOut,
@@ -162,6 +163,7 @@ async def _route_detail_from_model(
         days=await _days_for_route(session, route.id),
         is_mountain=mountain.is_mountain,
         mountain_source=mountain.source,
+        cost=cost_out(route.cost),
     )
 
 

@@ -50,9 +50,30 @@ def test_merge_fact_patch_keeps_existing_unless_unknown() -> None:
         patch=facts_from_osm_tags({"fee": "yes", "tourism": "viewpoint", "charge": "50"}),
     )
     assert "typical_crowding" not in updates  # keep existing low
-    assert "price_min_amount" not in updates  # keep existing amount
+    # An OSM price is only a hint (spec 33, D15).
+    assert "price_min_amount" not in updates
+    assert updates["price_hint"] == {
+        "source": "osm",
+        "min": 50,
+        "max": 50,
+        "currency": "RUB",
+        "notes": "50",
+    }
     assert updates["payment_status"] == "paid"
+    assert updates["price_source"] == "import"
     assert updates["is_paid"] is True
+
+
+def test_merge_fact_patch_leaves_editor_price_alone() -> None:
+    updates = merge_fact_patch(
+        current={"payment_status": "free", "price_source": "editor", "price_hint": None},
+        patch=facts_from_osm_tags({"fee": "yes", "charge": "300 RUB"}),
+        overwrite=True,
+    )
+    assert "payment_status" not in updates
+    assert "price_source" not in updates
+    assert "is_paid" not in updates
+    assert updates["price_hint"]["min"] == 300
 
 
 def test_slugify_and_content_draft() -> None:

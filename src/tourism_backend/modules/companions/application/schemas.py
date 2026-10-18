@@ -57,8 +57,13 @@ class CompanionMemberOut(BaseModel):
     is_organizer: bool = False
     ready: bool = False
     joined_late: bool = False
-    #: The hat on the member's character (BACKEND-65).
+    #: The hat on the member's character (BACKEND-65), its build and
+    #: clothes (BACKEND-71).
     bean_hat: str | None = None
+    bean_kind: str | None = None
+    bean_outfit: str | None = None
+    #: The member's rank, as on the profile (BACKEND-74).
+    rank_title: str | None = None
     #: The member's own run is attached to the group (BACKEND-60); after
     #: the start a member without one is «не стартовал».
     started: bool = False
@@ -119,6 +124,10 @@ class CompanionMemberProgressOut(BaseModel):
     user_id: str
     display_name: str
     bean_hat: str | None = None
+    bean_kind: str | None = None
+    bean_outfit: str | None = None
+    #: The member's rank, as on the profile (BACKEND-74).
+    rank_title: str | None = None
     avatar_url: str | None = None
     is_organizer: bool = False
     joined_late: bool = False
@@ -138,6 +147,9 @@ class CompanionStopOut(BaseModel):
     position: int
     place_name: str
     is_optional: bool = False
+    #: Along the route from the first stop, by its legs (BACKEND-74);
+    #: None while a leg's length is unknown.
+    distance_from_start_meters: int | None = None
     #: Who got here first, among marks made online; None on a mountain route
     #: where the table is hidden, or when nobody has been here yet.
     first_user_id: str | None = None

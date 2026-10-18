@@ -67,10 +67,8 @@ def main() -> None:
             )
             current = {
                 "typical_crowding": place.typical_crowding,
-                "price_min_amount": place.price_min_amount,
-                "price_max_amount": place.price_max_amount,
-                "price_currency": place.price_currency,
-                "price_notes": place.price_notes,
+                "price_hint": place.price_hint,
+                "price_source": place.price_source,
                 "access_transport": place.access_transport,
                 "parking_available": place.parking_available,
                 "seasonality": place.seasonality,

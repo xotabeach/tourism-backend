@@ -16,7 +16,10 @@ from tourism_backend.modules.route_builder.application.chat_actions import (
     sanitize_confirmed_fields,
 )
 from tourism_backend.modules.route_builder.application.dialogue import valid_goal
-from tourism_backend.modules.route_builder.application.schemas import RouteMatchParamsIn
+from tourism_backend.modules.route_builder.application.schemas import (
+    MAX_BUDGET_AMOUNT,
+    RouteMatchParamsIn,
+)
 
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
 _MAX_ACTION_IDS = 6
@@ -223,7 +226,13 @@ def _sanitize_patch(raw: object) -> dict[str, Any]:
             items = [str(item).strip()[:40] for item in value if str(item).strip()]
             out[key] = items[: 8 if key == "preferred_localities" else 12]
             continue
-        if key in {"people", "budget_amount"} and isinstance(value, int):
+        if key == "budget_amount" and isinstance(value, int) and not isinstance(value, bool):
+            # A named sum per person a day; matching turns it into a level
+            # (spec 33, D13). Bounded here: the model's integer is not trusted.
+            out[key] = max(0, min(value, MAX_BUDGET_AMOUNT))
+            out["budget_level"] = None
+            continue
+        if key == "people" and isinstance(value, int):
             out[key] = value
             continue
         if key in {

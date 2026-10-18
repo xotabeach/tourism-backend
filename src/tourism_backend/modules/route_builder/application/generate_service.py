@@ -17,6 +17,10 @@ from tourism_backend.config import get_settings
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.places.application.place_covers import generic_fallback_cover
 from tourism_backend.modules.places.infrastructure.models import Place, RoadEvent
+from tourism_backend.modules.route_builder.application.budget import (
+    budget_level_label,
+    normalize_budget,
+)
 from tourism_backend.modules.route_builder.application.itinerary import build_trip_plan
 from tourism_backend.modules.route_builder.application.place_picker import (
     PickedPlace,
@@ -72,6 +76,7 @@ from tourism_backend.modules.route_builder.infrastructure.tsp_factory import (
     get_tsp_provider,
 )
 from tourism_backend.modules.routes.application.difficulty import quick_estimate
+from tourism_backend.modules.routes.application.route_cost import load_rules as load_cost_rules
 from tourism_backend.modules.routes.application.schemas import RouteGeometryOut, RouteStopOut
 from tourism_backend.modules.routes.application.structure import refresh_route_structure
 from tourism_backend.modules.routes.application.structure_rules import segment_mode_for
@@ -113,6 +118,7 @@ def _sanitize_params(params: RouteMatchParamsIn, *, advanced: bool) -> RouteMatc
     return params.model_copy(
         update={
             "budget_amount": None,
+            "budget_level": None,
             "day_kind": "any",
             "paid_ok": None,
             "avoid_crowds": None,
@@ -430,7 +436,7 @@ def _blocks_for_proposal(
         tags.append("С детьми")
     if params.season:
         tags.append(params.season.capitalize()[:24])
-    budget_label = (
+    budget_label = budget_level_label(params.budget_level) or (
         f"{params.budget_amount:,} ₽".replace(",", " ")
         if params.budget_amount is not None
         else None
@@ -592,6 +598,7 @@ async def _persist_generated_route(
         "travel_pace": params.pace,
         "day_kind": params.day_kind,
         "budget_amount": params.budget_amount,
+        "budget_level": params.budget_level,
         "filters": {
             "interests": list(params.interests),
             "season": params.season,
@@ -688,6 +695,8 @@ async def generate_route(
         require_ai_chat(user)
 
     params = _sanitize_params(payload.params, advanced=policy.advanced_filters_enabled)
+    # The picker goes by a sum: a level gives it its upper bound (spec 33).
+    params = normalize_budget(params, (await load_cost_rules(session)).level_bounds)
     await require_generation_quota(session, user_id=user_id, policy=policy)
 
     places = await pick_places_for_params(

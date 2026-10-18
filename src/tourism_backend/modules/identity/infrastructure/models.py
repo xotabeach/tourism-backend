@@ -77,6 +77,10 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="travel_plus_plan",
         ),
         CheckConstraint(
+            "bean_kind IS NULL OR bean_kind IN ('pin', 'tall', 'small', 'round')",
+            name="bean_kind",
+        ),
+        CheckConstraint(
             "preferred_difficulty IS NULL OR preferred_difficulty IN ('easy', 'moderate', 'hard')",
             name="preferred_difficulty",
         ),
@@ -191,6 +195,10 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: The hat on this person's companion character (BACKEND-65); None is
     #: the hat the account was given.
     bean_hat: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Which of the four characters and what it wears (BACKEND-71); None
+    #: is the build the account was given and no clothes.
+    bean_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    bean_outfit: Mapped[str | None] = mapped_column(String(32), nullable=True)
     #: Who may invite this person to a group or to co-author a route
     #: (spec 11b D15): mutual followers, or nobody.
     invite_policy: Mapped[str] = mapped_column(
