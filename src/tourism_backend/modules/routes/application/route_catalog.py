@@ -304,6 +304,8 @@ def _to_list_item(
         rating_count=rating_count,
         rejection_reason=author_rejection_text(route),
         badge=route_badge(route),
+        price_level=route.price_level,
+        price_free=bool(isinstance(route.cost, dict) and route.cost.get("free")),
     )
 
 

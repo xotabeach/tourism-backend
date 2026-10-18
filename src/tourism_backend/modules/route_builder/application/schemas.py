@@ -65,6 +65,10 @@ class RouteMatchParamsIn(BaseModel):
     transport_mode: TransportMode | None = None
     day_kind: DayKind = "any"
     budget_amount: int | None = Field(default=None, ge=0, le=MAX_BUDGET_AMOUNT)
+    #: Spec 33: 1 «Экономно» … 4 «Без ограничений», per person a day. Wins
+    #: over ``budget_amount``, which older builds send and the server turns
+    #: into a level.
+    budget_level: int | None = Field(default=None, ge=1, le=4)
     paid_ok: bool | None = None
     with_children: bool | None = None
     with_pets: bool | None = None
@@ -291,6 +295,8 @@ class ComparisonRouteOut(BaseModel):
     #: 1 easy .. 4 extreme, for the difficulty scale; None when unknown.
     difficulty_level: int | None = Field(default=None, ge=1, le=4)
     stops_count: int | None = Field(default=None, ge=0)
+    #: «₽₽ · Средне» or «Бесплатно»; None while the cost is unknown (spec 33).
+    cost_label: str | None = Field(default=None, max_length=40)
     #: Server-computed superlatives («Короче всех», «Легче всех»).
     badges: list[str] = Field(default_factory=list, max_length=3)
 

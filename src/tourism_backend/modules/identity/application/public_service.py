@@ -89,12 +89,18 @@ async def _public_user(
     article_likes_count: int = 0,
 ) -> PublicUserOut:
     rank = await _resolve_rank(session, user)
-    from tourism_backend.modules.identity.application.bean_hats import effective_hat
+    from tourism_backend.modules.identity.application.bean_hats import (
+        effective_hat,
+        effective_kind,
+        effective_outfit,
+    )
 
     return PublicUserOut(
         id=str(user.id),
         # Bought hats are not counted here: nothing can be bought yet.
         bean_hat=effective_hat(user, set()),
+        bean_kind=effective_kind(user),
+        bean_outfit=effective_outfit(user),
         display_name=user.display_name,
         avatar_url=avatar_url,
         cover_url=cover_url,

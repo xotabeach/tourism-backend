@@ -168,7 +168,7 @@ async def test_match_returns_percent_hits_and_old_client_arrays(
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["formula_version"] == 2
+    assert body["formula_version"] == 3
     assert len(body["hits"]) <= 8
     scores = [hit["score"] for hit in body["hits"]]
     assert scores == sorted(scores, reverse=True)

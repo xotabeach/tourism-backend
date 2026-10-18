@@ -52,6 +52,7 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
             name="publication_status",
         ),
         CheckConstraint("base_mode IN ('walk', 'car', 'mixed')", name="base_mode"),
+        CheckConstraint("price_level IS NULL OR price_level BETWEEN 1 AND 4", name="price_level"),
         # One device-generated key per author's draft: a retry after a lost
         # response finds the draft it already created instead of making another.
         Index(
@@ -140,6 +141,11 @@ class Route(Base, UUIDPrimaryKeyMixin, TimestampMixin, EditorialSourceMixin):
     )
     price_min_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
     price_max_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: What the route costs a person, with its parts (spec 33); written by
+    #: ``route_cost.refresh_route_cost`` only.
+    cost: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    #: 1 «Экономно» … 4 «Без ограничений»; None while the cost is not known.
+    price_level: Mapped[int | None] = mapped_column(SmallInteger, nullable=True, index=True)
     client_draft_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     # Days and segments (spec 14). ``transport_mode`` keeps whatever spelling
     # clients sent; ``base_mode`` is its normalised walk/car/mixed.
@@ -309,6 +315,7 @@ class RouteSegment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ),
         CheckConstraint("role IN ('main', 'approach', 'return')", name="role"),
         CheckConstraint("origin IN ('router', 'synthetic', 'editor', 'transit')", name="origin"),
+        CheckConstraint("price_amount IS NULL OR price_amount >= 0", name="price_amount"),
     )
 
     route_id: Mapped[UUID] = mapped_column(
@@ -333,6 +340,9 @@ class RouteSegment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     quality_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # A 12b transit line once public transport is routed; free text until then.
     transit_line_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Ticket per person in roubles, set by an editor (spec 33, D14). Kept
+    #: through rebuilds while the same two stops are joined the same way.
+    price_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

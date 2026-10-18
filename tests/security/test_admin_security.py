@@ -1178,6 +1178,40 @@ async def test_editors_set_days_and_car_parks_of_a_route(admin_client: AsyncClie
         assert row.days_manual is True
         assert days == 2
         assert audit == 1
+
+        # A ticket price on a cable car leg (spec 33, D14) is entered on the
+        # same page and survives the rebuild the save runs.
+        async with engine.begin() as conn:
+            segment_id = await conn.scalar(
+                text(
+                    "UPDATE route_segments SET mode = 'cable_car', origin = 'editor' "
+                    "WHERE id = (SELECT id FROM route_segments WHERE route_id = :id "
+                    "ORDER BY leg_index, seq LIMIT 1) RETURNING id"
+                ),
+                {"id": route_id},
+            )
+        page = await admin_client.get(
+            f"/admin/route-structure?route_id={route_id}", headers=headers
+        )
+        assert f"price_{segment_id}" in page.text
+        priced = await admin_client.post(
+            f"/admin/route-structure?route_id={route_id}",
+            data={f"break_{place_ids[0]}": "on", f"price_{segment_id}": "900"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert priced.status_code == 303, priced.text
+        async with engine.connect() as conn:
+            prices = (
+                await conn.execute(
+                    text(
+                        "SELECT mode, price_amount FROM route_segments "
+                        "WHERE route_id = :id AND price_amount IS NOT NULL"
+                    ),
+                    {"id": route_id},
+                )
+            ).all()
+        assert [(row.mode, row.price_amount) for row in prices] == [("cable_car", 900)]
     finally:
         await engine.dispose()
 
@@ -1516,3 +1550,244 @@ async def test_moderator_compares_and_approves_an_edit_of_a_published_route(
             )
             await conn.execute(text("DELETE FROM routes WHERE id = :id"), {"id": route_id})
         await engine.dispose()
+
+
+async def test_place_price_save_marks_editor_and_counts_for_routes(
+    admin_client: AsyncClient,
+) -> None:
+    """BACKEND-55: the editors' price page writes a checked price, refuses a
+    wrong one, and the route queue sees it."""
+    from tourism_backend.modules.places.application.pricing import price_queue
+    from tourism_backend.modules.places.infrastructure.models import Place
+    from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
+
+    headers = {"Origin": "http://test"}
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+
+    app = admin_client._transport.app  # type: ignore[attr-defined]
+    async with app.state.session_factory() as session:
+        place_id = await session.scalar(
+            select(RouteStop.place_id)
+            .join(Route, Route.id == RouteStop.route_id)
+            .where(Route.publication_status == "published", RouteStop.is_optional.is_(False))
+            .limit(1)
+        )
+        if place_id is None:
+            pytest.skip("no published route in the test database")
+        place = await session.get(Place, place_id)
+        assert place is not None
+        saved_state = {
+            key: getattr(place, key)
+            for key in (
+                "payment_status",
+                "is_paid",
+                "price_min_amount",
+                "price_max_amount",
+                "price_notes",
+                "price_currency",
+                "price_source",
+                "price_checked_at",
+            )
+        }
+
+    try:
+        page = await admin_client.get("/admin/place-prices?show=all", headers=headers)
+        assert page.status_code == 200, page.text
+        assert "Цены мест" in page.text
+
+        wrong = await admin_client.post(
+            "/admin/place-prices/save",
+            data={"place_id": str(place_id), "payment_status": "free", "min_amount": "300"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert wrong.status_code == 303
+        async with app.state.session_factory() as session:
+            unchanged = await session.get(Place, place_id)
+            assert unchanged is not None
+            assert unchanged.price_min_amount == saved_state["price_min_amount"]
+
+        ok = await admin_client.post(
+            "/admin/place-prices/save",
+            data={
+                "place_id": str(place_id),
+                "payment_status": "paid",
+                "min_amount": "450",
+                "max_amount": "700",
+                "notes": "льготы детям",
+            },
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert ok.status_code == 303, ok.text
+        async with app.state.session_factory() as session:
+            place = await session.get(Place, place_id)
+            assert place is not None
+            assert (place.payment_status, place.price_min_amount, place.price_max_amount) == (
+                "paid",
+                450,
+                700,
+            )
+            assert place.price_source == "editor"
+            assert place.price_checked_at is not None
+            audit = await session.scalar(
+                select(AdminAuditEvent)
+                .where(
+                    AdminAuditEvent.action == "admin.place_price",
+                    AdminAuditEvent.entity_id == str(place_id),
+                )
+                .order_by(AdminAuditEvent.created_at.desc())
+                .limit(1)
+            )
+            assert audit is not None
+            queue = await price_queue(session, now=datetime.now(UTC), show="all")
+            row = next(r for r in queue.rows if r.place_id == place_id)
+            assert row.counts is True
+            todo = await price_queue(session, now=datetime.now(UTC))
+            assert all(r.place_id != place_id for r in todo.rows)
+            # BACKEND-56: the routes through the place were recounted at once.
+            costs = list(
+                await session.scalars(
+                    select(Route.cost).where(
+                        Route.id.in_(
+                            select(RouteStop.route_id).where(RouteStop.place_id == place_id)
+                        )
+                    )
+                )
+            )
+            assert costs
+            assert all(c is not None for c in costs)
+            assert all(c["tickets"]["max"] >= 700 for c in costs)
+    finally:
+        async with app.state.session_factory() as session:
+            place = await session.get(Place, place_id)
+            assert place is not None
+            for key, value in saved_state.items():
+                setattr(place, key, value)
+            await session.commit()
+
+
+async def test_route_cost_rules_save_validates_and_recounts(admin_client: AsyncClient) -> None:
+    """BACKEND-56: the cost rules page refuses a bad value and recounts routes."""
+    from tourism_backend.modules.routes.infrastructure.models import Route
+    from tourism_backend.modules.runtime_config.infrastructure.models import RuntimeSetting
+
+    headers = {"Origin": "http://test"}
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+    page = await admin_client.get("/admin/config/route-cost", headers=headers)
+    assert page.status_code == 200, page.text
+    assert "Стоимость маршрутов" in page.text
+
+    app = admin_client._transport.app  # type: ignore[attr-defined]
+    try:
+        bad = await admin_client.post(
+            "/admin/config/route-cost/save",
+            data={"rt_cost_level_bounds": "5000,1000,9000"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert bad.status_code == 303
+        async with app.state.session_factory() as session:
+            assert await session.get(RuntimeSetting, "rt_cost_level_bounds") is None
+
+        ok = await admin_client.post(
+            "/admin/config/route-cost/save",
+            data={"rt_cost_level_bounds": "1000,3000,9000", "rt_cost_bus_fare": "70"},
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert ok.status_code == 303, ok.text
+        async with app.state.session_factory() as session:
+            stored = await session.get(RuntimeSetting, "rt_cost_level_bounds")
+            assert stored is not None
+            assert stored.value == "1000,3000,9000"
+            costs = list(
+                await session.scalars(
+                    select(Route.cost).where(Route.publication_status == "published")
+                )
+            )
+            assert costs
+            assert all(c is not None for c in costs)
+            assert all(c["level_bounds"] == [1000, 3000, 9000] for c in costs)
+    finally:
+        async with app.state.session_factory() as session:
+            for key in ("rt_cost_level_bounds", "rt_cost_bus_fare"):
+                row = await session.get(RuntimeSetting, key)
+                if row is not None:
+                    await session.delete(row)
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_app_errors_page_lists_what_the_app_reported(admin_client: AsyncClient) -> None:
+    """BACKEND-73: the page shows a report under its own permission."""
+    from datetime import UTC, datetime
+
+    from tourism_backend.modules.admin.application.permissions import PERMISSION_LABELS
+    from tourism_backend.modules.app_stats.infrastructure.models import AppErrorReport
+    from tourism_backend.modules.identity.infrastructure.models import User
+
+    assert "app_errors.read" in PERMISSION_LABELS
+    headers = {"Origin": "http://test"}
+    login = await admin_client.post(
+        "/admin/login",
+        data={"username": _ADMIN_LOGIN, "password": _ADMIN_PASSWORD},
+        headers=headers,
+        follow_redirects=False,
+    )
+    assert login.status_code in {302, 303}, login.text
+    phone = f"+7906{uuid4().int % 10_000_000:07d}"
+    await admin_client.post(
+        "/api/v1/auth/otp/request", json={"display_name": "Тестер", "phone": phone}
+    )
+    app = admin_client._transport.app  # type: ignore[attr-defined]
+    async with app.state.session_factory() as session:
+        user_id = await session.scalar(select(User.id).limit(1))
+        if user_id is None:
+            verified = await admin_client.post(
+                "/api/v1/auth/otp/verify",
+                json={
+                    "phone": phone,
+                    "code": "1234",
+                    "privacy_accepted": True,
+                    "personal_data_accepted": True,
+                },
+            )
+            assert verified.status_code == 200, verified.text
+            user_id = await session.scalar(select(User.id).limit(1))
+        assert user_id is not None
+        now = datetime.now(UTC)
+        report = AppErrorReport(
+            user_id=user_id,
+            kind="blank_screen",
+            error_type="RouteScreenNotShown",
+            screen="/routes/:id",
+            app_version="0.3.6",
+            build_number=34,
+            platform="android",
+            occurred_at=now,
+            created_at=now,
+        )
+        session.add(report)
+        await session.commit()
+    try:
+        page = await admin_client.get("/admin/app-errors?kind=blank_screen", headers=headers)
+        assert page.status_code == 200, page.text
+        assert "RouteScreenNotShown" in page.text
+        assert "Пустой экран" in page.text
+    finally:
+        async with app.state.session_factory() as session:
+            await session.delete(await session.get(AppErrorReport, report.id))
+            await session.commit()

@@ -23,7 +23,8 @@ from tourism_backend.modules.routes.application.difficulty import (
 )
 
 # Bump when the meaning of the score changes; stored with chat snapshots.
-MATCH_FORMULA_VERSION = 2
+# 3: the budget is a level matched against the route's price level (spec 33).
+MATCH_FORMULA_VERSION = 3
 
 IDEAL_THRESHOLD = 0.55
 # Lowest exact score that is shown at all (spec 06, D3).
@@ -34,6 +35,9 @@ MAX_HITS = 8
 CLOSE_THRESHOLD = 0.35
 MAX_IDEAL = 3
 MAX_CLOSE = 3
+
+#: «Без ограничений» (spec 33, D11); same as ``budget.NO_LIMIT_LEVEL``.
+NO_LIMIT_LEVEL = 4
 
 # Ceilings that keep the percent honest (D12, D15, D16).
 PARTIAL_DATA_CAP = 0.5
@@ -188,7 +192,12 @@ class RouteMatchCandidate:
     # interest/trip-type signal, since it is the one field with full coverage).
     category_slugs: frozenset[str] = frozenset()
     typical_crowding: str = "unknown"
-    price_min_amount: int | None = None
+    #: Spec 33: the route's price level 1..4, None while its cost is unknown.
+    price_level: int | None = None
+    #: Some stop is marked paid, checked or not: not for «только бесплатное».
+    has_paid_places: bool = False
+    #: A stop of a «платное впечатление» category (D11).
+    paid_experience: bool = False
     # Editor's «Море» tag (BACKEND-19).
     is_seaside: bool = False
     # Spec 17: shown level 1..5 and the walking part's level.
@@ -233,6 +242,8 @@ class ScoredMatch:
     #: stops in the named towns and how many of its kinds of places answer
     #: the interests. Ranks a route with five beaches above one with a pier.
     depth: float = 0.0
+    #: Order among equal scores from the budget (spec 33, D5/D11).
+    budget_order: float = 0.0
 
 
 def _haystack(candidate: RouteMatchCandidate) -> str:
@@ -585,7 +596,8 @@ def requested_signal_count(
         params.with_children is True,
         params.with_pets is True,
         params.avoid_crowds is True,
-        params.budget_amount is not None,
+        # «Без ограничений» is not a wish to match (D11).
+        params.budget_level is not None and params.budget_level < NO_LIMIT_LEVEL,
         params.paid_ok is False,
     )
     return sum(flags)
@@ -870,24 +882,26 @@ def score_candidate(
                 rank=11,
             )
         )
-    if params.budget_amount is not None:
-        known = candidate.price_min_amount is not None
-        affordable = False
-        if known:
-            days = max(1, ((candidate.estimated_duration_minutes or 0) + 479) // 480)
-            affordable = (candidate.price_min_amount or 0) <= params.budget_amount * days
+    # Budget (spec 33, D5, D10): a route of the chosen level or cheaper
+    # fits; one level dearer loses this part, two and more are capped like a
+    # wrong transport. A route without a known cost is left alone, and
+    # «Без ограничений» asks for nothing.
+    level = params.budget_level
+    budget_violation = False
+    if level is not None and level < NO_LIMIT_LEVEL and candidate.price_level is not None:
+        dearer = candidate.price_level - level
+        budget_violation = dearer >= 2
         parts.append(
             _Part(
                 0.12,
-                1.0 if affordable else 0.0,
-                "известная стоимость укладывается в бюджет" if affordable else None,
-                known=known,
-                mismatch="может выйти дороже бюджета" if known and not affordable else None,
+                1.0 if dearer <= 0 else 0.0,
+                "по вашему бюджету" if dearer <= 0 else None,
+                mismatch="дороже вашего бюджета" if dearer > 0 else None,
                 rank=10,
             )
         )
 
-    paid_violation = params.paid_ok is False and (candidate.price_min_amount or 0) > 0
+    paid_violation = params.paid_ok is False and candidate.has_paid_places
 
     # --- profile preferences: a soft extra signal, never "requested"
     preference = _preference_score(preferences, candidate)
@@ -908,7 +922,7 @@ def score_candidate(
     else:
         score = sum(part.weight * part.score for part in scoring) / total_weight
 
-    violation = transport_violation or paid_violation or safety_unknown
+    violation = transport_violation or paid_violation or budget_violation or safety_unknown
     full_match = (
         not partial
         and not violation
@@ -918,7 +932,7 @@ def score_candidate(
     )
     if partial:
         score = min(score, PARTIAL_DATA_CAP)
-    if transport_violation or paid_violation:
+    if transport_violation or paid_violation or budget_violation:
         score = min(score, PENALTY_CAP)
 
     mismatches: list[tuple[int, str]] = [
@@ -939,7 +953,23 @@ def score_candidate(
         full_match=full_match,
         requested_signals=signals,
         depth=depth,
+        budget_order=_budget_order(level, candidate),
     )
+
+
+def _budget_order(level: int | None, candidate: RouteMatchCandidate) -> float:
+    """Order among equal percents (D5, D11): for «Комфорт» and «Без
+    ограничений» a route with paid experiences first; otherwise the route of
+    the level closest below the chosen one. The percent stays as it is."""
+
+    if level is None:
+        return 0.0
+    order = 0.0
+    if level >= 3 and candidate.paid_experience:
+        order += 1.0
+    if candidate.price_level is not None and level < NO_LIMIT_LEVEL:
+        order -= 0.1 * max(0, level - candidate.price_level)
+    return order
 
 
 def match_percent(scored: ScoredMatch) -> int:
@@ -966,10 +996,11 @@ def select_hits(
     hits and whether to offer generating a route: no hit reaches "ideal".
     """
 
-    def key(item: ScoredMatch) -> tuple[float, float, float, str]:
+    def key(item: ScoredMatch) -> tuple[float, float, float, float, str]:
         rating, name = tiebreak(item) if tiebreak else (0.0, item.candidate.name)
-        # Equal scores: the stronger answer, then the better rated (BACKEND-68).
-        return (-item.score, -item.depth, -rating, name)
+        # Equal scores: the stronger answer, the budget's order (spec 33),
+        # then the better rated (BACKEND-68).
+        return (-item.score, -item.depth, -item.budget_order, -rating, name)
 
     eligible = [item for item in scored if not item.excluded and item.score >= MIN_MATCH_SCORE]
     hits = sorted(eligible, key=key)[:MAX_HITS]

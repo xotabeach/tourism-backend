@@ -41,6 +41,7 @@ PERMISSION_LABELS = {
     "antifraud.write": "Антифрод: действия",
     "antifraud.trust": "Антифрод: доверенный пользователь",
     "statistics.read": "Статистика: просмотр",
+    "app_errors.read": "Ошибки приложения: просмотр",
     "settings.read": "Настройки: просмотр",
     "settings.write": "Настройки: изменения",
     "access.read": "Доступ: просмотр",

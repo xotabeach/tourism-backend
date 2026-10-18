@@ -322,3 +322,41 @@ async def test_leaving_on_the_way_tells_the_others(live_client: AsyncClient) -> 
     assert left.status_code == 204, left.text
     inbox = await live_client.get("/api/v1/me/notifications", headers=anna_h)
     assert any(n["kind"] == "companion_member_left" for n in inbox.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_the_organizer_may_leave_on_the_way(live_client: AsyncClient) -> None:
+    """BACKEND-72: after the start the group cannot be cancelled, so the
+    organizer leaves like anyone else and is free for another group."""
+    group, url, (anna, anna_h), (_vera, vera_h), _started = await _started_pair(live_client)
+    left = await live_client.delete(f"{url}/members/{anna}", headers=anna_h)
+    assert left.status_code == 204, left.text
+    inbox = await live_client.get("/api/v1/me/notifications", headers=vera_h)
+    assert any(n["kind"] == "companion_member_left" for n in inbox.json()["items"])
+    mine = await live_client.get("/api/v1/me/companion-groups", headers=anna_h)
+    assert group["id"] not in {g["id"] for g in mine.json()["items"]}
+    assert (await live_client.get(f"{url}/progress", headers=anna_h)).status_code == 404
+    # The others walk on.
+    progress = await live_client.get(f"{url}/progress", headers=vera_h)
+    assert progress.status_code == 200, progress.text
+    assert anna not in {m["user_id"] for m in progress.json()["members"]}
+    await _group(live_client, anna_h)
+
+
+async def test_stops_say_how_far_from_the_start_and_members_their_rank(
+    live_client: AsyncClient,
+) -> None:
+    """BACKEND-74: the redesigned group screens show «N км от старта» and the
+    rank under each name."""
+    group, url, (anna, anna_h), (_vera, _vera_h), _started = await _started_pair(live_client)
+    progress = (await live_client.get(f"{url}/progress", headers=anna_h)).json()
+    stops = progress["stops"]
+    assert stops[0]["distance_from_start_meters"] in (0, None)
+    known = [s["distance_from_start_meters"] for s in stops if s["distance_from_start_meters"]]
+    assert known == sorted(known)
+    assert _progress_member(progress, anna)["rank_title"]
+    seen = await live_client.get(url, headers=anna_h)
+    assert all(m["rank_title"] for m in seen.json()["members"])
+    await _sql("UPDATE users SET is_expert = true WHERE id = :id", id=anna)
+    again = (await live_client.get(f"{url}/progress", headers=anna_h)).json()
+    assert _progress_member(again, anna)["rank_title"] == "Эксперт"

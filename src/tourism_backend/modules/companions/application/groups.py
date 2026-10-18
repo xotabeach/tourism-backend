@@ -29,7 +29,7 @@ from tourism_backend.modules.companions.infrastructure.models import (
     CompanionMember,
 )
 from tourism_backend.modules.identity.application import invitations
-from tourism_backend.modules.identity.application.bean_hats import effective_hats
+from tourism_backend.modules.identity.application.bean_hats import effective_looks, rank_titles
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.moderation.infrastructure.models import ContentReport
@@ -283,7 +283,8 @@ async def _out(session: AsyncSession, group: CompanionGroup, viewer_id: UUID) ->
     members = await _members(session, group.id)
     mine = next((m for m in members if m.user_id == viewer_id), None)
     is_organizer = group.organizer_user_id == viewer_id
-    inside = is_organizer or (mine is not None and mine.state == "joined")
+    # An organizer who left the group on the way is out like anyone else.
+    inside = (mine is not None and mine.state == "joined") or (is_organizer and mine is None)
     shown = [
         m
         for m in members
@@ -297,7 +298,8 @@ async def _out(session: AsyncSession, group: CompanionGroup, viewer_id: UUID) ->
     avatars = await media_service.resolve_urls(
         session, entity_type="user", entity_ids=user_ids, role="avatar"
     )
-    hats = await effective_hats(session, list(users.values()))
+    looks = await effective_looks(session, list(users.values()))
+    ranks = await rank_titles(session, list(users.values()))
     route = await session.get(Route, group.route_id)
     covers = await cover_urls_for_routes(session, [group.route_id])
     organizer = users.get(group.organizer_user_id) or await session.get(
@@ -320,7 +322,10 @@ async def _out(session: AsyncSession, group: CompanionGroup, viewer_id: UUID) ->
                 user_id=str(m.user_id),
                 display_name=users[m.user_id].display_name if m.user_id in users else "",
                 avatar_url=avatars.get(m.user_id),
-                bean_hat=hats.get(m.user_id),
+                bean_hat=looks[m.user_id].hat if m.user_id in looks else None,
+                bean_kind=looks[m.user_id].kind if m.user_id in looks else None,
+                bean_outfit=looks[m.user_id].outfit if m.user_id in looks else None,
+                rank_title=ranks.get(m.user_id),
                 state=m.state,  # type: ignore[arg-type]
                 is_organizer=m.user_id == group.organizer_user_id,
                 ready=m.ready,
@@ -664,7 +669,9 @@ async def remove_member(
     user_id: str,
 ) -> CompanionGroupOut | None:
     """The organizer takes back an invitation or removes someone; anyone else
-    may only leave. The organizer leaves by cancelling the group."""
+    may only leave. Before the start the organizer leaves by cancelling the
+    group; on the way, when cancelling is no longer possible, the organizer
+    may leave like anyone else (BACKEND-72)."""
     group = await _group_for(session, group_id)
     target = _parse_uuid(user_id)
     member = await _member(session, group.id, target)
@@ -672,7 +679,7 @@ async def remove_member(
         raise _not_found()
     now = _now()
     if target == actor_id:
-        if target == group.organizer_user_id:
+        if target == group.organizer_user_id and group.status != "started":
             raise _conflict(
                 "companion_organizer_leaves",
                 "Организатор не выходит из группы, а отменяет её",

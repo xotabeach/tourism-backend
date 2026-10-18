@@ -193,12 +193,17 @@ def upsert_places(
         place.location = _point(float(payload["lng"]), float(payload["lat"]))
         place.address = payload.get("address")
         place.difficulty = payload.get("difficulty")
-        place.is_paid = bool(payload.get("is_paid", False))
-        place.payment_status = payload.get(
-            "payment_status",
-            "paid" if place.is_paid else "free",
-        )
-        place.price_notes = payload.get("price_notes")
+        # The seed's price is nobody's check: a hint and an unconfirmed
+        # status, and never over what an editor confirmed (spec 33, D15).
+        if place.price_source != "editor":
+            place.is_paid = bool(payload.get("is_paid", False))
+            place.payment_status = payload.get(
+                "payment_status",
+                "paid" if place.is_paid else "free",
+            )
+            place.price_source = "import" if place.payment_status != "unknown" else None
+            notes = payload.get("price_notes")
+            place.price_hint = {"source": "seed", "notes": notes} if notes else None
         place.is_suitable_for_children = payload.get("is_suitable_for_children")
         place.is_suitable_for_pets = payload.get("is_suitable_for_pets")
         place.recommended_visit_minutes = payload.get("recommended_visit_minutes")
