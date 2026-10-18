@@ -140,6 +140,9 @@ class ArticleOut(BaseModel):
     author_user_id: str
     author_display_name: str
     author_avatar_url: str | None
+    #: The character and hat for the avatar without a picture (BACKEND-76).
+    author_bean_kind: str | None = None
+    author_bean_hat: str | None = None
     author_rank_title: str | None
     author_is_expert: bool
     author_is_editorial: bool = False
@@ -171,6 +174,9 @@ class ArticleSummaryOut(BaseModel):
     author_user_id: str
     author_display_name: str
     author_avatar_url: str | None
+    #: The character and hat for the avatar without a picture (BACKEND-76).
+    author_bean_kind: str | None = None
+    author_bean_hat: str | None = None
     author_rank_title: str | None
     author_is_expert: bool
     author_is_editorial: bool = False
@@ -232,6 +238,9 @@ class ArticleCommentOut(BaseModel):
     author_user_id: str
     author_display_name: str
     author_avatar_url: str | None
+    #: The character and hat for the avatar without a picture (BACKEND-76).
+    author_bean_kind: str | None = None
+    author_bean_hat: str | None = None
     # Ранг автора рядом с именем — как на макете страницы блога; у статьи он
     # уже отдаётся, а у комментария читатель видел только имя.
     author_rank_title: str | None = None

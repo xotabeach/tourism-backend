@@ -19,6 +19,7 @@ from sqlalchemy.sql.selectable import Exists
 
 from tourism_backend.modules.favorites.infrastructure.models import FavoriteRoute
 from tourism_backend.modules.geography.infrastructure.models import Region
+from tourism_backend.modules.identity.application.bean_looks import BeanLook, bean_looks
 from tourism_backend.modules.identity.infrastructure.models import EXPERT_RANK_ID, TravelRank, User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
@@ -203,6 +204,22 @@ async def _author_fields_for_routes(
         role="avatar",
     )
     ranks = await _rank_titles(session, list(users.values()))
+    # An editorial route from before the КРЫМТРИП profile has no owner; it
+    # shows that profile's picture, as the newer editorial routes do
+    # (BACKEND-76: no stock photo in the app any more).
+    editorial_avatar: str | None = None
+    if any(route.owner_user_id is None and route.source == "editorial" for route in routes):
+        editors = list(
+            await session.scalars(
+                select(User.id).where(User.is_system_account.is_(True)).order_by(User.created_at)
+            )
+        )
+        pictures = await media_service.resolve_urls(
+            session, entity_type="user", entity_ids=editors, role="avatar"
+        )
+        editorial_avatar = next(
+            (pictures[editor] for editor in editors if editor in pictures), None
+        )
     result: dict[UUID, tuple[UUID | None, str | None, str | None, bool, str | None]] = {}
     for route in routes:
         owner_id = route.owner_user_id
@@ -218,7 +235,7 @@ async def _author_fields_for_routes(
         else:
             # Editorial route: no owning user, so no travel rank to show.
             label = route.author_label
-            avatar = None
+            avatar = editorial_avatar if route.source == "editorial" else None
             is_expert = False
             rank_title = None
         result[route.id] = (owner_id, label, avatar, is_expert, rank_title)
@@ -263,9 +280,11 @@ def _to_list_item(
     author_avatar_url: str | None = None,
     author_is_expert: bool = False,
     author_rank_title: str | None = None,
+    author_look: BeanLook | None = None,
     rating: tuple[float | None, int] = (None, 0),
 ) -> RouteListItemOut:
     rating_average, rating_count = rating
+    bean_kind, bean_hat = author_look or (None, None)
     return RouteListItemOut(
         id=route.id,
         region_id=route.region_id,
@@ -297,6 +316,8 @@ def _to_list_item(
         cover_image_url=cover_image_url,
         owner_user_id=owner_user_id,
         author_avatar_url=author_avatar_url,
+        author_bean_kind=bean_kind,
+        author_bean_hat=bean_hat,
         author_is_expert=author_is_expert,
         author_is_editorial=route.source == "editorial",
         author_rank_title=author_rank_title,
@@ -386,6 +407,7 @@ async def list_catalog_items_by_ids(
     counts = await _stops_count_map(session, unique_ids)
     covers = await _cover_urls_for_routes(session, unique_ids)
     authors = await _author_fields_for_routes(session, ordered)
+    looks = await bean_looks(session, [route.owner_user_id for route in ordered])
     ratings = await route_ratings(session, unique_ids)
     items: dict[UUID, RouteListItemOut] = {}
     for route in ordered:
@@ -397,6 +419,7 @@ async def list_catalog_items_by_ids(
             owner_user_id=owner_id,
             author_label=label,
             author_avatar_url=avatar,
+            author_look=looks.get(owner_id) if owner_id else None,
             author_is_expert=is_expert,
             author_rank_title=rank_title,
             rating=ratings.get(route.id, (None, 0)),
@@ -443,6 +466,7 @@ async def _list_from_stmt(
     counts = await _stops_count_map(session, route_ids)
     covers = await _cover_urls_for_routes(session, route_ids)
     authors = await _author_fields_for_routes(session, routes)
+    looks = await bean_looks(session, [route.owner_user_id for route in routes])
     ratings = await route_ratings(session, route_ids)
     coauthor_map = await coauthors.coauthors_out(session, route_ids)
     items = []
@@ -456,6 +480,7 @@ async def _list_from_stmt(
                 owner_user_id=owner_id,
                 author_label=label,
                 author_avatar_url=avatar,
+                author_look=looks.get(owner_id) if owner_id else None,
                 author_is_expert=is_expert,
                 author_rank_title=rank_title,
                 rating=ratings.get(route.id, (None, 0)),

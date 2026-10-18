@@ -971,3 +971,51 @@ async def test_editorial_service_profile_never_signs_in_or_ranks(
         "/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
     )
     assert refresh.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_ownerless_editorial_routes_show_the_editors_picture(
+    live_client: AsyncClient,
+) -> None:
+    """BACKEND-76: the app has no stock photo any more, so an editorial route
+    from before the КРЫМТРИП profile, which has no owner, shows that
+    profile's picture like the newer editorial routes do."""
+    phone = f"+7913{uuid4().int % 10_000_000:07d}"
+    tokens = await _login(live_client, phone=phone, name="Редакция тест")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    user_id = (await live_client.get("/api/v1/me", headers=headers)).json()["id"]
+    upload = await live_client.post(
+        "/api/v1/me/avatar",
+        headers=headers,
+        files={"file": ("a.png", _png_bytes(), "image/png")},
+    )
+    assert upload.status_code == 200, upload.text
+    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE users SET is_system_account = true WHERE id = :id"),
+                {"id": user_id},
+            )
+            ownerless = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM routes WHERE owner_user_id IS NULL "
+                    "AND source = 'editorial' AND publication_status = 'published'"
+                )
+            )
+        routes = (await live_client.get("/api/v1/routes", params={"limit": 50})).json()
+        editorial = [
+            item
+            for item in routes["items"]
+            if item["owner_user_id"] is None and item["author_is_editorial"]
+        ]
+        if not ownerless or not editorial:
+            pytest.skip("the seeded catalog has no ownerless editorial route")
+        assert all(item["author_avatar_url"] for item in editorial)
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE users SET is_system_account = false WHERE id = :id"),
+                {"id": user_id},
+            )
+        await engine.dispose()

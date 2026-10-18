@@ -5,6 +5,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
+from tourism_backend.modules.identity.application.bean_hats import effective_hat, effective_kind
 from tourism_backend.modules.identity.infrastructure.models import EXPERT_RANK_ID, TravelRank, User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
@@ -155,6 +156,16 @@ async def _out_many(session: AsyncSession, reviews: list[PlaceReview]) -> list[P
             ),
             author_rank_title=ranks.get(review.author_user_id, "Новичок"),
             author_avatar_url=avatars.get(review.author_user_id),
+            author_bean_kind=(
+                effective_kind(users[review.author_user_id])
+                if review.author_user_id in users
+                else None
+            ),
+            author_bean_hat=(
+                effective_hat(users[review.author_user_id], set())
+                if review.author_user_id in users
+                else None
+            ),
             body=review.body,
             rating=review.rating,
             status=review.status,  # type: ignore[arg-type]
