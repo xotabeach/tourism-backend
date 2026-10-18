@@ -426,6 +426,37 @@ class RouteListItemOut(BaseModel):
     #: Spec 19: «Популярное» once enough people use the route, «Выбор
     #: редакции» for an editorial route without it, else ``None``.
     badge: Literal["popular", "editors_choice"] | None = None
+    #: Spec 33: 1 «Экономно» … 4 «Без ограничений», only when the cost is
+    #: known; ``price_free`` for a route that costs nothing at all.
+    price_level: int | None = None
+    price_free: bool = False
+
+
+class RouteCostOut(BaseModel):
+    """What the route costs a person (spec 33): the route page's breakdown.
+
+    With ``known`` false the amounts are what is known so far: «от X ₽,
+    по N точкам цена не указана». Fuel is for the whole car; a night is
+    priced by the level the person picked, so the route gives the number of
+    nights and the price of a night at each level.
+    """
+
+    known: bool
+    free: bool = False
+    level: int | None = None
+    per_person_min: int
+    per_person_max: int
+    per_day_min: int
+    per_day_max: int
+    tickets_min: int
+    tickets_max: int
+    transport_amount: int
+    missing_places: int = 0
+    missing_legs: int = 0
+    fuel_km: int | None = None
+    fuel_amount: int | None = None
+    nights: int = 0
+    night_prices: list[int] | None = None
 
 
 class RouteSegmentOut(BaseModel):
@@ -490,6 +521,7 @@ class RouteDetailOut(RouteListItemOut):
     is_mountain: bool = False
     #: manual / level / ascent / unreliable / none: why it is or is not.
     mountain_source: str = "none"
+    cost: RouteCostOut | None = None
 
 
 class RouteListOut(BaseModel):

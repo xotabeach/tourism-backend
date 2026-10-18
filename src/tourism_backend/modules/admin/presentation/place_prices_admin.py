@@ -30,6 +30,7 @@ from tourism_backend.modules.places.application.pricing import (
     price_queue,
 )
 from tourism_backend.modules.places.infrastructure.models import Place
+from tourism_backend.modules.routes.application.route_cost import refresh_costs
 
 #: Rows on one page; the list is worked from the top.
 PAGE_ROWS = 60
@@ -141,6 +142,9 @@ class PlacePricesAdmin(BaseView):
                 "price_source": place.price_source,
             }
             apply_price(place, price, now=datetime.now(UTC))
+            await session.flush()
+            # The routes through this place get their cost from it at once.
+            routes = await refresh_costs(session, place_id=place.id)
             await record_audit(
                 session,
                 actor_id=session_principal_id(request),
@@ -155,6 +159,7 @@ class PlacePricesAdmin(BaseView):
                         "price_min_amount": price.min_amount,
                         "price_max_amount": price.max_amount,
                     },
+                    "routes_recomputed": routes,
                 },
             )
             await session.commit()
