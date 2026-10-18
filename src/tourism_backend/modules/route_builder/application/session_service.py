@@ -735,8 +735,8 @@ async def post_message(
                 assistant_text = (
                     "Вот подобранные маршруты по выбранным параметрам:"
                     if getattr(matched, "requested_signals", 0)
-                    else "Пока не знаю твоих пожеланий, поэтому показываю разные маршруты "
-                    "по Крыму. Назови город или что хочется увидеть, и подберу точнее."
+                    else "Пока не знаю ваших пожеланий, поэтому показываю разные маршруты "
+                    "по Крыму. Назовите город или что хочется увидеть, и подберу точнее."
                 )
                 provider_name = "catalog_match"
                 blocks = [
@@ -783,7 +783,7 @@ async def post_message(
             )
             await session.refresh(planning)
             proposal_out = generated.proposal
-            assistant_text = "Собрал маршрут по твоим параметрам:"
+            assistant_text = "Собрал маршрут по вашим параметрам:"
             provider_name = "deterministic_generate"
             blocks = list(proposal_out.blocks)
             ask_field = "ready"

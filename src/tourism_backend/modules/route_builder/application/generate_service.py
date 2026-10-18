@@ -409,7 +409,7 @@ def _title_for(params: RouteMatchParamsIn, places: list[PickedPlace]) -> str:
 
 def _assistant_text(params: RouteMatchParamsIn, places: list[PickedPlace]) -> str:
     _ = places
-    return "Собрал маршрут по твоим параметрам:"
+    return "Собрал маршрут по вашим параметрам:"
 
 
 def _blocks_for_proposal(

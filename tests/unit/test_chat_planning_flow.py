@@ -68,7 +68,7 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         status="draft",
         channel="chat",
         title="Автоматически собранный маршрут",
-        assistant_text="Собрал маршрут по твоим параметрам:",
+        assistant_text="Собрал маршрут по вашим параметрам:",
         place_ids=[str(uuid4()), str(uuid4())],
         duration_minutes=180,
         blocks=[],
@@ -568,4 +568,4 @@ async def test_cards_without_any_wish_are_not_called_chosen_by_parameters(chat: 
     )
     result = await _post(chat, text="Подбери маршрут", want_generate=True)
     assert "по выбранным параметрам" not in result.text
-    assert "Назови город" in result.text
+    assert "Назовите город" in result.text
