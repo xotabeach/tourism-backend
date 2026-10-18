@@ -186,6 +186,26 @@ def effective_kind(user: User) -> str | None:
     return user.bean_kind if user.bean_kind in KIND_SLUGS else None
 
 
+async def rank_titles(session: AsyncSession, users: list[User]) -> dict[UUID, str]:
+    """Each person's rank title as on their profile, without recomputing it:
+    an expert's is «Эксперт», the rest read their stored rank."""
+    from tourism_backend.modules.identity.infrastructure.models import (
+        EXPERT_RANK_ID,
+        TravelRank,
+    )
+
+    ids = {EXPERT_RANK_ID} | {u.rank_id for u in users if u.rank_id is not None}
+    titles = {
+        rank.id: rank.title
+        for rank in (await session.scalars(select(TravelRank).where(TravelRank.id.in_(ids)))).all()
+    }
+    out: dict[UUID, str] = {}
+    for user in users:
+        rank_id = EXPERT_RANK_ID if user.is_expert else user.rank_id
+        out[user.id] = titles.get(rank_id, "Новичок") if rank_id is not None else "Новичок"
+    return out
+
+
 async def effective_looks(session: AsyncSession, users: list[User]) -> dict[UUID, BeanLook]:
     """What others see of each person's character (group screens)."""
     hats = await effective_hats(session, users)

@@ -25,7 +25,7 @@ from tourism_backend.modules.companions.infrastructure.models import (
     CompanionGroup,
     CompanionMember,
 )
-from tourism_backend.modules.identity.application.bean_hats import effective_looks
+from tourism_backend.modules.identity.application.bean_hats import effective_looks, rank_titles
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.route_execution.infrastructure.models import (
@@ -33,7 +33,7 @@ from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecutionEvent,
     RouteExecutionStop,
 )
-from tourism_backend.modules.routes.infrastructure.models import Route, RouteStop
+from tourism_backend.modules.routes.infrastructure.models import Route, RouteSegment, RouteStop
 
 #: The group's result is fixed this long after the start at the latest (D14).
 SETTLE_AFTER = timedelta(days=7)
@@ -193,6 +193,36 @@ async def group_progress(
             ).all()
         ]
 
+    # How far each stop is from the first, along the route's legs.
+    stop_ids: dict[UUID, int] = {
+        row.id: row.position
+        for row in (
+            await session.execute(
+                select(RouteStop.id, RouteStop.position).where(RouteStop.route_id == group.route_id)
+            )
+        ).all()
+    }
+    leg_meters: dict[int, int | None] = {}
+    for to_stop, meters in (
+        await session.execute(
+            select(RouteSegment.to_stop_id, RouteSegment.distance_meters).where(
+                RouteSegment.route_id == group.route_id, RouteSegment.role == "main"
+            )
+        )
+    ).all():
+        position = stop_ids.get(to_stop)
+        if position is None:
+            continue
+        known = leg_meters.get(position, 0)
+        leg_meters[position] = None if meters is None or known is None else known + meters
+    from_start: dict[int, int | None] = {}
+    total: int | None = 0
+    for position in sorted(p for p, _, _ in stop_rows):
+        if position != min(p for p, _, _ in stop_rows):
+            leg = leg_meters.get(position)
+            total = None if total is None or leg is None else total + leg
+        from_start[position] = total
+
     user_ids = [m.user_id for m in members]
     users = {
         u.id: u for u in (await session.scalars(select(User).where(User.id.in_(user_ids)))).all()
@@ -201,6 +231,7 @@ async def group_progress(
         session, entity_type="user", entity_ids=user_ids, role="avatar"
     )
     looks = await effective_looks(session, list(users.values()))
+    ranks = await rank_titles(session, list(users.values()))
 
     # First at each stop: the earliest mark made online (D7, D11).
     firsts: dict[int, tuple[datetime, UUID]] = {}
@@ -242,6 +273,7 @@ async def group_progress(
                 bean_hat=looks[m.user_id].hat if m.user_id in looks else None,
                 bean_kind=looks[m.user_id].kind if m.user_id in looks else None,
                 bean_outfit=looks[m.user_id].outfit if m.user_id in looks else None,
+                rank_title=ranks.get(m.user_id),
                 is_organizer=m.user_id == group.organizer_user_id,
                 joined_late=m.joined_late,
                 status=_status(group, m, run),  # type: ignore[arg-type]
@@ -281,6 +313,7 @@ async def group_progress(
                 position=position,
                 place_name=name,
                 is_optional=optional,
+                distance_from_start_meters=from_start.get(position),
                 first_user_id=(
                     str(firsts[position][1]) if position in firsts and not hidden else None
                 ),

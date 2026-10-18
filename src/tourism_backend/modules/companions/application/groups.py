@@ -29,7 +29,7 @@ from tourism_backend.modules.companions.infrastructure.models import (
     CompanionMember,
 )
 from tourism_backend.modules.identity.application import invitations
-from tourism_backend.modules.identity.application.bean_hats import effective_looks
+from tourism_backend.modules.identity.application.bean_hats import effective_looks, rank_titles
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.moderation.infrastructure.models import ContentReport
@@ -298,6 +298,7 @@ async def _out(session: AsyncSession, group: CompanionGroup, viewer_id: UUID) ->
         session, entity_type="user", entity_ids=user_ids, role="avatar"
     )
     looks = await effective_looks(session, list(users.values()))
+    ranks = await rank_titles(session, list(users.values()))
     route = await session.get(Route, group.route_id)
     covers = await cover_urls_for_routes(session, [group.route_id])
     organizer = users.get(group.organizer_user_id) or await session.get(
@@ -323,6 +324,7 @@ async def _out(session: AsyncSession, group: CompanionGroup, viewer_id: UUID) ->
                 bean_hat=looks[m.user_id].hat if m.user_id in looks else None,
                 bean_kind=looks[m.user_id].kind if m.user_id in looks else None,
                 bean_outfit=looks[m.user_id].outfit if m.user_id in looks else None,
+                rank_title=ranks.get(m.user_id),
                 state=m.state,  # type: ignore[arg-type]
                 is_organizer=m.user_id == group.organizer_user_id,
                 ready=m.ready,

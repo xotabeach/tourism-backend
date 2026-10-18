@@ -322,3 +322,23 @@ async def test_leaving_on_the_way_tells_the_others(live_client: AsyncClient) -> 
     assert left.status_code == 204, left.text
     inbox = await live_client.get("/api/v1/me/notifications", headers=anna_h)
     assert any(n["kind"] == "companion_member_left" for n in inbox.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_stops_say_how_far_from_the_start_and_members_their_rank(
+    live_client: AsyncClient,
+) -> None:
+    """BACKEND-74: the redesigned group screens show «N км от старта» and the
+    rank under each name."""
+    group, url, (anna, anna_h), (_vera, _vera_h), _started = await _started_pair(live_client)
+    progress = (await live_client.get(f"{url}/progress", headers=anna_h)).json()
+    stops = progress["stops"]
+    assert stops[0]["distance_from_start_meters"] in (0, None)
+    known = [s["distance_from_start_meters"] for s in stops if s["distance_from_start_meters"]]
+    assert known == sorted(known)
+    assert _progress_member(progress, anna)["rank_title"]
+    seen = await live_client.get(url, headers=anna_h)
+    assert all(m["rank_title"] for m in seen.json()["members"])
+    await _sql("UPDATE users SET is_expert = true WHERE id = :id", id=anna)
+    again = (await live_client.get(f"{url}/progress", headers=anna_h)).json()
+    assert _progress_member(again, anna)["rank_title"] == "Эксперт"
