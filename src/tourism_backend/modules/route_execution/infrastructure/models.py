@@ -312,7 +312,8 @@ class RouteExecutionStop(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ),
         CheckConstraint("position >= 1", name="position_positive"),
         CheckConstraint(
-            "skip_reason IS NULL OR skip_reason IN ('closed', 'no_time', 'hard', 'other')",
+            "skip_reason IS NULL OR skip_reason IN "
+            "('closed', 'no_time', 'hard', 'other', 'not_reached')",
             name="skip_reason",
         ),
         # A stop is marked or skipped, never both; a skip always has its reason.

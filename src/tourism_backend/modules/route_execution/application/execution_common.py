@@ -33,7 +33,7 @@ from tourism_backend.modules.route_execution.application.schemas import (
     RouteExecutionStatus,
     RouteExecutionStopOut,
     RouteExecutionSyncOut,
-    StopSkipReason,
+    StopSkipReasonOut,
 )
 from tourism_backend.modules.route_execution.infrastructure.models import (
     RouteExecution,
@@ -182,7 +182,7 @@ async def _execution_out(
                 is_optional=stop.is_optional,
                 completed_at=stop.completed_at,
                 skipped_at=stop.skipped_at,
-                skip_reason=cast(StopSkipReason | None, stop.skip_reason),
+                skip_reason=cast(StopSkipReasonOut | None, stop.skip_reason),
                 leg_distance_meters=stop.leg_distance_meters,
                 leg_estimate_seconds=stop.leg_estimate_seconds,
                 leg_estimate_source=cast(
