@@ -61,7 +61,7 @@ class MockAIPlanningProvider:
             text = "Как будем передвигаться — пешком, на машине или общественным транспортом?"
         elif ask == "pace":
             action_ids = ("pace_calm", "pace_moderate", "pace_active")
-            text = f"{tip_title + '. ' if tip_title else ''}Какой темп поездки тебе ближе?"
+            text = f"{tip_title + '. ' if tip_title else ''}Какой темп поездки вам ближе?"
         elif ask == "interests":
             action_ids = ("interest_sea", "interest_mountains", "interest_history")
             text = "Что интереснее — побережье, горы или исторические места?"

@@ -23,6 +23,7 @@ from tourism_backend.modules.content.application.article_schemas import (
 )
 from tourism_backend.modules.content.application.article_service import _rank_titles
 from tourism_backend.modules.content.infrastructure.models import Article, ArticleComment
+from tourism_backend.modules.identity.application.bean_hats import effective_hat, effective_kind
 from tourism_backend.modules.identity.infrastructure.models import User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.notifications.application import service as notifications_service
@@ -68,6 +69,8 @@ def _comment_out(
         author_user_id=str(comment.author_user_id),
         author_display_name=author.display_name if author is not None else _ANONYMOUS_AUTHOR,
         author_avatar_url=avatars.get(comment.author_user_id),
+        author_bean_kind=effective_kind(author) if author is not None else None,
+        author_bean_hat=effective_hat(author, set()) if author is not None else None,
         author_rank_title=ranks.get(comment.author_user_id),
         body=comment.body,
         status=comment.status,  # type: ignore[arg-type]

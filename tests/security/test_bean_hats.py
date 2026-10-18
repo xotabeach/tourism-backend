@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -256,3 +256,39 @@ async def test_an_expert_has_every_hat_and_every_outfit(live_client: AsyncClient
     await _sql("UPDATE users SET is_expert = false WHERE id = :id", id=anna)
     profile = (await live_client.get(f"/api/v1/users/{anna}")).json()
     assert (profile["bean_hat"], profile["bean_outfit"]) == (None, None)
+
+
+async def test_no_default_photo_avatar_and_looks_go_with_avatars(
+    live_client: AsyncClient,
+) -> None:
+    """BACKEND-76: a new account gets no place photo as its avatar (the app
+    draws the character instead), and wherever someone's avatar is given out
+    their character and hat go with it, as others see them on the profile."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from tourism_backend.modules.identity.application.bean_looks import bean_looks
+
+    tokens = await _login(live_client, f"+7909{uuid4().int % 10_000_000:07d}", "Портрет")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    me = (await live_client.get("/api/v1/me", headers=headers)).json()
+    assert me["avatar_url"] is None
+    user_id = me["id"]
+    public = (await live_client.get(f"/api/v1/users/{user_id}")).json()
+    assert public["avatar_url"] is None
+
+    chosen = await live_client.put("/api/v1/me/bean-kind", headers=headers, json={"slug": "round"})
+    assert chosen.status_code == 200, chosen.text
+    # A hat no longer open to the person is not shown, as on the profile.
+    await _sql("UPDATE users SET bean_hat = 'crown' WHERE id = :id", id=user_id)
+    engine = create_async_engine(DATABASE_URL)
+    try:
+        async with AsyncSession(engine) as session:
+            looks = await bean_looks(session, [UUID(user_id), None])
+    finally:
+        await engine.dispose()
+    assert looks == {UUID(user_id): ("round", None)}
+
+    routes = (await live_client.get("/api/v1/routes", params={"limit": 5})).json()
+    for item in routes["items"]:
+        assert "author_bean_kind" in item
+        assert "author_bean_hat" in item

@@ -191,6 +191,9 @@ class RouteCoauthorOut(BaseModel):
     user_id: UUID
     display_name: str
     avatar_url: str | None = None
+    #: The character and hat for the avatar without a picture (BACKEND-76).
+    bean_kind: str | None = None
+    bean_hat: str | None = None
     state: CoauthorState = "joined"
     #: Pressed «Опубликовать» on the route as it is now.
     consented: bool = False
@@ -404,6 +407,10 @@ class RouteListItemOut(BaseModel):
     cover_image_url: str | None = None
     owner_user_id: UUID | None = None
     author_avatar_url: str | None = None
+    #: The author's character and hat, drawn as the avatar when there is no
+    #: picture (BACKEND-76); None is the one the account was given.
+    author_bean_kind: str | None = None
+    author_bean_hat: str | None = None
     author_is_expert: bool = False
     #: Published by the КРЫМТРИП editorial profile: badge «Редакция» (spec 16).
     author_is_editorial: bool = False

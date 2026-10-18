@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tourism_backend.api.errors import AppError
 from tourism_backend.config import get_settings
+from tourism_backend.modules.identity.application.bean_hats import effective_hat, effective_kind
 from tourism_backend.modules.identity.infrastructure.models import EXPERT_RANK_ID, TravelRank, User
 from tourism_backend.modules.media.application import service as media_service
 from tourism_backend.modules.media.infrastructure.models import MediaAttachment
@@ -111,6 +112,8 @@ async def _review_out(
         author_display_name=author.display_name if author is not None else "Путешественник",
         author_rank_title=rank_titles.get(review.author_user_id, "Новичок"),
         author_avatar_url=avatars.get(review.author_user_id),
+        author_bean_kind=effective_kind(author) if author is not None else None,
+        author_bean_hat=effective_hat(author, set()) if author is not None else None,
         body=review.body,
         rating=int(review.rating),
         status=review.status,  # type: ignore[arg-type]
